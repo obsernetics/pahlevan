@@ -14,20 +14,22 @@ keywords:
   - attack-surface
   - syscall-monitoring
 
-home: https://github.com/pahlevan/operator
+home: https://github.com/obsernetics/pahlevan
 sources:
-  - https://github.com/pahlevan/operator
+  - https://github.com/obsernetics/pahlevan
 
 maintainers:
-  - name: Pahlevan Team
-    email: team@pahlevan.io
+  - name: Obsernetics Team
+    email: team@obsernetics.com
 
 annotations:
   category: Security
   licenses: Apache-2.0
   images: |
     - name: pahlevan-operator
-      image: pahlevan/operator:v1.0.0
+      image: ghcr.io/obsernetics/pahlevan:v1.0.0
+    - name: pahlevan-operator-debug
+      image: ghcr.io/obsernetics/pahlevan:debug-v1.0.0
 
 dependencies: []
 

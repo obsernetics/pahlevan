@@ -1,0 +1,30 @@
+apiVersion: v1
+entries:
+  pahlevan-operator:
+  - apiVersion: v2
+    appVersion: v1.0.0
+    created: "2024-01-15T10:00:00Z"
+    description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
+    digest: sha256:placeholder
+    home: https://github.com/obsernetics/pahlevan
+    keywords:
+    - security
+    - ebpf
+    - kubernetes
+    - operator
+    - monitoring
+    - attack-surface
+    - syscall-monitoring
+    kubeVersion: '>=1.24.0'
+    maintainers:
+    - email: team@obsernetics.com
+      name: Obsernetics Team
+    name: pahlevan-operator
+    sources:
+    - https://github.com/obsernetics/pahlevan
+    type: application
+    urls:
+    - https://obsernetics.github.io/pahlevan/charts/pahlevan-operator-1.0.0.tgz
+    version: 1.0.0
+generated: "2024-01-15T10:00:00Z"
+serverInfo: {}

@@ -1,0 +1,52 @@
+# Chart Testing Configuration
+# https://github.com/helm/chart-testing
+
+# The name of the directory that contains the charts
+chart-dirs:
+  - charts
+
+# Charts to skip during testing
+excluded-charts:
+  - ""
+
+# The name of the directory that contains the test values for the charts
+chart-repos:
+  - bitnami=https://charts.bitnami.com/bitnami
+  - prometheus-community=https://prometheus-community.github.io/helm-charts
+
+# Target branch for comparing changes
+target-branch: main
+
+# Validate maintainers in Chart.yaml
+validate-maintainers: true
+
+# Check version increment
+check-version-increment: true
+
+# Process dependency update
+dependency-update: true
+
+# Validate chart schema
+validate-chart-schema: true
+
+# Additional linting configurations
+helm-extra-args: --timeout 600s
+
+# Testing configurations
+namespace: ct-test
+
+# Default test values
+test-values:
+  - global.imageRegistry=ghcr.io
+  - operator.replicaCount=1
+  - metrics.enabled=true
+  - webhooks.enabled=false  # Disable webhooks for testing
+  - ebpf.privileged=false   # Disable privileged mode for testing
+  - rbac.create=true
+  - crds.install=true
+
+# Additional testing configurations
+additional-commands:
+  - kubectl get pods -n ct-test
+  - kubectl get secrets -n ct-test
+  - kubectl get configmaps -n ct-test

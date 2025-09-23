@@ -1,0 +1,323 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'pages/**'
+      - 'docs/**'
+      - 'charts/**'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build GitHub Pages
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: v3.14.0
+
+    - name: Setup Pages
+      id: pages
+      uses: actions/configure-pages@v4
+
+    - name: Create pages directory structure
+      run: |
+        mkdir -p _site
+        cp -r pages/* _site/
+
+    - name: Generate Helm repository index
+      run: |
+        mkdir -p _site/charts
+
+        # Copy existing chart packages if they exist
+        if [ -d "charts/" ]; then
+          # Package charts
+          for chart_dir in charts/*/; do
+            if [ -f "${chart_dir}Chart.yaml" ]; then
+              chart_name=$(basename "$chart_dir")
+              echo "Packaging chart: $chart_name"
+              helm package "$chart_dir" --destination _site/charts/
+            fi
+          done
+
+          # Generate index
+          if ls _site/charts/*.tgz 1> /dev/null 2>&1; then
+            helm repo index _site/charts --url https://obsernetics.github.io/pahlevan/charts/
+          else
+            # Create empty index if no packages
+            cat > _site/charts/index.yaml << 'EOF'
+        apiVersion: v1
+        entries: {}
+        generated: "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        serverInfo: {}
+        EOF
+          fi
+        fi
+
+    - name: Generate sitemap
+      run: |
+        cat > _site/sitemap.xml << EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+          <url>
+            <loc>https://obsernetics.github.io/pahlevan/</loc>
+            <lastmod>$(date -Iseconds)</lastmod>
+            <changefreq>weekly</changefreq>
+            <priority>1.0</priority>
+          </url>
+          <url>
+            <loc>https://obsernetics.github.io/pahlevan/docs.html</loc>
+            <lastmod>$(date -Iseconds)</lastmod>
+            <changefreq>weekly</changefreq>
+            <priority>0.8</priority>
+          </url>
+          <url>
+            <loc>https://obsernetics.github.io/pahlevan/charts.html</loc>
+            <lastmod>$(date -Iseconds)</lastmod>
+            <changefreq>weekly</changefreq>
+            <priority>0.8</priority>
+          </url>
+        </urlset>
+        EOF
+
+    - name: Generate robots.txt
+      run: |
+        cat > _site/robots.txt << 'EOF'
+        User-agent: *
+        Allow: /
+
+        Sitemap: https://obsernetics.github.io/pahlevan/sitemap.xml
+        EOF
+
+    - name: Create CNAME (if custom domain)
+      run: |
+        # Uncomment and update if you have a custom domain
+        # echo "pahlevan.obsernetics.com" > _site/CNAME
+        echo "Custom domain not configured"
+
+    - name: Validate HTML (basic)
+      run: |
+        # Basic HTML validation
+        for html_file in _site/*.html; do
+          if [ -f "$html_file" ]; then
+            echo "Validating $html_file"
+            # Check for basic HTML structure
+            grep -q "<!DOCTYPE html>" "$html_file" || echo "Warning: Missing DOCTYPE in $html_file"
+            grep -q "<title>" "$html_file" || echo "Warning: Missing title in $html_file"
+          fi
+        done
+
+    - name: Generate meta files
+      run: |
+        # Create .nojekyll to prevent Jekyll processing
+        touch _site/.nojekyll
+
+        # Create README for the site
+        cat > _site/README.md << 'EOF'
+        # Pahlevan GitHub Pages
+
+        This is the GitHub Pages site for the Pahlevan project.
+
+        - **Website**: https://obsernetics.github.io/pahlevan/
+        - **Repository**: https://github.com/obsernetics/pahlevan
+        - **Helm Charts**: https://obsernetics.github.io/pahlevan/charts/
+
+        ## Features
+
+        - 🏠 Project homepage with interactive demos
+        - 📚 Integrated documentation portal
+        - 📦 Helm repository with chart listings
+        - 🔍 Search functionality across content
+        - 📱 Mobile-responsive design
+
+        ## Repository Structure
+
+        ```
+        pages/               # GitHub Pages source
+        ├── index.html      # Homepage
+        ├── docs.html       # Documentation portal
+        ├── charts.html     # Helm charts listing
+        └── assets/         # CSS, JS, images
+
+        docs/               # Markdown documentation
+        ├── quick-start.md
+        ├── architecture.md
+        ├── deployment.md
+        └── ...
+
+        charts/             # Helm charts source
+        └── pahlevan-operator/
+        ```
+
+        Last updated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        EOF
+
+    - name: Upload artifact
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ./_site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+  update-helm-index:
+    name: Update Helm Repository Index
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.event_name == 'release'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: v3.14.0
+
+    - name: Download release assets
+      run: |
+        # Download Helm chart packages from the release
+        RELEASE_TAG="${{ github.event.release.tag_name }}"
+        echo "Processing release: $RELEASE_TAG"
+
+        # Create charts directory
+        mkdir -p charts-release
+
+        # Download chart packages if they exist in the release
+        gh release download "$RELEASE_TAG" --pattern "*.tgz" --dir charts-release/ || echo "No chart packages found in release"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Update repository index
+      run: |
+        # Clone gh-pages branch or create it
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+        # Check if gh-pages branch exists
+        if git ls-remote --heads origin gh-pages | grep -q gh-pages; then
+          git checkout gh-pages
+          git pull origin gh-pages
+        else
+          git checkout --orphan gh-pages
+          git rm -rf . || true
+        fi
+
+        # Create charts directory and copy packages
+        mkdir -p charts
+        if [ -d "charts-release" ] && [ "$(ls -A charts-release/)" ]; then
+          cp charts-release/*.tgz charts/ || echo "No chart packages to copy"
+        fi
+
+        # Generate/update index
+        if ls charts/*.tgz 1> /dev/null 2>&1; then
+          helm repo index charts --url https://obsernetics.github.io/pahlevan/charts/
+          echo "Updated Helm repository index with $(ls charts/*.tgz | wc -l) chart(s)"
+        else
+          echo "No chart packages found, creating empty index"
+          cat > charts/index.yaml << 'EOF'
+        apiVersion: v1
+        entries: {}
+        generated: "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        serverInfo: {}
+        EOF
+        fi
+
+        # Commit and push changes
+        git add charts/
+        git commit -m "Update Helm repository for release ${{ github.event.release.tag_name }}" || echo "No changes to commit"
+        git push origin gh-pages
+
+  notify:
+    name: Notify Deployment
+    runs-on: ubuntu-latest
+    needs: [build, deploy]
+    if: success()
+
+    steps:
+    - name: Get deployment URL
+      id: url
+      run: echo "url=https://obsernetics.github.io/pahlevan/" >> $GITHUB_OUTPUT
+
+    - name: Notify Slack
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: |
+          🚀 Pahlevan GitHub Pages deployed successfully!
+
+          📖 Website: ${{ steps.url.outputs.url }}
+          📚 Documentation: ${{ steps.url.outputs.url }}docs.html
+          📦 Helm Charts: ${{ steps.url.outputs.url }}charts.html
+          🔗 Repository: https://github.com/obsernetics/pahlevan
+
+          Changes:
+          ${{ github.event.head_commit.message || 'Manual deployment' }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  validate:
+    name: Validate Deployment
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: success()
+
+    steps:
+    - name: Test site accessibility
+      run: |
+        # Wait a moment for deployment to complete
+        sleep 30
+
+        # Test main pages
+        echo "Testing homepage..."
+        curl -f -s "https://obsernetics.github.io/pahlevan/" > /dev/null || echo "Homepage not accessible"
+
+        echo "Testing documentation..."
+        curl -f -s "https://obsernetics.github.io/pahlevan/docs.html" > /dev/null || echo "Documentation not accessible"
+
+        echo "Testing charts page..."
+        curl -f -s "https://obsernetics.github.io/pahlevan/charts.html" > /dev/null || echo "Charts page not accessible"
+
+        echo "Testing Helm repository index..."
+        curl -f -s "https://obsernetics.github.io/pahlevan/charts/index.yaml" > /dev/null || echo "Helm index not accessible"
+
+        echo "Site validation complete"
+
+    - name: Performance check
+      run: |
+        echo "Checking page load times..."
+        time curl -s "https://obsernetics.github.io/pahlevan/" > /dev/null
+        echo "Performance check complete"

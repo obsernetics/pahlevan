@@ -1,0 +1,290 @@
+name: Helm Chart
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'charts/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'charts/**'
+  release:
+    types: [published]
+
+env:
+  HELM_VERSION: v3.14.0
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  lint:
+    name: Lint Helm Chart
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Set up chart-testing
+      uses: helm/chart-testing-action@v2
+
+    - name: Lint charts
+      run: |
+        ct lint --config .github/ct.yaml --charts charts/pahlevan-operator
+
+    - name: Validate chart values
+      run: |
+        helm template test charts/pahlevan-operator \
+          --values charts/pahlevan-operator/values.yaml \
+          --dry-run
+
+  test:
+    name: Test Helm Chart
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Set up Kind
+      uses: helm/kind-action@v1
+      with:
+        version: v0.20.0
+        kubectl_version: v1.28.0
+        config: |
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            image: kindest/node:v1.28.0
+            kubeadmConfigPatches:
+            - |
+              kind: InitConfiguration
+              nodeRegistration:
+                kubeletExtraArgs:
+                  feature-gates: "NodeSwap=false"
+
+    - name: Set up chart-testing
+      uses: helm/chart-testing-action@v2
+
+    - name: Install charts
+      run: |
+        ct install --config .github/ct.yaml --charts charts/pahlevan-operator
+
+  security:
+    name: Security Scan Helm Chart
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Scan Helm chart with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        scan-ref: 'charts/pahlevan-operator'
+        format: 'sarif'
+        output: 'trivy-helm-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-helm-results.sarif'
+
+    - name: Scan with Checkov
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: charts/pahlevan-operator
+        framework: helm
+        output_format: sarif
+        output_file_path: checkov-helm-results.sarif
+
+    - name: Upload Checkov scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: checkov-helm-results.sarif
+
+  package:
+    name: Package and Push Helm Chart
+    runs-on: ubuntu-latest
+    needs: [lint, test, security]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Package Helm chart
+      run: |
+        # Update chart version for releases
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION=${VERSION#v}  # Remove 'v' prefix
+
+          # Update Chart.yaml with release version
+          sed -i "s/^version:.*/version: ${VERSION}/" charts/pahlevan-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ github.event.release.tag_name }}\"/" charts/pahlevan-operator/Chart.yaml
+
+          # Update values.yaml with release image tag
+          sed -i "s|tag: \".*\"|tag: \"${{ github.event.release.tag_name }}\"|" charts/pahlevan-operator/values.yaml
+        else
+          # For main branch, use latest
+          sed -i 's|tag: ".*"|tag: "latest"|' charts/pahlevan-operator/values.yaml
+        fi
+
+        # Package the chart
+        helm package charts/pahlevan-operator --destination dist/
+
+    - name: Push Helm chart to GHCR
+      run: |
+        # Push to GitHub Container Registry OCI repository
+        for chart in dist/*.tgz; do
+          helm push "$chart" oci://ghcr.io/${{ github.repository_owner }}/charts
+        done
+
+    - name: Push to GitHub Pages (Helm Repository)
+      if: github.event_name == 'release'
+      run: |
+        # Clone gh-pages branch
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+        # Create or checkout gh-pages branch
+        if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+          git checkout gh-pages
+          git pull origin gh-pages
+        else
+          git checkout --orphan gh-pages
+          git rm -rf .
+          cat > index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Pahlevan Helm Charts</title>
+        </head>
+        <body>
+            <h1>Pahlevan Helm Charts</h1>
+            <p>This repository hosts Helm charts for Pahlevan.</p>
+            <p>Add this repository: <code>helm repo add pahlevan https://obsernetics.github.io/pahlevan/</code></p>
+        </body>
+        </html>
+        EOF
+        fi
+
+        # Copy packaged charts
+        mkdir -p charts
+        cp dist/*.tgz charts/
+
+        # Generate index.yaml
+        helm repo index charts --url https://obsernetics.github.io/pahlevan/charts
+
+        # Commit and push
+        git add .
+        git commit -m "Release Helm chart ${{ github.event.release.tag_name }}" || exit 0
+        git push origin gh-pages
+
+    - name: Upload chart artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: helm-charts
+        path: dist/*.tgz
+        retention-days: 30
+
+  update-docs:
+    name: Update Helm Documentation
+    runs-on: ubuntu-latest
+    needs: package
+    if: github.event_name == 'release'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Generate Helm documentation
+      run: |
+        # Install helm-docs
+        curl -sSL https://github.com/norwoodj/helm-docs/releases/latest/download/helm-docs_$(uname -s)_$(uname -m).tar.gz | tar xz
+        sudo mv helm-docs /usr/local/bin/
+
+        # Generate docs
+        helm-docs charts/pahlevan-operator
+
+        # Update main README if needed
+        if [[ -f "charts/pahlevan-operator/README.md" ]]; then
+          echo "## Helm Chart" >> README_TEMP.md
+          echo "" >> README_TEMP.md
+          echo "See [Helm Chart Documentation](charts/pahlevan-operator/README.md)" >> README_TEMP.md
+        fi
+
+    - name: Commit documentation updates
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+        git add charts/pahlevan-operator/README.md
+        git commit -m "docs: Update Helm chart documentation for ${{ github.event.release.tag_name }}" || exit 0
+        git push origin main
+
+  notify:
+    name: Notify Helm Chart Release
+    runs-on: ubuntu-latest
+    needs: [package, update-docs]
+    if: github.event_name == 'release'
+
+    steps:
+    - name: Notify Slack
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: |
+          📦 Pahlevan Helm Chart ${{ github.event.release.tag_name }} released!
+
+          🚀 Install: `helm repo add pahlevan https://obsernetics.github.io/pahlevan/ && helm install pahlevan pahlevan/pahlevan-operator`
+          📦 OCI: `helm install pahlevan oci://ghcr.io/${{ github.repository_owner }}/charts/pahlevan-operator --version ${{ github.event.release.tag_name }}`
+          📖 Chart Docs: https://github.com/${{ github.repository }}/tree/${{ github.event.release.tag_name }}/charts/pahlevan-operator
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

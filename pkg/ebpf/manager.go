@@ -620,3 +620,31 @@ func parseFileEvent(data []byte) *FileEvent {
 	// Implementation would parse raw eBPF event data into Go struct
 	return &FileEvent{}
 }
+
+// Validation methods for policy types
+func (cp *ContainerPolicy) Validate() error {
+	if cp.AllowedSyscalls == nil {
+		return fmt.Errorf("allowed syscalls map cannot be nil")
+	}
+	if cp.EnforcementMode > 3 {
+		return fmt.Errorf("invalid enforcement mode: %d", cp.EnforcementMode)
+	}
+	return nil
+}
+
+func (np *NetworkPolicy) Validate() error {
+	if np.AllowedEgressPorts == nil || np.AllowedIngressPorts == nil {
+		return fmt.Errorf("port maps cannot be nil")
+	}
+	if np.EnforcementMode > 3 {
+		return fmt.Errorf("invalid enforcement mode: %d", np.EnforcementMode)
+	}
+	return nil
+}
+
+func (fp *FilePolicy) Validate() error {
+	if fp.EnforcementMode > 3 {
+		return fmt.Errorf("invalid enforcement mode: %d", fp.EnforcementMode)
+	}
+	return nil
+}

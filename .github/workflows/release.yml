@@ -1,0 +1,470 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Validate tag format
+      id: version
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          TAG="${{ github.event.inputs.tag }}"
+        else
+          TAG="${{ github.ref_name }}"
+        fi
+
+        echo "Processing tag: $TAG"
+
+        # Validate semver format
+        if [[ ! $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.*)?$ ]]; then
+          echo "Error: Tag $TAG does not match semantic versioning format (vX.Y.Z or vX.Y.Z-suffix)"
+          exit 1
+        fi
+
+        # Extract version without 'v' prefix
+        VERSION=${TAG#v}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+        # Check if it's a prerelease
+        if [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.*)?$ ]] && [[ $TAG =~ - ]]; then
+          echo "is_prerelease=true" >> $GITHUB_OUTPUT
+        else
+          echo "is_prerelease=false" >> $GITHUB_OUTPUT
+        fi
+
+        echo "Version: $VERSION"
+        echo "Is prerelease: ${{ steps.version.outputs.is_prerelease }}"
+
+    - name: Check if tag exists
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          TAG="${{ github.event.inputs.tag }}"
+          if ! git tag -l | grep -q "^${TAG}$"; then
+            echo "Error: Tag $TAG does not exist"
+            exit 1
+          fi
+        fi
+
+  build:
+    name: Build Release Assets
+    runs-on: ubuntu-latest
+    needs: validate
+
+    strategy:
+      matrix:
+        include:
+        - goos: linux
+          goarch: amd64
+        - goos: linux
+          goarch: arm64
+        - goos: darwin
+          goarch: amd64
+        - goos: darwin
+          goarch: arm64
+        - goos: windows
+          goarch: amd64
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.24"
+
+    - name: Install eBPF dependencies (Linux only)
+      if: matrix.goos == 'linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
+
+    - name: Build eBPF programs (Linux only)
+      if: matrix.goos == 'linux'
+      run: make ebpf-build
+
+    - name: Build binaries
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: ${{ matrix.goos == 'linux' && '1' || '0' }}
+      run: |
+        VERSION=${{ needs.validate.outputs.version }}
+        COMMIT=${{ github.sha }}
+        DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        # Create output directory
+        mkdir -p dist/${{ matrix.goos }}-${{ matrix.goarch }}
+
+        # Build operator
+        go build \
+          -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+          -o dist/${{ matrix.goos }}-${{ matrix.goarch }}/pahlevan-operator${{ matrix.goos == 'windows' && '.exe' || '' }} \
+          cmd/operator/main.go
+
+        # Build CLI
+        go build \
+          -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+          -o dist/${{ matrix.goos }}-${{ matrix.goarch }}/pahlevan${{ matrix.goos == 'windows' && '.exe' || '' }} \
+          cmd/pahlevan/main.go
+
+    - name: Create archive
+      run: |
+        cd dist/${{ matrix.goos }}-${{ matrix.goarch }}
+        if [[ "${{ matrix.goos }}" == "windows" ]]; then
+          zip -r ../pahlevan-${{ needs.validate.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.zip .
+        else
+          tar -czf ../pahlevan-${{ needs.validate.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz .
+        fi
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: dist/pahlevan-*
+        retention-days: 7
+
+  docker:
+    name: Build and Push Release Images
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          obsernetics/pahlevan
+        tags: |
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}},enable=${{ !needs.validate.outputs.is_prerelease }}
+          type=raw,value=latest,enable=${{ !needs.validate.outputs.is_prerelease }}
+        labels: |
+          org.opencontainers.image.title=Pahlevan
+          org.opencontainers.image.description=eBPF-based Kubernetes Security Operator
+          org.opencontainers.image.vendor=Obsernetics
+          org.opencontainers.image.licenses=Apache-2.0
+          org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+
+    - name: Build and push production image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: runtime
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          VERSION=${{ needs.validate.outputs.version }}
+          COMMIT=${{ github.sha }}
+          DATE=${{ steps.meta.outputs.created }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push debug image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: debug
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:debug-${{ needs.validate.outputs.version }}
+          obsernetics/pahlevan:debug-${{ needs.validate.outputs.version }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          VERSION=${{ needs.validate.outputs.version }}
+          COMMIT=${{ github.sha }}
+          DATE=${{ steps.meta.outputs.created }}
+
+  security:
+    name: Security Scan Release
+    runs-on: ubuntu-latest
+    needs: [validate, docker]
+
+    steps:
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.version }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Check for HIGH/CRITICAL vulnerabilities
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.version }}
+        format: 'table'
+        severity: 'HIGH,CRITICAL'
+        exit-code: '1'  # Fail if HIGH/CRITICAL vulnerabilities found
+
+  sign:
+    name: Sign Release Images
+    runs-on: ubuntu-latest
+    needs: [validate, docker, security]
+
+    steps:
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Sign container images
+      run: |
+        # Sign GitHub Container Registry images
+        cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.version }}
+
+        # Sign Docker Hub images if not prerelease
+        if [[ "${{ needs.validate.outputs.is_prerelease }}" == "false" ]]; then
+          cosign sign --yes obsernetics/pahlevan:${{ needs.validate.outputs.version }}
+          cosign sign --yes obsernetics/pahlevan:latest
+        fi
+
+  generate-manifests:
+    name: Generate Kubernetes Manifests
+    runs-on: ubuntu-latest
+    needs: [validate, docker]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.24"
+
+    - name: Install controller-gen
+      run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+
+    - name: Install kustomize
+      run: |
+        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+        sudo mv kustomize /usr/local/bin/
+
+    - name: Generate CRDs
+      run: |
+        controller-gen crd paths="./..." output:crd:artifacts:config=config/crd/bases
+
+    - name: Generate RBAC
+      run: |
+        controller-gen rbac:roleName=manager-role paths="./..." output:rbac:artifacts:config=config/rbac
+
+    - name: Update image tag in manifests
+      run: |
+        cd config/manager
+        kustomize edit set image controller=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate.outputs.version }}
+
+    - name: Build installation manifests
+      run: |
+        mkdir -p dist/manifests
+        kustomize build config/default > dist/manifests/install.yaml
+        kustomize build config/crd > dist/manifests/crds.yaml
+        kustomize build config/rbac > dist/manifests/rbac.yaml
+
+    - name: Upload manifest artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: manifests
+        path: dist/manifests/
+        retention-days: 7
+
+  changelog:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Generate changelog
+      run: |
+        # Get previous tag
+        PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -n1)
+
+        if [[ -z "$PREVIOUS_TAG" ]]; then
+          echo "No previous tag found, generating full changelog"
+          PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD)
+        fi
+
+        echo "# Changelog for ${{ github.ref_name }}" > CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "Changes since ${PREVIOUS_TAG}:" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+
+        # Generate commit log
+        git log --oneline --pretty=format:"- %s (%h)" ${PREVIOUS_TAG}..${{ github.ref_name }} >> CHANGELOG.md
+
+        # Add breaking changes section if any
+        echo "" >> CHANGELOG.md
+        echo "## Breaking Changes" >> CHANGELOG.md
+        git log --oneline --grep="BREAKING CHANGE" --pretty=format:"- %s (%h)" ${PREVIOUS_TAG}..${{ github.ref_name }} >> CHANGELOG.md || echo "- None" >> CHANGELOG.md
+
+        # Add new features section
+        echo "" >> CHANGELOG.md
+        echo "## New Features" >> CHANGELOG.md
+        git log --oneline --grep="feat:" --pretty=format:"- %s (%h)" ${PREVIOUS_TAG}..${{ github.ref_name }} >> CHANGELOG.md || echo "- None" >> CHANGELOG.md
+
+        # Add bug fixes section
+        echo "" >> CHANGELOG.md
+        echo "## Bug Fixes" >> CHANGELOG.md
+        git log --oneline --grep="fix:" --pretty=format:"- %s (%h)" ${PREVIOUS_TAG}..${{ github.ref_name }} >> CHANGELOG.md || echo "- None" >> CHANGELOG.md
+
+    - name: Upload changelog
+      uses: actions/upload-artifact@v4
+      with:
+        name: changelog
+        path: CHANGELOG.md
+        retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, build, docker, sign, generate-manifests, changelog]
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts/
+
+    - name: Organize release assets
+      run: |
+        mkdir -p release-assets
+
+        # Copy binary archives
+        find artifacts/release-* -name "pahlevan-*" -type f | xargs -I {} cp {} release-assets/
+
+        # Copy manifests
+        cp -r artifacts/manifests/* release-assets/
+
+        # Copy changelog
+        cp artifacts/changelog/CHANGELOG.md release-assets/
+
+        ls -la release-assets/
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: release-assets/*
+        body_path: artifacts/changelog/CHANGELOG.md
+        draft: false
+        prerelease: ${{ needs.validate.outputs.is_prerelease }}
+        generate_release_notes: true
+        name: "Release ${{ github.ref_name }}"
+        tag_name: ${{ github.ref_name }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Update latest release
+      if: needs.validate.outputs.is_prerelease == 'false'
+      run: |
+        echo "::notice::Released Pahlevan ${{ needs.validate.outputs.version }}"
+        echo "::notice::Docker images:"
+        echo "::notice::  - ghcr.io/${{ github.repository }}:${{ needs.validate.outputs.version }}"
+        echo "::notice::  - obsernetics/pahlevan:${{ needs.validate.outputs.version }}"
+        echo "::notice::Install with: kubectl apply -f https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml"
+
+  notify:
+    name: Post-Release Notifications
+    runs-on: ubuntu-latest
+    needs: [validate, release]
+    if: always() && needs.validate.outputs.is_prerelease == 'false'
+
+    steps:
+    - name: Notify Slack
+      if: success()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: |
+          🎉 Pahlevan ${{ needs.validate.outputs.version }} has been released!
+
+          📦 Install: `kubectl apply -f https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml`
+          🐳 Docker: `docker pull obsernetics/pahlevan:${{ needs.validate.outputs.version }}`
+          📖 Release Notes: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    - name: Notify Slack on failure
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: |
+          ❌ Release of Pahlevan ${{ needs.validate.outputs.version }} failed!
+
+          Please check the GitHub Actions logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

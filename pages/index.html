@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pahlevan - eBPF Kubernetes Security Operator</title>
+    <meta name="description" content="Pahlevan is a next-generation Kubernetes security operator that provides proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:title" content="Pahlevan - eBPF Kubernetes Security Operator">
+    <meta property="og:description" content="Proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://obsernetics.github.io/pahlevan/">
+    <meta property="og:image" content="https://obsernetics.github.io/pahlevan/assets/pahlevan-logo.png">
+
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Pahlevan - eBPF Kubernetes Security Operator">
+    <meta name="twitter:description" content="Proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+    <meta name="twitter:image" content="https://obsernetics.github.io/pahlevan/assets/pahlevan-logo.png">
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="assets/css/main.css">
+
+    <!-- Prism.js for code highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <img src="assets/pahlevan-icon.svg" alt="Pahlevan" class="nav-logo">
+                <span class="nav-title">Pahlevan</span>
+            </div>
+            <div class="nav-links">
+                <a href="docs.html" class="nav-link">Documentation</a>
+                <a href="charts.html" class="nav-link">Helm Charts</a>
+                <a href="https://github.com/obsernetics/pahlevan" class="nav-link" target="_blank">GitHub</a>
+            </div>
+            <div class="nav-toggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+    </nav>
+
+    <header class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <div class="hero-badge">
+                    <span class="badge">🛡️ Next-Generation Kubernetes Security</span>
+                </div>
+                <h1 class="hero-title">
+                    Proactive Attack Surface <br>
+                    <span class="text-gradient">Minimization</span>
+                </h1>
+                <p class="hero-description">
+                    Pahlevan is an eBPF-powered Kubernetes security operator that provides adaptive learning,
+                    real-time enforcement, and self-healing capabilities to protect your workloads.
+                </p>
+                <div class="hero-actions">
+                    <a href="docs.html#quick-start" class="btn btn-primary">
+                        <span>Quick Start</span>
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M1 8a.5.5 0 0 1 .5-.5h11.793l-3.147-3.146a.5.5 0 0 1 .708-.708l4 4a.5.5 0 0 1 0 .708l-4 4a.5.5 0 0 1-.708-.708L13.293 8.5H1.5A.5.5 0 0 1 1 8z"/>
+                        </svg>
+                    </a>
+                    <a href="https://github.com/obsernetics/pahlevan" class="btn btn-secondary" target="_blank">
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+                        </svg>
+                        <span>View on GitHub</span>
+                    </a>
+                </div>
+            </div>
+            <div class="hero-visual">
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <div class="terminal-buttons">
+                            <span class="btn-close"></span>
+                            <span class="btn-minimize"></span>
+                            <span class="btn-maximize"></span>
+                        </div>
+                        <div class="terminal-title">~/kubectl apply -f</div>
+                    </div>
+                    <div class="terminal-body">
+                        <div class="terminal-line">
+                            <span class="prompt">$</span>
+                            <span class="command">helm repo add pahlevan https://obsernetics.github.io/pahlevan/</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">"pahlevan" has been added to your repositories</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="prompt">$</span>
+                            <span class="command">helm install pahlevan pahlevan/pahlevan-operator</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">✅ eBPF programs loaded successfully</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">🛡️ Attack surface monitoring active</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">🎯 Learning phase initiated</span>
+                        </div>
+                        <div class="terminal-cursor">_</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <section id="features" class="features">
+        <div class="container">
+            <div class="section-header">
+                <h2>Why Choose Pahlevan?</h2>
+                <p>Advanced eBPF-based security that adapts to your workloads</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🛡️</div>
+                    <h3>Proactive Prevention</h3>
+                    <p>Blocks unknown behavior before execution using eBPF programs at the kernel level</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🧠</div>
+                    <h3>Adaptive Learning</h3>
+                    <p>Automatically profiles workloads and generates minimal security policies</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔄</div>
+                    <h3>Self-Healing</h3>
+                    <p>Intelligent rollback on policy failures with zero downtime</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3>Rich Observability</h3>
+                    <p>Real-time attack surface analysis with comprehensive metrics</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>High Performance</h3>
+                    <p>Kernel-level enforcement with minimal overhead</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔧</div>
+                    <h3>Easy Integration</h3>
+                    <p>Native Kubernetes operator with Helm chart deployment</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="installation" class="installation">
+        <div class="container">
+            <div class="section-header">
+                <h2>Quick Installation</h2>
+                <p>Get Pahlevan running in your cluster in minutes</p>
+            </div>
+            <div class="install-options">
+                <div class="install-method">
+                    <h3>🎯 Helm Repository</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash"># Add repository
+helm repo add pahlevan https://obsernetics.github.io/pahlevan/
+helm repo update
+
+# Install operator
+helm install pahlevan pahlevan/pahlevan-operator \
+  --namespace pahlevan-system \
+  --create-namespace</code></pre>
+                    </div>
+                </div>
+                <div class="install-method">
+                    <h3>📦 OCI Registry</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash"># Install from OCI
+helm install pahlevan \
+  oci://ghcr.io/obsernetics/charts/pahlevan-operator \
+  --namespace pahlevan-system \
+  --create-namespace</code></pre>
+                    </div>
+                </div>
+                <div class="install-method">
+                    <h3>🚀 GitHub Releases</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash"># Install directly
+kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="documentation-preview">
+        <div class="container">
+            <div class="section-header">
+                <h2>📚 Documentation</h2>
+                <p>Comprehensive guides and references</p>
+            </div>
+            <div class="docs-grid">
+                <a href="docs.html#quick-start" class="doc-card">
+                    <div class="doc-icon">🚀</div>
+                    <h3>Quick Start</h3>
+                    <p>Get started with Pahlevan in 5 minutes</p>
+                </a>
+                <a href="docs.html#architecture" class="doc-card">
+                    <div class="doc-icon">🏗️</div>
+                    <h3>Architecture</h3>
+                    <p>System design and components overview</p>
+                </a>
+                <a href="docs.html#policy-reference" class="doc-card">
+                    <div class="doc-icon">📋</div>
+                    <h3>Policy Reference</h3>
+                    <p>Complete policy syntax and examples</p>
+                </a>
+                <a href="docs.html#deployment" class="doc-card">
+                    <div class="doc-icon">⚙️</div>
+                    <h3>Deployment Guide</h3>
+                    <p>Production deployment patterns</p>
+                </a>
+                <a href="docs.html#troubleshooting" class="doc-card">
+                    <div class="doc-icon">🔧</div>
+                    <h3>Troubleshooting</h3>
+                    <p>Common issues and solutions</p>
+                </a>
+                <a href="docs.html#api-reference" class="doc-card">
+                    <div class="doc-icon">📖</div>
+                    <h3>API Reference</h3>
+                    <p>Complete API documentation</p>
+                </a>
+            </div>
+            <div class="docs-actions">
+                <a href="docs.html" class="btn btn-primary">View All Documentation</a>
+                <a href="https://github.com/obsernetics/pahlevan/tree/main/docs" class="btn btn-outline" target="_blank">Browse on GitHub</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="helm-preview" style="background-color: var(--bg-secondary);">
+        <div class="container">
+            <div class="section-header">
+                <h2>📦 Helm Charts</h2>
+                <p>Production-ready deployment with Helm</p>
+            </div>
+            <div class="helm-content">
+                <div class="helm-info">
+                    <h3>pahlevan-operator</h3>
+                    <p>Complete security operator with eBPF monitoring, adaptive learning, and real-time enforcement.</p>
+                    <div class="helm-meta">
+                        <span class="meta-badge">Chart v1.0.0</span>
+                        <span class="meta-badge">App v1.0.0</span>
+                        <span class="meta-badge">Kubernetes ≥1.24</span>
+                    </div>
+                    <div class="helm-actions">
+                        <a href="charts.html" class="btn btn-primary">View Charts</a>
+                        <a href="https://github.com/obsernetics/pahlevan/tree/main/charts" class="btn btn-outline" target="_blank">Browse Source</a>
+                    </div>
+                </div>
+                <div class="helm-install">
+                    <h4>Installation</h4>
+                    <div class="code-block">
+                        <pre><code class="language-bash"># Add repository
+helm repo add pahlevan https://obsernetics.github.io/pahlevan/
+
+# Install with default values
+helm install pahlevan pahlevan/pahlevan-operator \
+  --namespace pahlevan-system \
+  --create-namespace
+
+# Or customize installation
+helm install pahlevan pahlevan/pahlevan-operator \
+  --namespace pahlevan-system \
+  --create-namespace \
+  --set operator.replicaCount=3 \
+  --set metrics.enabled=true</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <img src="assets/pahlevan-icon.svg" alt="Pahlevan" class="footer-logo">
+                    <p>eBPF-powered Kubernetes security for the modern cloud</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-section">
+                        <h4>Documentation</h4>
+                        <a href="docs.html#quick-start">Quick Start</a>
+                        <a href="docs.html#deployment">Deployment</a>
+                        <a href="docs.html#api-reference">API Reference</a>
+                    </div>
+                    <div class="footer-section">
+                        <h4>Charts</h4>
+                        <a href="charts.html">Helm Charts</a>
+                        <a href="charts.html#installation">Installation</a>
+                        <a href="https://github.com/obsernetics/pahlevan/tree/main/charts" target="_blank">Source</a>
+                    </div>
+                    <div class="footer-section">
+                        <h4>Community</h4>
+                        <a href="https://github.com/obsernetics/pahlevan" target="_blank">GitHub</a>
+                        <a href="https://github.com/obsernetics/pahlevan/discussions" target="_blank">Discussions</a>
+                        <a href="https://kubernetes.slack.com/channels/pahlevan" target="_blank">Slack</a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2024 Obsernetics. Licensed under Apache 2.0.</p>
+                <div class="footer-badges">
+                    <img src="https://img.shields.io/github/stars/obsernetics/pahlevan?style=social" alt="GitHub Stars">
+                    <img src="https://img.shields.io/github/license/obsernetics/pahlevan" alt="License">
+                    <img src="https://img.shields.io/badge/eBPF-powered-blue" alt="eBPF Powered">
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="assets/js/main.js"></script>
+</body>
+</html>
