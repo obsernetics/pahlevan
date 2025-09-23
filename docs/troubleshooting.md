@@ -658,7 +658,7 @@ echo "Please attach this directory when creating a support ticket"
 
 - **GitHub Issues**: [https://github.com/obsernetics/pahlevan/issues](https://github.com/obsernetics/pahlevan/issues)
 - **Discussions**: [https://github.com/obsernetics/pahlevan/discussions](https://github.com/obsernetics/pahlevan/discussions)
-- **Documentation**: [https://docs.pahlevan.io](https://docs.pahlevan.io)
+- **Documentation**: [https://obsernetics.github.io/pahlevan/docs.html](https://obsernetics.github.io/pahlevan/docs.html)
 - **Slack Community**: [#pahlevan](https://kubernetes.slack.com/channels/pahlevan)
 
 ### Before Opening an Issue

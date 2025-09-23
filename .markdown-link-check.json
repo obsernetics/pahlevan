@@ -5,6 +5,21 @@
     },
     {
       "pattern": "^https://github.com/obsernetics/pahlevan"
+    },
+    {
+      "pattern": "^https://docs.pahlevan.io"
+    },
+    {
+      "pattern": "^https://pahlevan.readthedocs.io"
+    },
+    {
+      "pattern": "^https://github.com/pahlevan/operator"
+    },
+    {
+      "pattern": "^CONTRIBUTING.md$"
+    },
+    {
+      "pattern": "^LICENSE$"
     }
   ],
   "replacementPatterns": [

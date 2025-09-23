@@ -75,17 +75,11 @@ jobs:
         echo "# Go Package Documentation" > docs/go/README.md
         echo "This directory contains generated Go package documentation." >> docs/go/README.md
 
-    - name: Commit generated docs
+    - name: Show generated docs (no auto-commit)
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add docs/ || true
-        if ! git diff --staged --quiet; then
-          git commit -m "docs: Auto-generate API documentation [skip ci]"
-          git push
-        else
-          echo "No documentation changes to commit"
-        fi
+        echo "Generated documentation files:"
+        ls -la docs/api/ docs/go/ 2>/dev/null || echo "No generated docs found"
+        echo "Note: Auto-commit disabled to prevent permission issues"
 
   deploy-docs:
     name: Deploy Documentation

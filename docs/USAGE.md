@@ -534,7 +534,7 @@ pahlevan debug export --output=debug-info.tar.gz
 
 ### Getting Help
 
-1. **Documentation**: [https://pahlevan.readthedocs.io](https://pahlevan.readthedocs.io)
+1. **Documentation**: [https://obsernetics.github.io/pahlevan/docs.html](https://obsernetics.github.io/pahlevan/docs.html)
 2. **GitHub Issues**: [https://github.com/obsernetics/pahlevan/issues](https://github.com/obsernetics/pahlevan/issues)
 3. **Discussions**: [https://github.com/obsernetics/pahlevan/discussions](https://github.com/obsernetics/pahlevan/discussions)
 4. **Slack**: [#pahlevan](https://kubernetes.slack.com/channels/pahlevan)

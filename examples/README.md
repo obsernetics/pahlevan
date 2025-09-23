@@ -315,7 +315,7 @@ enforcementConfig:
 
 For additional help:
 
-- 📖 [Documentation](https://docs.pahlevan.io)
-- 💬 [GitHub Discussions](https://github.com/pahlevan/operator/discussions)
-- 🐛 [Issue Tracker](https://github.com/pahlevan/operator/issues)
+- 📖 [Documentation](https://obsernetics.github.io/pahlevan/docs.html)
+- 💬 [GitHub Discussions](https://github.com/obsernetics/pahlevan/discussions)
+- 🐛 [Issue Tracker](https://github.com/obsernetics/pahlevan/issues)
 - 📧 [Mailing List](mailto:pahlevan-dev@googlegroups.com)
