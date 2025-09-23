@@ -1,0 +1,213 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pahlevan-operator
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/instance: pahlevan
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: pahlevan
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-operator
+      app.kubernetes.io/instance: pahlevan
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pahlevan-operator
+        app.kubernetes.io/instance: pahlevan
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: operator
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: pahlevan-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: manager
+        image: pahlevan/operator:latest
+        imagePullPolicy: Always
+        command:
+        - /manager
+        args:
+        - --leader-elect
+        - --learning-window=5m
+        - --enforcement-delay=30s
+        - --observability-exports=prometheus,otel
+        - --enable-webhooks=true
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - SYS_ADMIN  # Required for eBPF operations
+            - SYS_RESOURCE
+            - NET_ADMIN
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        ports:
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        - name: webhook
+          containerPort: 9443
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        env:
+        - name: PAHLEVAN_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: PAHLEVAN_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PAHLEVAN_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: RUST_LOG
+          value: "info"
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+        volumeMounts:
+        - name: cert
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
+        - name: bpf-maps
+          mountPath: /sys/fs/bpf
+          mountPropagation: Bidirectional
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+      volumes:
+      - name: cert
+        secret:
+          secretName: pahlevan-webhook-certs
+          defaultMode: 420
+      - name: bpf-maps
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: proc
+        hostPath:
+          path: /proc
+          type: Directory
+      - name: sys
+        hostPath:
+          path: /sys
+          type: Directory
+      - name: debugfs
+        hostPath:
+          path: /sys/kernel/debug
+          type: DirectoryOrCreate
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/arch
+                operator: In
+                values:
+                - amd64
+                - arm64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pahlevan-operator-metrics
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/instance: pahlevan
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/instance: pahlevan
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pahlevan-operator-webhook
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/instance: pahlevan
+    app.kubernetes.io/component: webhook
+spec:
+  type: ClusterIP
+  ports:
+  - name: webhook
+    port: 443
+    targetPort: webhook
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/instance: pahlevan

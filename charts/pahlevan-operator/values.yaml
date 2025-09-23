@@ -1,0 +1,418 @@
+# Default values for pahlevan-operator.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global configuration
+global:
+  # Image registry
+  imageRegistry: ""
+  # Image pull secrets
+  imagePullSecrets: []
+  # Security context for all containers
+  podSecurityContext: {}
+  # Security context for containers
+  securityContext: {}
+
+# Operator image configuration
+image:
+  repository: pahlevan/operator
+  tag: "v1.0.0"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Operator configuration
+operator:
+  # Number of replicas
+  replicaCount: 1
+
+  # Resources
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Node selector
+  nodeSelector: {}
+
+  # Tolerations
+  tolerations: []
+
+  # Affinity
+  affinity: {}
+
+  # Pod annotations
+  podAnnotations: {}
+
+  # Pod labels
+  podLabels: {}
+
+  # Priority class
+  priorityClassName: ""
+
+  # Service account
+  serviceAccount:
+    # Create service account
+    create: true
+    # Service account name
+    name: ""
+    # Annotations
+    annotations: {}
+
+  # Security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    capabilities:
+      drop:
+        - ALL
+      add:
+        - SYS_ADMIN  # Required for eBPF
+        - SYS_RESOURCE
+        - NET_ADMIN
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Pod security context
+  podSecurityContext:
+    fsGroup: 65532
+    fsGroupChangePolicy: "OnRootMismatch"
+
+  # Environment variables
+  env:
+    # Log level (debug, info, warn, error)
+    LOG_LEVEL: "info"
+    # Enable development mode
+    DEVELOPMENT_MODE: "false"
+    # Metrics bind address
+    METRICS_BIND_ADDRESS: ":8080"
+    # Health probe bind address
+    HEALTH_PROBE_BIND_ADDRESS: ":8081"
+    # Enable leader election
+    ENABLE_LEADER_ELECTION: "true"
+    # Lease duration
+    LEADER_ELECTION_LEASE_DURATION: "15s"
+    # Renew deadline
+    LEADER_ELECTION_RENEW_DEADLINE: "10s"
+    # Retry period
+    LEADER_ELECTION_RETRY_PERIOD: "2s"
+
+# eBPF configuration
+ebpf:
+  # Enable eBPF monitoring
+  enabled: true
+
+  # eBPF configuration
+  config:
+    # Enable syscall monitoring
+    enableSyscallMonitoring: true
+    # Enable network monitoring
+    enableNetworkMonitoring: true
+    # Enable file monitoring
+    enableFileMonitoring: true
+    # Log level for eBPF programs
+    logLevel: 1
+    # Max events buffer size
+    maxEvents: 10000
+    # Buffer size for perf events
+    bufferSize: 65536
+
+  # Host paths for eBPF
+  hostPaths:
+    # BPF filesystem
+    bpffs: /sys/fs/bpf
+    # Proc filesystem
+    proc: /proc
+    # Sys filesystem
+    sys: /sys
+    # Debug filesystem
+    debugfs: /sys/kernel/debug
+
+  # Privileged mode (required for eBPF)
+  privileged: true
+
+# Webhook configuration
+webhooks:
+  # Enable admission webhooks
+  enabled: true
+
+  # Webhook port
+  port: 9443
+
+  # Certificate configuration
+  certificate:
+    # Auto-generate certificates
+    autoGenerate: true
+    # Certificate duration
+    duration: "8760h" # 1 year
+    # Certificate issuer
+    issuer: "selfsigned"
+    # Custom certificate (if not auto-generating)
+    cert: ""
+    key: ""
+    ca: ""
+
+  # Webhook timeout
+  timeoutSeconds: 10
+
+  # Failure policy
+  failurePolicy: Fail
+
+  # Namespace selector
+  namespaceSelector: {}
+
+  # Object selector
+  objectSelector: {}
+
+# Metrics and monitoring
+metrics:
+  # Enable metrics
+  enabled: true
+
+  # Metrics port
+  port: 8080
+
+  # Metrics path
+  path: /metrics
+
+  # Service monitor (Prometheus Operator)
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+    annotations: {}
+
+  # Prometheus rule
+  prometheusRule:
+    enabled: false
+    labels: {}
+    annotations: {}
+    rules: []
+
+# Health checks
+health:
+  # Enable health checks
+  enabled: true
+
+  # Health port
+  port: 8081
+
+  # Liveness probe
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  # Readiness probe
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+# Service configuration
+service:
+  # Service type
+  type: ClusterIP
+
+  # Service ports
+  ports:
+    webhook: 9443
+    metrics: 8080
+    health: 8081
+
+  # Service annotations
+  annotations: {}
+
+  # Service labels
+  labels: {}
+
+# RBAC configuration
+rbac:
+  # Create RBAC resources
+  create: true
+
+  # Additional rules
+  additionalRules: []
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# Network Policy
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []
+
+# Namespace configuration
+namespace:
+  # Create namespace
+  create: true
+  # Namespace name (if empty, release namespace is used)
+  name: ""
+  # Namespace labels
+  labels: {}
+  # Namespace annotations
+  annotations: {}
+
+# CRDs configuration
+crds:
+  # Install CRDs
+  install: true
+  # Keep CRDs on uninstall
+  keep: true
+
+# Default policies
+defaultPolicies:
+  # Create default policies
+  enabled: true
+
+  # System namespace monitoring
+  systemNamespaces:
+    enabled: false
+    namespaces:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+
+  # Example policies
+  examples:
+    enabled: true
+    policies:
+      - name: web-app-policy
+        namespace: default
+        selector:
+          matchLabels:
+            tier: frontend
+        learningDuration: "5m"
+        enforcementMode: "Monitoring"
+
+      - name: database-policy
+        namespace: default
+        selector:
+          matchLabels:
+            tier: database
+        learningDuration: "10m"
+        enforcementMode: "Monitoring"
+
+# Observability
+observability:
+  # Enable observability features
+  enabled: true
+
+  # Grafana dashboard
+  grafana:
+    enabled: false
+    dashboards:
+      - security-overview
+      - attack-surface
+      - policy-violations
+
+  # Jaeger tracing
+  jaeger:
+    enabled: false
+    endpoint: ""
+    sampleRate: 0.1
+
+  # OpenTelemetry
+  opentelemetry:
+    enabled: false
+    endpoint: ""
+    protocol: grpc
+
+# Compliance
+compliance:
+  # Enable compliance features
+  enabled: false
+
+  # Compliance frameworks
+  frameworks:
+    pci: false
+    hipaa: false
+    soc2: false
+    fedramp: false
+
+  # Audit logging
+  audit:
+    enabled: false
+    retentionDays: 90
+
+# Development and testing
+development:
+  # Enable development mode
+  enabled: false
+
+  # Mock eBPF (for testing)
+  mockEBPF: false
+
+  # Debug logging
+  debug: false
+
+  # Profiling
+  profiling:
+    enabled: false
+    port: 6060
+
+# Advanced configuration
+advanced:
+  # Controller configuration
+  controller:
+    # Max concurrent reconciles
+    maxConcurrentReconciles: 5
+    # Reconcile timeout
+    reconcileTimeout: "5m"
+
+  # Rate limiting
+  rateLimiting:
+    enabled: false
+    qps: 100
+    burst: 200
+
+  # Cache configuration
+  cache:
+    # Sync period
+    syncPeriod: "10m"
+    # Namespace cache
+    namespace: ""
+
+  # Feature gates
+  featureGates:
+    # Enable experimental features
+    experimental: false
+    # Advanced attack surface analysis
+    advancedAttackSurface: false
+    # Machine learning anomaly detection
+    mlAnomalyDetection: false
+
+# External dependencies
+external:
+  # Prometheus
+  prometheus:
+    enabled: false
+    url: ""
+
+  # Grafana
+  grafana:
+    enabled: false
+    url: ""
+
+  # Elasticsearch
+  elasticsearch:
+    enabled: false
+    url: ""
+
+  # AlertManager
+  alertmanager:
+    enabled: false
+    url: ""

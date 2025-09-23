@@ -1,0 +1,79 @@
+{{- if .Values.webhooks.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pahlevan-operator.webhookServiceName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - name: webhook
+    port: {{ .Values.service.ports.webhook }}
+    targetPort: webhook
+    protocol: TCP
+  selector:
+    {{- include "pahlevan-operator.selectorLabels" . | nindent 4 }}
+{{- end }}
+
+{{- if .Values.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pahlevan-operator.metricsServiceName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ .Values.service.ports.metrics | quote }}
+    prometheus.io/path: {{ .Values.metrics.path }}
+    {{- with .Values.service.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - name: metrics
+    port: {{ .Values.service.ports.metrics }}
+    targetPort: metrics
+    protocol: TCP
+  - name: health
+    port: {{ .Values.service.ports.health }}
+    targetPort: health
+    protocol: TCP
+  selector:
+    {{- include "pahlevan-operator.selectorLabels" . | nindent 4 }}
+{{- end }}
+
+{{- if .Values.development.profiling.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pahlevan-operator.fullname" . }}-profiling
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: profiling
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  ports:
+  - name: profiling
+    port: {{ .Values.development.profiling.port }}
+    targetPort: profiling
+    protocol: TCP
+  selector:
+    {{- include "pahlevan-operator.selectorLabels" . | nindent 4 }}
+{{- end }}

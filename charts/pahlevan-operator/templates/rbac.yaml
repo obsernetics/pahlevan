@@ -1,0 +1,387 @@
+{{- if .Values.rbac.create }}
+{{- include "pahlevan-operator.validate" . }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "pahlevan-operator.serviceAccountName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+  {{- with .Values.operator.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- if .Values.image.pullSecrets }}
+imagePullSecrets:
+  {{- toYaml .Values.image.pullSecrets | nindent 2 }}
+{{- end }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+rules:
+# PahlevanPolicy permissions
+- apiGroups:
+  - policy.pahlevan.io
+  resources:
+  - pahlevanpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - policy.pahlevan.io
+  resources:
+  - pahlevanpolicies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - policy.pahlevan.io
+  resources:
+  - pahlevanpolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+
+# Core Kubernetes resources
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - services
+  - configmaps
+  - secrets
+  - events
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+
+# Apps resources
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - replicasets
+  - daemonsets
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+
+# Networking resources
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+
+# Batch resources
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  - cronjobs
+  verbs:
+  - get
+  - list
+  - watch
+
+# Node access for eBPF
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+
+# Metrics and monitoring
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  - prometheusrules
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Coordination for leader election
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Additional custom rules
+{{- with .Values.rbac.additionalRules }}
+{{- toYaml . | nindent 0 }}
+{{- end }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleBindingName" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "pahlevan-operator.serviceAccountName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "pahlevan-operator.roleName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+rules:
+# Leader election
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "pahlevan-operator.roleBindingName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "pahlevan-operator.roleName" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "pahlevan-operator.serviceAccountName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+
+{{- if .Values.ebpf.enabled }}
+---
+# Additional ClusterRole for eBPF operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}-ebpf
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+rules:
+# Node access for eBPF program attachment
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - update
+
+# Container runtime interface
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  - pods/exec
+  verbs:
+  - get
+  - list
+  - create
+
+# System-level access for eBPF
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+  resourceNames:
+  - privileged
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleBindingName" . }}-ebpf
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}-ebpf
+subjects:
+- kind: ServiceAccount
+  name: {{ include "pahlevan-operator.serviceAccountName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+{{- end }}
+
+{{- if .Values.webhooks.enabled }}
+---
+# ClusterRole for webhook operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}-webhook
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+rules:
+# Webhook management
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingadmissionwebhooks
+  - mutatingadmissionwebhooks
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+
+# Certificate management
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  - issuers
+  - clusterissuers
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleBindingName" . }}-webhook
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}-webhook
+subjects:
+- kind: ServiceAccount
+  name: {{ include "pahlevan-operator.serviceAccountName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+{{- end }}
+
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+# ClusterRole for Prometheus integration
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}-metrics
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  - prometheusrules
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pahlevan-operator.clusterRoleBindingName" . }}-metrics
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pahlevan-operator.clusterRoleName" . }}-metrics
+subjects:
+- kind: ServiceAccount
+  name: {{ include "pahlevan-operator.serviceAccountName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+{{- end }}
+
+{{- end }}

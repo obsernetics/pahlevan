@@ -1,0 +1,205 @@
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: production-web-app
+  namespace: production
+spec:
+  # Target production web application
+  selector:
+    matchLabels:
+      app: web-app
+      tier: production
+
+  # Shorter learning period for production
+  learning:
+    enabled: true
+    duration: 2m
+    autoTransition: true
+    minSamples: 50
+    syscalls: true
+    network: true
+    files: true
+
+  # Strict enforcement mode
+  enforcement:
+    mode: "enforce"
+    blockUnknown: true
+    gracePeriod: 10s
+
+    # Specific syscall policies
+    syscalls:
+      defaultAction: "deny"
+      allowedSyscalls:
+        - "read"
+        - "write"
+        - "open"
+        - "close"
+        - "stat"
+        - "fstat"
+        - "lstat"
+        - "mmap"
+        - "munmap"
+        - "brk"
+        - "rt_sigaction"
+        - "rt_sigprocmask"
+        - "ioctl"
+        - "socket"
+        - "connect"
+        - "accept"
+        - "sendto"
+        - "recvfrom"
+      deniedSyscalls:
+        - "ptrace"
+        - "process_vm_readv"
+        - "process_vm_writev"
+        - "module_init"
+        - "create_module"
+
+    # Network policies
+    network:
+      defaultAction: "deny"
+      allowedEgressPorts: [80, 443, 53, 5432]  # HTTP, HTTPS, DNS, PostgreSQL
+      allowedIngressPorts: [8080]
+      allowedDestinations:
+        - "postgresql.production.svc.cluster.local"
+        - "*.amazonaws.com"
+        - "api.example.com"
+
+    # File access policies
+    files:
+      defaultAction: "deny"
+      allowedPaths:
+        - "/app/*"
+        - "/usr/lib/*"
+        - "/lib/*"
+        - "/etc/ssl/*"
+        - "/tmp/*"
+      protectedPaths:
+        - "/etc/passwd"
+        - "/etc/shadow"
+        - "/proc/*/mem"
+        - "/sys/kernel/*"
+
+  # Advanced self-healing
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 2
+    rollbackWindow: 5m
+    recoveryStrategy: "Rollback"
+    notifications:
+      slack:
+        webhookURL: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+        channel: "#security-alerts"
+
+  # Comprehensive observability
+  observability:
+    metrics:
+      enabled: true
+      interval: 30s
+      exporters:
+        - type: "prometheus"
+          endpoint: "http://prometheus.monitoring.svc.cluster.local:9090"
+        - type: "datadog"
+          apiKey: "${DD_API_KEY}"
+
+    traces:
+      enabled: true
+      exporters:
+        - type: "jaeger"
+          endpoint: "http://jaeger.monitoring.svc.cluster.local:14268"
+
+    alerts:
+      enabled: true
+      rules:
+        - name: "high-violation-rate"
+          condition: "violations_per_minute > 10"
+          severity: "warning"
+        - name: "enforcement-failure"
+          condition: "enforcement_failures > 0"
+          severity: "critical"
+
+  # Compliance settings
+  compliance:
+    standards:
+      - "PCI-DSS"
+      - "SOC2"
+    reporting:
+      enabled: true
+      schedule: "0 0 * * 0"  # Weekly reports
+      recipients:
+        - "security@example.com"
+        - "compliance@example.com"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    security.pahlevan.io/enforced: "true"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+      tier: production
+  template:
+    metadata:
+      labels:
+        app: web-app
+        tier: production
+      annotations:
+        security.pahlevan.io/policy: "production-web-app"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: web-app
+        image: myapp:v1.2.3
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: DB_HOST
+          value: "postgresql.production.svc.cluster.local"
+        - name: DD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: datadog-secret
+              key: api-key
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5

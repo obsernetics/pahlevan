@@ -1,0 +1,335 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: pahlevanpolicies.policy.pahlevan.io
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+  labels:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/component: crd
+spec:
+  group: policy.pahlevan.io
+  names:
+    kind: PahlevanPolicy
+    listKind: PahlevanPolicyList
+    plural: pahlevanpolicies
+    singular: pahlevanpolicy
+    shortNames:
+    - pp
+    - pahlevan
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        description: PahlevanPolicy is the Schema for the pahlevanpolicies API
+        type: object
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation of an object.'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this object represents.'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PahlevanPolicySpec defines the desired state of PahlevanPolicy
+            type: object
+            properties:
+              selector:
+                description: Selector specifies the target workloads for this policy
+                type: object
+                properties:
+                  matchLabels:
+                    description: MatchLabels is a map of {key,value} pairs
+                    type: object
+                    additionalProperties:
+                      type: string
+                  matchExpressions:
+                    description: MatchExpressions is a list of label selector requirements
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key:
+                          type: string
+                        operator:
+                          type: string
+                          enum: ["In", "NotIn", "Exists", "DoesNotExist"]
+                        values:
+                          type: array
+                          items:
+                            type: string
+              learningConfig:
+                description: LearningConfig controls the learning phase behavior
+                type: object
+                properties:
+                  duration:
+                    description: Duration specifies how long to run in learning mode
+                    type: string
+                  windowSize:
+                    description: WindowSize specifies the minimum learning window size
+                    type: string
+                  minSamples:
+                    description: MinSamples specifies minimum number of samples before transitioning
+                    type: integer
+                    minimum: 1
+                  autoTransition:
+                    description: AutoTransition enables automatic transition to enforcement
+                    type: boolean
+                    default: true
+                  lifecycleAware:
+                    description: LifecycleAware enables lifecycle-based learning transitions
+                    type: boolean
+                    default: true
+              enforcementConfig:
+                description: EnforcementConfig controls enforcement behavior
+                type: object
+                properties:
+                  mode:
+                    description: Mode specifies the enforcement mode
+                    type: string
+                    enum: ["Off", "Monitoring", "Blocking"]
+                    default: "Monitoring"
+                  gracePeriod:
+                    description: GracePeriod specifies grace period before strict enforcement
+                    type: string
+                  alertOnly:
+                    description: AlertOnly enables alert-only mode for testing
+                    type: boolean
+                    default: false
+                  blockUnknown:
+                    description: BlockUnknown blocks unknown syscalls/access patterns
+                    type: boolean
+                    default: true
+              syscallPolicy:
+                description: SyscallPolicy defines syscall-specific policies
+                type: object
+                properties:
+                  allowedSyscalls:
+                    description: AllowedSyscalls explicitly allows specific syscalls
+                    type: array
+                    items:
+                      type: string
+                  deniedSyscalls:
+                    description: DeniedSyscalls explicitly denies specific syscalls
+                    type: array
+                    items:
+                      type: string
+                  defaultAction:
+                    description: DefaultAction specifies default action for unknown syscalls
+                    type: string
+                    enum: ["Allow", "Deny", "Alert", "Audit"]
+                    default: "Deny"
+              networkPolicy:
+                description: NetworkPolicy defines network-specific policies
+                type: object
+                properties:
+                  defaultAction:
+                    description: DefaultAction specifies default action for unknown connections
+                    type: string
+                    enum: ["Allow", "Deny", "Alert", "Audit"]
+                    default: "Deny"
+                  allowLoopback:
+                    description: AllowLoopback allows loopback traffic
+                    type: boolean
+                    default: true
+                  allowDNS:
+                    description: AllowDNS allows DNS traffic
+                    type: boolean
+                    default: true
+              filePolicy:
+                description: FilePolicy defines file access policies
+                type: object
+                properties:
+                  allowedPaths:
+                    description: AllowedPaths explicitly allows specific paths
+                    type: array
+                    items:
+                      type: string
+                  deniedPaths:
+                    description: DeniedPaths explicitly denies specific paths
+                    type: array
+                    items:
+                      type: string
+                  defaultAction:
+                    description: DefaultAction specifies default action for unknown paths
+                    type: string
+                    enum: ["Allow", "Deny", "Alert", "Audit"]
+                    default: "Deny"
+              selfHealing:
+                description: SelfHealing enables automatic policy rollback on failures
+                type: object
+                properties:
+                  enabled:
+                    description: Enabled enables self-healing
+                    type: boolean
+                    default: true
+                  rollbackThreshold:
+                    description: RollbackThreshold specifies failure threshold for rollback
+                    type: integer
+                    minimum: 1
+                    default: 5
+                  rollbackWindow:
+                    description: RollbackWindow specifies time window for failure counting
+                    type: string
+                    default: "10m"
+                  recoveryStrategy:
+                    description: RecoveryStrategy specifies recovery strategy
+                    type: string
+                    enum: ["Rollback", "Relax", "Maintenance"]
+                    default: "Rollback"
+              observabilityConfig:
+                description: ObservabilityConfig controls observability exports
+                type: object
+                properties:
+                  metrics:
+                    description: Metrics controls metrics export
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      interval:
+                        type: string
+                        default: "30s"
+                  visualization:
+                    description: Visualization controls attack surface visualization
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      updateInterval:
+                        type: string
+                        default: "5m"
+          status:
+            description: PahlevanPolicyStatus defines the observed state of PahlevanPolicy
+            type: object
+            properties:
+              phase:
+                description: Phase indicates the current phase of the policy
+                type: string
+                enum: ["Initializing", "Learning", "Transition", "Enforcing", "Failed", "RollingBack"]
+              conditions:
+                description: Conditions represents the latest available observations
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                      enum: ["True", "False", "Unknown"]
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+              learningStatus:
+                description: LearningStatus provides learning phase status
+                type: object
+                properties:
+                  startTime:
+                    type: string
+                    format: date-time
+                  endTime:
+                    type: string
+                    format: date-time
+                  samplesCollected:
+                    type: integer
+                  syscallsLearned:
+                    type: integer
+                  networkFlowsLearned:
+                    type: integer
+                  filePathsLearned:
+                    type: integer
+                  progress:
+                    type: integer
+                    minimum: 0
+                    maximum: 100
+              enforcementStatus:
+                description: EnforcementStatus provides enforcement status
+                type: object
+                properties:
+                  startTime:
+                    type: string
+                    format: date-time
+                  blockedSyscalls:
+                    type: integer
+                  blockedNetworkConnections:
+                    type: integer
+                  blockedFileAccess:
+                    type: integer
+                  alertsGenerated:
+                    type: integer
+                  rollbackCount:
+                    type: integer
+              attackSurface:
+                description: AttackSurface provides current attack surface analysis
+                type: object
+                properties:
+                  exposedSyscalls:
+                    type: array
+                    items:
+                      type: string
+                  exposedPorts:
+                    type: array
+                    items:
+                      type: integer
+                  writableFiles:
+                    type: array
+                    items:
+                      type: string
+                  capabilities:
+                    type: array
+                    items:
+                      type: string
+                  riskScore:
+                    type: integer
+                    minimum: 0
+                    maximum: 10
+                  lastAnalysis:
+                    type: string
+                    format: date-time
+              targetWorkloads:
+                description: TargetWorkloads lists target workloads
+                type: array
+                items:
+                  type: object
+                  properties:
+                    apiVersion:
+                      type: string
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    uid:
+                      type: string
+              lastUpdated:
+                description: LastUpdated indicates when status was last updated
+                type: string
+                format: date-time
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Learning
+      type: string
+      jsonPath: .status.learningStatus.progress
+    - name: Blocked
+      type: integer
+      jsonPath: .status.enforcementStatus.blockedSyscalls
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    subresources:
+      status: {}

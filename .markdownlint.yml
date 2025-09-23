@@ -1,0 +1,7 @@
+# markdownlint configuration
+default: true
+line-length: false
+MD013: false  # Line length
+MD033: false  # Allow inline HTML
+MD041: false  # First line in file should be a top level header
+MD034: false  # Bare URL used
