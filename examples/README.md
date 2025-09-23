@@ -315,7 +315,7 @@ enforcementConfig:
 
 For additional help:
 
-- [Documentation](https://obsernetics.github.io/pahlevan/docs.html)
+- [Documentation](https://obsernetics.github.io/pahlevan/)
 - [GitHub Discussions](https://github.com/obsernetics/pahlevan/discussions)
 - [Issue Tracker](https://github.com/obsernetics/pahlevan/issues)
 - [Mailing List](mailto:pahlevan-dev@googlegroups.com)

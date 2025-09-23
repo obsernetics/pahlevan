@@ -85,18 +85,6 @@ jobs:
             <changefreq>weekly</changefreq>
             <priority>1.0</priority>
           </url>
-          <url>
-            <loc>https://obsernetics.github.io/pahlevan/docs.html</loc>
-            <lastmod>$(date -Iseconds)</lastmod>
-            <changefreq>weekly</changefreq>
-            <priority>0.8</priority>
-          </url>
-          <url>
-            <loc>https://obsernetics.github.io/pahlevan/charts.html</loc>
-            <lastmod>$(date -Iseconds)</lastmod>
-            <changefreq>weekly</changefreq>
-            <priority>0.8</priority>
-          </url>
         </urlset>
         EOF
 
@@ -276,15 +264,6 @@ jobs:
         # Test main pages
         echo "Testing homepage..."
         curl -f -s "https://obsernetics.github.io/pahlevan/" > /dev/null || echo "Homepage not accessible"
-
-        echo "Testing documentation..."
-        curl -f -s "https://obsernetics.github.io/pahlevan/docs.html" > /dev/null || echo "Documentation not accessible"
-
-        echo "Testing charts page..."
-        curl -f -s "https://obsernetics.github.io/pahlevan/charts.html" > /dev/null || echo "Charts page not accessible"
-
-        echo "Testing Helm repository index..."
-        curl -f -s "https://obsernetics.github.io/pahlevan/charts/index.yaml" > /dev/null || echo "Helm index not accessible"
 
         echo "Site validation complete"
 
