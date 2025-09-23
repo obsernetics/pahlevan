@@ -1,0 +1,413 @@
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: database-policy
+  namespace: default
+  labels:
+    app.kubernetes.io/name: database-policy
+    app.kubernetes.io/component: security-policy
+    workload-type: database
+    environment: production
+    sensitivity: high
+  annotations:
+    policy.pahlevan.io/description: "High-security policy for database workloads with strict access controls"
+    policy.pahlevan.io/use-case: "PostgreSQL, MySQL, MongoDB, Redis databases"
+    policy.pahlevan.io/risk-level: "high"
+    policy.pahlevan.io/compliance: "pci-dss,hipaa,soc2,fedramp"
+    policy.pahlevan.io/data-classification: "sensitive"
+spec:
+  # Target database workloads
+  selector:
+    matchLabels:
+      tier: database
+      component: database
+    matchExpressions:
+    - key: "database-type"
+      operator: In
+      values: ["postgresql", "mysql", "mongodb", "redis"]
+    - key: "security.policy.pahlevan.io/enabled"
+      operator: In
+      values: ["true", "enforce"]
+
+  # Learning configuration for databases (longer due to complex patterns)
+  learningConfig:
+    # Databases have complex startup and operational patterns
+    duration: "10m"
+    windowSize: "1m"
+    minSamples: 500
+    confidenceThreshold: 0.95  # Higher confidence for databases
+    autoTransition: false  # Manual transition for critical systems
+    lifecycleAware: true
+    baselineQualityThreshold: 0.93
+
+    # Database-specific learning
+    syscallLearning:
+      enabled: true
+      focusAreas:
+      - file-io
+      - memory
+      - network
+      - sync
+      excludePatterns:
+      - "exec*"  # Databases shouldn't exec
+      - "ptrace*"  # No debugging
+
+    networkLearning:
+      enabled: true
+      # Database specific ports
+      monitoredPorts:
+      - 5432  # PostgreSQL
+      - 3306  # MySQL
+      - 27017 # MongoDB
+      - 6379  # Redis
+      allowedProtocols:
+      - tcp
+
+    fileLearning:
+      enabled: true
+      # Database data and config paths
+      monitoredPaths:
+      - "/var/lib/postgresql"
+      - "/var/lib/mysql"
+      - "/data"
+      - "/etc/postgresql"
+      - "/etc/mysql"
+      strictMode: true
+
+  # Strict enforcement for databases
+  enforcementConfig:
+    mode: "Blocking"  # Databases need strict enforcement
+    gracePeriod: "30s"  # Longer grace for complex operations
+    alertOnly: false
+    blockUnknown: true
+
+    # Database syscall enforcement
+    syscallEnforcement:
+      enabled: true
+      defaultAction: "block"
+      # Essential database syscalls
+      allowList:
+      - "read"
+      - "write"
+      - "openat"
+      - "close"
+      - "fsync"
+      - "fdatasync"
+      - "sync"
+      - "flock"
+      - "fcntl"
+      - "mmap"
+      - "munmap"
+      - "mremap"
+      - "mprotect"
+      - "socket"
+      - "bind"
+      - "listen"
+      - "accept"
+      - "connect"
+      - "sendto"
+      - "recvfrom"
+      - "select"
+      - "poll"
+      - "epoll_wait"
+      - "epoll_create"
+      - "epoll_ctl"
+      strictMode: true
+
+      # Block dangerous syscalls
+      blockList:
+      - "execve"
+      - "fork"
+      - "clone"
+      - "ptrace"
+      - "mount"
+      - "umount"
+      - "chroot"
+      - "setuid"
+      - "setgid"
+
+    networkEnforcement:
+      enabled: true
+      defaultAction: "block"
+      # Strict database network access
+      allowedConnections:
+      - direction: "ingress"
+        ports: [5432, 3306, 27017, 6379]
+        protocols: ["tcp"]
+        sources: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+      - direction: "egress"
+        ports: [53]  # DNS only
+        protocols: ["tcp", "udp"]
+      strictMode: true
+
+    fileEnforcement:
+      enabled: true
+      defaultAction: "block"
+      # Database file access patterns
+      allowedOperations:
+      - "read"
+      - "write"
+      - "sync"
+      # Read-only paths
+      readOnlyPaths:
+      - "/etc"
+      - "/usr"
+      - "/bin"
+      - "/lib"
+      # Writable database paths
+      writablePaths:
+      - "/var/lib/postgresql"
+      - "/var/lib/mysql"
+      - "/data"
+      - "/tmp"
+      - "/var/run"
+      - "/var/log"
+      # Forbidden paths
+      forbiddenPaths:
+      - "/proc/*/mem"
+      - "/dev/mem"
+      - "/dev/kmem"
+      strictMode: true
+
+    # Minimal exceptions for databases
+    exceptions:
+    - type: "Syscall"
+      patterns: ["shmget", "shmat", "shmdt"]
+      reason: "Shared memory for database IPC"
+      temporary: false
+    - type: "File"
+      patterns: ["/var/lib/postgresql/data/postmaster.pid"]
+      reason: "PostgreSQL PID file"
+      temporary: false
+
+  # Enhanced self-healing for critical databases
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 2  # Lower threshold for databases
+    rollbackWindow: "2m"
+    recoveryStrategy: "Maintenance"  # Go to maintenance mode on issues
+
+    anomalyDetection:
+      enabled: true
+      sensitivityLevel: "high"
+      adaptiveThreshold: true
+
+      # Database-specific anomaly detection
+      metrics:
+      - "file_io_rate"
+      - "network_connections"
+      - "memory_usage"
+      - "syscall_patterns"
+
+      thresholds:
+        fileIORate: 10000    # files ops per second
+        networkConnections: 1000  # max concurrent connections
+        memoryUsage: 0.9     # 90% memory usage
+        syscallRate: 50000   # syscalls per second
+
+      # Database health checks
+      healthChecks:
+        enabled: true
+        interval: "30s"
+        timeout: "10s"
+        failureThreshold: 3
+
+  # Comprehensive observability for databases
+  observabilityConfig:
+    metrics:
+      enabled: true
+      exporters:
+      - type: "prometheus"
+        config:
+          path: "/metrics"
+          port: "9090"
+          namespace: "pahlevan_database"
+      - type: "datadog"
+        config:
+          namespace: "pahlevan.database"
+          tags:
+            - "service:database"
+            - "environment:production"
+            - "sensitivity:high"
+
+    tracing:
+      enabled: true
+      sampleRate: 0.05  # Lower sampling for databases
+      endpoint: "http://jaeger-collector:14268/api/traces"
+
+    dashboard:
+      enabled: true
+      autoExport: true
+      formats: ["grafana", "json"]
+
+    # Audit logging for compliance
+    audit:
+      enabled: true
+      level: "detailed"
+      retention: "90d"
+      storage: "persistent"
+
+---
+# Example PostgreSQL database deployment
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql-database
+  namespace: default
+  labels:
+    app: postgresql
+    tier: database
+    component: database
+    database-type: postgresql
+    security.policy.pahlevan.io/enabled: "true"
+spec:
+  serviceName: postgresql-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+        tier: database
+        component: database
+        database-type: postgresql
+        security.policy.pahlevan.io/enabled: "true"
+    spec:
+      containers:
+      - name: postgresql
+        image: postgres:14
+        ports:
+        - containerPort: 5432
+          name: postgresql
+        env:
+        - name: POSTGRES_DB
+          value: "appdb"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: password
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 999  # postgres user
+          runAsGroup: 999
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Databases need write access
+        volumeMounts:
+        - name: postgresql-data
+          mountPath: /var/lib/postgresql/data
+        - name: postgresql-config
+          mountPath: /etc/postgresql
+        - name: tmp
+          mountPath: /tmp
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - exec pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -h 127.0.0.1 -p 5432
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+      volumes:
+      - name: postgresql-config
+        configMap:
+          name: postgresql-config
+      - name: tmp
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: postgresql-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-service
+  namespace: default
+  labels:
+    app: postgresql
+spec:
+  selector:
+    app: postgresql
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-secret
+  namespace: default
+type: Opaque
+data:
+  username: cG9zdGdyZXM=  # postgres
+  password: c2VjdXJlcGFzc3dvcmQ=  # securepassword
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-config
+  namespace: default
+data:
+  postgresql.conf: |
+    # PostgreSQL configuration
+    listen_addresses = '*'
+    max_connections = 100
+    shared_buffers = 128MB
+    dynamic_shared_memory_type = posix
+    max_wal_size = 1GB
+    min_wal_size = 80MB
+    log_timezone = 'UTC'
+    datestyle = 'iso, mdy'
+    timezone = 'UTC'
+    lc_messages = 'en_US.utf8'
+    lc_monetary = 'en_US.utf8'
+    lc_numeric = 'en_US.utf8'
+    lc_time = 'en_US.utf8'
+    default_text_search_config = 'pg_catalog.english'
+  pg_hba.conf: |
+    # PostgreSQL Client Authentication Configuration File
+    local all all trust
+    host all all 127.0.0.1/32 trust
+    host all all ::1/128 trust
+    host all all 0.0.0.0/0 md5

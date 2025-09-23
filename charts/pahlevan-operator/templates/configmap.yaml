@@ -1,0 +1,160 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pahlevan-operator.configMapName" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config
+data:
+  config.yaml: |
+    # Pahlevan Operator Configuration
+    operator:
+      logLevel: {{ .Values.operator.env.LOG_LEVEL | quote }}
+      developmentMode: {{ .Values.development.enabled }}
+      leaderElection:
+        enabled: {{ .Values.operator.env.ENABLE_LEADER_ELECTION }}
+        leaseDuration: {{ .Values.operator.env.LEADER_ELECTION_LEASE_DURATION | quote }}
+        renewDeadline: {{ .Values.operator.env.LEADER_ELECTION_RENEW_DEADLINE | quote }}
+        retryPeriod: {{ .Values.operator.env.LEADER_ELECTION_RETRY_PERIOD | quote }}
+      controllers:
+        maxConcurrentReconciles: {{ .Values.advanced.controller.maxConcurrentReconciles }}
+        reconcileTimeout: {{ .Values.advanced.controller.reconcileTimeout | quote }}
+
+    {{- if .Values.ebpf.enabled }}
+    ebpf:
+      enabled: true
+      privileged: {{ .Values.ebpf.privileged }}
+      config:
+        syscallMonitoring: {{ .Values.ebpf.config.enableSyscallMonitoring }}
+        networkMonitoring: {{ .Values.ebpf.config.enableNetworkMonitoring }}
+        fileMonitoring: {{ .Values.ebpf.config.enableFileMonitoring }}
+        logLevel: {{ .Values.ebpf.config.logLevel }}
+        maxEvents: {{ .Values.ebpf.config.maxEvents }}
+        bufferSize: {{ .Values.ebpf.config.bufferSize }}
+      hostPaths:
+        bpffs: {{ .Values.ebpf.hostPaths.bpffs | quote }}
+        proc: {{ .Values.ebpf.hostPaths.proc | quote }}
+        sys: {{ .Values.ebpf.hostPaths.sys | quote }}
+        {{- if .Values.ebpf.hostPaths.debugfs }}
+        debugfs: {{ .Values.ebpf.hostPaths.debugfs | quote }}
+        {{- end }}
+    {{- else }}
+    ebpf:
+      enabled: false
+    {{- end }}
+
+    {{- if .Values.webhooks.enabled }}
+    webhooks:
+      enabled: true
+      port: {{ .Values.webhooks.port }}
+      timeoutSeconds: {{ .Values.webhooks.timeoutSeconds }}
+      failurePolicy: {{ .Values.webhooks.failurePolicy | quote }}
+    {{- else }}
+    webhooks:
+      enabled: false
+    {{- end }}
+
+    metrics:
+      enabled: {{ .Values.metrics.enabled }}
+      {{- if .Values.metrics.enabled }}
+      port: {{ .Values.metrics.port }}
+      path: {{ .Values.metrics.path | quote }}
+      {{- end }}
+
+    health:
+      enabled: {{ .Values.health.enabled }}
+      {{- if .Values.health.enabled }}
+      port: {{ .Values.health.port }}
+      {{- end }}
+
+    {{- if .Values.observability.enabled }}
+    observability:
+      enabled: true
+      {{- if .Values.observability.grafana.enabled }}
+      grafana:
+        enabled: true
+        dashboards: {{ .Values.observability.grafana.dashboards | toJson }}
+      {{- end }}
+      {{- if .Values.observability.jaeger.enabled }}
+      jaeger:
+        enabled: true
+        endpoint: {{ .Values.observability.jaeger.endpoint | quote }}
+        sampleRate: {{ .Values.observability.jaeger.sampleRate }}
+      {{- end }}
+      {{- if .Values.observability.opentelemetry.enabled }}
+      opentelemetry:
+        enabled: true
+        endpoint: {{ .Values.observability.opentelemetry.endpoint | quote }}
+        protocol: {{ .Values.observability.opentelemetry.protocol | quote }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.compliance.enabled }}
+    compliance:
+      enabled: true
+      frameworks:
+        pci: {{ .Values.compliance.frameworks.pci }}
+        hipaa: {{ .Values.compliance.frameworks.hipaa }}
+        soc2: {{ .Values.compliance.frameworks.soc2 }}
+        fedramp: {{ .Values.compliance.frameworks.fedramp }}
+      {{- if .Values.compliance.audit.enabled }}
+      audit:
+        enabled: true
+        retentionDays: {{ .Values.compliance.audit.retentionDays }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.advanced.rateLimiting.enabled }}
+    rateLimiting:
+      enabled: true
+      qps: {{ .Values.advanced.rateLimiting.qps }}
+      burst: {{ .Values.advanced.rateLimiting.burst }}
+    {{- end }}
+
+    cache:
+      syncPeriod: {{ .Values.advanced.cache.syncPeriod | quote }}
+      {{- if .Values.advanced.cache.namespace }}
+      namespace: {{ .Values.advanced.cache.namespace | quote }}
+      {{- end }}
+
+    featureGates:
+      experimental: {{ .Values.advanced.featureGates.experimental }}
+      advancedAttackSurface: {{ .Values.advanced.featureGates.advancedAttackSurface }}
+      mlAnomalyDetection: {{ .Values.advanced.featureGates.mlAnomalyDetection }}
+
+    {{- if .Values.development.enabled }}
+    development:
+      enabled: true
+      debug: {{ .Values.development.debug }}
+      mockEBPF: {{ .Values.development.mockEBPF }}
+      {{- if .Values.development.profiling.enabled }}
+      profiling:
+        enabled: true
+        port: {{ .Values.development.profiling.port }}
+      {{- end }}
+    {{- end }}
+
+    {{- if or .Values.external.prometheus.enabled .Values.external.grafana.enabled .Values.external.elasticsearch.enabled .Values.external.alertmanager.enabled }}
+    external:
+      {{- if .Values.external.prometheus.enabled }}
+      prometheus:
+        enabled: true
+        url: {{ .Values.external.prometheus.url | quote }}
+      {{- end }}
+      {{- if .Values.external.grafana.enabled }}
+      grafana:
+        enabled: true
+        url: {{ .Values.external.grafana.url | quote }}
+      {{- end }}
+      {{- if .Values.external.elasticsearch.enabled }}
+      elasticsearch:
+        enabled: true
+        url: {{ .Values.external.elasticsearch.url | quote }}
+      {{- end }}
+      {{- if .Values.external.alertmanager.enabled }}
+      alertmanager:
+        enabled: true
+        url: {{ .Values.external.alertmanager.url | quote }}
+      {{- end }}
+    {{- end }}

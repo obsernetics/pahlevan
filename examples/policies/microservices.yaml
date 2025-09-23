@@ -1,0 +1,427 @@
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: microservices-policy
+  namespace: default
+  labels:
+    app.kubernetes.io/name: microservices-policy
+    app.kubernetes.io/component: security-policy
+    workload-type: microservice
+    environment: production
+  annotations:
+    policy.pahlevan.io/description: "Adaptive policy for microservices with service mesh integration"
+    policy.pahlevan.io/use-case: "API services, REST/gRPC microservices, cloud-native applications"
+    policy.pahlevan.io/risk-level: "medium"
+    policy.pahlevan.io/compliance: "soc2"
+    policy.pahlevan.io/service-mesh: "istio"
+spec:
+  # Target microservices across multiple namespaces
+  selector:
+    matchLabels:
+      architecture: microservice
+    matchExpressions:
+    - key: "service-type"
+      operator: In
+      values: ["api", "service", "worker"]
+    - key: "security.policy.pahlevan.io/enabled"
+      operator: NotIn
+      values: ["false", "disabled"]
+
+  # Adaptive learning for microservices
+  learningConfig:
+    # Microservices have dynamic patterns, moderate learning time
+    duration: "5m"
+    windowSize: "45s"
+    minSamples: 200
+    confidenceThreshold: 0.90
+    autoTransition: true
+    lifecycleAware: true
+    baselineQualityThreshold: 0.85
+
+    # Service mesh aware learning
+    syscallLearning:
+      enabled: true
+      focusAreas:
+      - network
+      - file-io
+      - ipc
+      excludePatterns:
+      - "ptrace*"  # No debugging in production
+
+    networkLearning:
+      enabled: true
+      # Common microservice ports
+      monitoredPorts:
+      - 8080   # HTTP
+      - 8443   # HTTPS
+      - 9090   # Metrics
+      - 15001  # Istio Envoy admin
+      - 15006  # Istio Envoy inbound
+      - 15090  # Istio telemetry
+      allowedProtocols:
+      - tcp
+      - udp
+
+    fileLearning:
+      enabled: true
+      monitoredPaths:
+      - "/app"
+      - "/config"
+      - "/tmp"
+      - "/var/log"
+      excludePaths:
+      - "/proc"
+      - "/sys"
+      - "/dev"
+
+    # Container lifecycle phases
+    lifecyclePhases:
+      startup:
+        duration: "60s"
+        allowAdditionalSyscalls: true
+      steady:
+        duration: "240s"
+        restrictiveLearning: true
+      shutdown:
+        duration: "30s"
+        allowGracefulTermination: true
+
+  # Balanced enforcement for microservices
+  enforcementConfig:
+    mode: "Monitoring"
+    gracePeriod: "20s"
+    alertOnly: false
+    blockUnknown: true
+
+    # Microservice syscall patterns
+    syscallEnforcement:
+      enabled: true
+      defaultAction: "block"
+      allowList:
+      # Basic I/O
+      - "read"
+      - "write"
+      - "openat"
+      - "close"
+      - "lseek"
+      - "stat"
+      - "fstat"
+      # Network operations
+      - "socket"
+      - "bind"
+      - "listen"
+      - "accept"
+      - "connect"
+      - "sendto"
+      - "recvfrom"
+      - "sendmsg"
+      - "recvmsg"
+      - "getsockopt"
+      - "setsockopt"
+      # Event handling
+      - "epoll_create"
+      - "epoll_ctl"
+      - "epoll_wait"
+      - "select"
+      - "poll"
+      # Memory management
+      - "mmap"
+      - "munmap"
+      - "mprotect"
+      - "brk"
+      # Time operations
+      - "clock_gettime"
+      - "gettimeofday"
+      strictMode: false  # Allow flexibility for microservices
+
+    networkEnforcement:
+      enabled: true
+      defaultAction: "allow"  # More permissive for microservices
+      # Service mesh compatible rules
+      allowedConnections:
+      - direction: "ingress"
+        ports: [8080, 8443, 9090]
+        protocols: ["tcp"]
+      - direction: "egress"
+        ports: [53, 80, 443, 8080, 8443, 9090]
+        protocols: ["tcp", "udp"]
+      # Istio sidecar communication
+      - direction: "egress"
+        ports: [15000, 15001, 15006, 15090]
+        protocols: ["tcp"]
+        destinations: ["127.0.0.1", "::1"]
+      strictMode: false
+
+    fileEnforcement:
+      enabled: true
+      defaultAction: "block"
+      allowedOperations:
+      - "read"
+      - "write"
+      readOnlyPaths:
+      - "/app"
+      - "/config"
+      - "/etc"
+      - "/usr"
+      - "/lib"
+      writablePaths:
+      - "/tmp"
+      - "/var/log"
+      - "/var/cache"
+      strictMode: false
+
+    # Service mesh specific exceptions
+    exceptions:
+    - type: "Network"
+      patterns: ["tcp:15000", "tcp:15001", "tcp:15006", "tcp:15090"]
+      reason: "Istio Envoy sidecar communication"
+      temporary: false
+    - type: "Syscall"
+      patterns: ["futex", "sched_yield"]
+      reason: "Runtime synchronization primitives"
+      temporary: false
+    - type: "File"
+      patterns: ["/etc/ssl/certs/*", "/etc/pki/*"]
+      reason: "SSL certificate access"
+      temporary: false
+
+  # Self-healing optimized for microservices
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 5  # Higher threshold for dynamic services
+    rollbackWindow: "10m"
+    recoveryStrategy: "Relax"  # Relax policies rather than full rollback
+
+    anomalyDetection:
+      enabled: true
+      sensitivityLevel: "medium"
+      adaptiveThreshold: true
+
+      # Microservice specific metrics
+      metrics:
+      - "request_rate"
+      - "error_rate"
+      - "response_time"
+      - "network_connections"
+      - "syscall_rate"
+
+      thresholds:
+        requestRate: 1000      # requests per second
+        errorRate: 0.05        # 5% error rate
+        responseTime: 500      # 500ms average response
+        networkConnections: 50 # concurrent connections
+        syscallRate: 5000      # syscalls per second
+
+      # Circuit breaker pattern
+      circuitBreaker:
+        enabled: true
+        failureThreshold: 10
+        timeout: "30s"
+        recoverAfter: "60s"
+
+  # Comprehensive observability for microservices
+  observabilityConfig:
+    metrics:
+      enabled: true
+      exporters:
+      - type: "prometheus"
+        config:
+          path: "/metrics"
+          port: "9090"
+      - type: "otlp"
+        config:
+          endpoint: "http://otel-collector:4317"
+          protocol: "grpc"
+
+    tracing:
+      enabled: true
+      sampleRate: 0.1
+      endpoint: "http://jaeger-collector:14268/api/traces"
+      # Propagate service mesh trace headers
+      headers:
+      - "x-request-id"
+      - "x-b3-traceid"
+      - "x-b3-spanid"
+      - "x-b3-parentspanid"
+      - "x-b3-sampled"
+      - "x-b3-flags"
+
+    dashboard:
+      enabled: true
+      autoExport: true
+      formats: ["grafana", "json"]
+
+    # Service mesh integration
+    serviceMesh:
+      enabled: true
+      provider: "istio"
+      telemetryV2: true
+
+---
+# Example microservice deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: default
+  labels:
+    app: user-service
+    version: v1
+    architecture: microservice
+    service-type: api
+    security.policy.pahlevan.io/enabled: "true"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: user-service
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: user-service
+        version: v1
+        architecture: microservice
+        service-type: api
+        security.policy.pahlevan.io/enabled: "true"
+      annotations:
+        sidecar.istio.io/inject: "true"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: user-service
+        image: user-service:v1.2.0
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: PORT
+          value: "8080"
+        - name: METRICS_PORT
+          value: "9090"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: user-service-secret
+              key: database-url
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /var/cache
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: default
+  labels:
+    app: user-service
+spec:
+  selector:
+    app: user-service
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+
+---
+# Istio VirtualService
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: user-service
+  namespace: default
+spec:
+  hosts:
+  - user-service
+  http:
+  - match:
+    - uri:
+        prefix: /api/users
+    route:
+    - destination:
+        host: user-service
+        port:
+          number: 8080
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+
+---
+# Istio DestinationRule
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: user-service
+  namespace: default
+spec:
+  host: user-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 10
+    circuitBreaker:
+      consecutiveErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: user-service-secret
+  namespace: default
+type: Opaque
+data:
+  database-url: cG9zdGdyZXNxbDovL3VzZXI6cGFzc0BkYi9kYg==  # postgresql://user:pass@db/db

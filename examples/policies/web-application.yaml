@@ -1,0 +1,265 @@
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: web-application-policy
+  namespace: default
+  labels:
+    app.kubernetes.io/name: web-application-policy
+    app.kubernetes.io/component: security-policy
+    workload-type: web-application
+    environment: production
+  annotations:
+    policy.pahlevan.io/description: "Security policy for web applications with standard HTTP/HTTPS traffic"
+    policy.pahlevan.io/use-case: "Web applications, API servers, frontend services"
+    policy.pahlevan.io/risk-level: "medium"
+    policy.pahlevan.io/compliance: "pci-dss,soc2"
+spec:
+  # Target web applications with specific labels
+  selector:
+    matchLabels:
+      tier: frontend
+      app-type: web
+    matchExpressions:
+    - key: "security.policy.pahlevan.io/enabled"
+      operator: In
+      values: ["true", "enforce"]
+
+  # Learning configuration optimized for web applications
+  learningConfig:
+    # Web apps typically have predictable patterns, shorter learning
+    duration: "3m"
+    windowSize: "30s"
+    minSamples: 150
+    confidenceThreshold: 0.92
+    autoTransition: true
+    lifecycleAware: true
+    baselineQualityThreshold: 0.88
+
+    # Web app specific learning parameters
+    syscallLearning:
+      enabled: true
+      focusAreas:
+      - network
+      - file-io
+      excludePatterns:
+      - "fork*"  # Web apps typically don't fork
+      - "exec*"  # Web apps typically don't exec
+
+    networkLearning:
+      enabled: true
+      monitoredPorts:
+      - 80
+      - 443
+      - 8080
+      - 8443
+      allowedProtocols:
+      - tcp
+      - udp
+
+    fileLearning:
+      enabled: true
+      monitoredPaths:
+      - "/app"
+      - "/var/log"
+      - "/tmp"
+      excludePaths:
+      - "/proc"
+      - "/sys"
+      - "/dev"
+
+  # Enforcement configuration for production web apps
+  enforcementConfig:
+    mode: "Monitoring"  # Start with monitoring, then transition to Blocking
+    gracePeriod: "15s"
+    alertOnly: false
+    blockUnknown: true
+
+    # Web application specific enforcement
+    syscallEnforcement:
+      enabled: true
+      defaultAction: "block"
+      allowList:
+      - "read"
+      - "write"
+      - "openat"
+      - "close"
+      - "socket"
+      - "bind"
+      - "listen"
+      - "accept"
+      - "connect"
+      - "sendto"
+      - "recvfrom"
+      strictMode: false
+
+    networkEnforcement:
+      enabled: true
+      defaultAction: "block"
+      # Allow standard web traffic
+      allowedConnections:
+      - direction: "ingress"
+        ports: [80, 443, 8080, 8443]
+        protocols: ["tcp"]
+      - direction: "egress"
+        ports: [53, 80, 443]  # DNS, HTTP, HTTPS
+        protocols: ["tcp", "udp"]
+      strictMode: true
+
+    fileEnforcement:
+      enabled: true
+      defaultAction: "block"
+      allowedOperations:
+      - "read"
+      - "write"
+      readOnlyPaths:
+      - "/app/config"
+      - "/etc"
+      writablePaths:
+      - "/tmp"
+      - "/var/log"
+      - "/app/cache"
+
+    # Policy exceptions for common scenarios
+    exceptions:
+    - type: "Syscall"
+      patterns: ["mmap", "munmap", "brk"]
+      reason: "Memory management for runtime"
+      temporary: false
+    - type: "Network"
+      patterns: ["tcp:3306", "tcp:5432"]  # Database connections
+      reason: "Database connectivity"
+      temporary: false
+    - type: "File"
+      patterns: ["/var/log/app/*.log"]
+      reason: "Application logging"
+      temporary: false
+
+  # Self-healing configuration
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 3
+    rollbackWindow: "5m"
+    recoveryStrategy: "Rollback"
+
+    anomalyDetection:
+      enabled: true
+      sensitivityLevel: "medium"
+      adaptiveThreshold: true
+
+      # Web app specific anomaly detection
+      metrics:
+      - "syscall_rate"
+      - "network_connections"
+      - "file_access_patterns"
+
+      thresholds:
+        syscallRate: 1000  # syscalls per second
+        networkConnections: 100  # concurrent connections
+        fileAccess: 50     # files per second
+
+  # Observability configuration
+  observabilityConfig:
+    metrics:
+      enabled: true
+      exporters:
+      - type: "prometheus"
+        config:
+          path: "/metrics"
+          port: "8080"
+      - type: "datadog"
+        config:
+          namespace: "pahlevan.web_app"
+          tags:
+            - "service:web-application"
+            - "environment:production"
+
+    tracing:
+      enabled: true
+      sampleRate: 0.1
+      endpoint: "http://jaeger-collector:14268/api/traces"
+
+    dashboard:
+      enabled: true
+      autoExport: true
+      formats: ["grafana", "json"]
+
+---
+# Example workload that this policy would target
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-application
+  namespace: default
+  labels:
+    app: web-application
+    tier: frontend
+    app-type: web
+    security.policy.pahlevan.io/enabled: "true"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-application
+  template:
+    metadata:
+      labels:
+        app: web-application
+        tier: frontend
+        app-type: web
+        security.policy.pahlevan.io/enabled: "true"
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+          name: http
+        - containerPort: 443
+          name: https
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: var-cache
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-application-service
+  namespace: default
+spec:
+  selector:
+    app: web-application
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+  type: ClusterIP

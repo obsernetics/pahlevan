@@ -1,0 +1,68 @@
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: nginx-security-policy
+  namespace: default
+spec:
+  # Target pods with label app=nginx
+  selector:
+    matchLabels:
+      app: nginx
+
+  # Learning configuration
+  learning:
+    enabled: true
+    duration: 5m
+    autoTransition: true
+    syscalls: true
+    network: true
+    files: true
+
+  # Start in monitoring mode
+  enforcement:
+    mode: "monitor"
+    blockUnknown: false
+    gracePeriod: 30s
+
+  # Self-healing configuration
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 3
+    recoveryStrategy: "Rollback"
+
+  # Observability settings
+  observability:
+    metrics:
+      enabled: true
+    alerts:
+      enabled: true
+      webhookURL: "https://hooks.slack.com/your-webhook-url"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-example
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "250m"
+          limits:
+            memory: "128Mi"
+            cpu: "500m"
