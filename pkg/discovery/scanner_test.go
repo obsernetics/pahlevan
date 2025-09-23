@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -30,7 +29,7 @@ func TestContainerInfo_IsRunning(t *testing.T) {
 			container: &ContainerInfo{
 				ID:     "container-123",
 				Name:   "test-container",
-				Status: ContainerStatusRunning,
+				State: ContainerStateRunning,
 			},
 			expected: true,
 		},
@@ -39,7 +38,7 @@ func TestContainerInfo_IsRunning(t *testing.T) {
 			container: &ContainerInfo{
 				ID:     "container-456",
 				Name:   "stopped-container",
-				Status: ContainerStatusStopped,
+				State: ContainerStateStopped,
 			},
 			expected: false,
 		},
@@ -48,7 +47,7 @@ func TestContainerInfo_IsRunning(t *testing.T) {
 			container: &ContainerInfo{
 				ID:     "container-789",
 				Name:   "paused-container",
-				Status: ContainerStatusPaused,
+				State: ContainerStatePaused,
 			},
 			expected: false,
 		},
@@ -108,9 +107,10 @@ func TestContainerInfo_HasLabel(t *testing.T) {
 }
 
 func TestContainerInfo_GetAge(t *testing.T) {
+	now := time.Now().Add(-2 * time.Hour)
 	container := &ContainerInfo{
 		ID:        "test-container",
-		StartTime: time.Now().Add(-2 * time.Hour),
+		StartedAt: &now,
 	}
 
 	age := container.GetAge()
@@ -397,9 +397,9 @@ func TestResourceFilter_Matches(t *testing.T) {
 				Namespaces: []string{"default", "production"},
 			},
 			container: &ContainerInfo{
-				Name:      "nginx",
-				Namespace: "default",
-				Labels:    map[string]string{"app": "web", "version": "1.0"},
+				Name:         "nginx",
+				PodNamespace: "default",
+				Labels:       map[string]string{"app": "web", "version": "1.0"},
 			},
 			expected: true,
 		},
@@ -411,9 +411,9 @@ func TestResourceFilter_Matches(t *testing.T) {
 				Namespaces: []string{"default"},
 			},
 			container: &ContainerInfo{
-				Name:      "nginx",
-				Namespace: "default",
-				Labels:    map[string]string{"app": "web"},
+				Name:         "nginx",
+				PodNamespace: "default",
+				Labels:       map[string]string{"app": "web"},
 			},
 			expected: false,
 		},
@@ -425,9 +425,9 @@ func TestResourceFilter_Matches(t *testing.T) {
 				Namespaces: []string{"default"},
 			},
 			container: &ContainerInfo{
-				Name:      "nginx",
-				Namespace: "default",
-				Labels:    map[string]string{"app": "web"},
+				Name:         "nginx",
+				PodNamespace: "default",
+				Labels:       map[string]string{"app": "web"},
 			},
 			expected: false,
 		},
@@ -450,10 +450,10 @@ func TestClusterState_AddContainer(t *testing.T) {
 	}
 
 	container := &ContainerInfo{
-		ID:        "container-123",
-		Name:      "test-container",
-		Namespace: "default",
-		Status:    ContainerStatusRunning,
+		ID:           "container-123",
+		Name:         "test-container",
+		PodNamespace: "default",
+		State:        ContainerStateRunning,
 	}
 
 	state.AddContainer(container)
@@ -483,15 +483,15 @@ func TestClusterState_GetRunningContainers(t *testing.T) {
 		Containers: map[string]*ContainerInfo{
 			"container-1": {
 				ID:     "container-1",
-				Status: ContainerStatusRunning,
+				State: ContainerStateRunning,
 			},
 			"container-2": {
 				ID:     "container-2",
-				Status: ContainerStatusStopped,
+				State: ContainerStateStopped,
 			},
 			"container-3": {
 				ID:     "container-3",
-				Status: ContainerStatusRunning,
+				State: ContainerStateRunning,
 			},
 		},
 	}
@@ -513,18 +513,18 @@ func TestBenchmarkContainerScanning(t *testing.T) {
 		t.Skip("Skipping benchmark test in short mode")
 	}
 
-	scanner := NewContainerScanner(1*time.Second, 1000)
 	state := &ClusterState{
 		Containers: make(map[string]*ContainerInfo),
 	}
 
 	// Add many containers
 	for i := 0; i < 1000; i++ {
+		now := time.Now()
 		container := &ContainerInfo{
 			ID:        "container-" + string(rune(i)),
 			Name:      "test-container-" + string(rune(i)),
-			Status:    ContainerStatusRunning,
-			StartTime: time.Now(),
+			State:     ContainerStateRunning,
+			StartedAt: &now,
 		}
 		state.AddContainer(container)
 	}

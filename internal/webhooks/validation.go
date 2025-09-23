@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -378,7 +379,9 @@ func (v *PahlevanPolicyValidator) validateMetricsExporter(exporter policyv1alpha
 func (v *PahlevanPolicyValidator) validateTracingConfig(config policyv1alpha1.TracingConfig) error {
 	// Validate sampling rate
 	if config.SamplingRate != nil {
-		if *config.SamplingRate < 0.0 || *config.SamplingRate > 1.0 {
+		if rate, err := strconv.ParseFloat(*config.SamplingRate, 64); err != nil {
+			return fmt.Errorf("sampling rate must be a valid float: %v", err)
+		} else if rate < 0.0 || rate > 1.0 {
 			return fmt.Errorf("sampling rate must be between 0.0 and 1.0")
 		}
 	}

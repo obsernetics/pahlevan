@@ -411,6 +411,7 @@ func TestMultiContainerScenario(t *testing.T) {
 	// Verify expectations
 	ebpfManager.AssertExpectations(t)
 	learningEngine.AssertExpectations(t)
+	obsManager.AssertExpectations(t)
 }
 
 func TestSystemUnderLoad(t *testing.T) {

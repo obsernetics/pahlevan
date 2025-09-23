@@ -35,6 +35,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Add scroll effects
     addScrollEffects();
+
+    // Initialize tabs
+    initializeTabs();
 });
 
 // Terminal Animation
@@ -347,3 +350,26 @@ function measurePerformance() {
 
 // Initialize performance monitoring
 measurePerformance();
+
+// Tab functionality
+function initializeTabs() {
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabPanels = document.querySelectorAll('.tab-panel');
+
+    tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            const targetTab = button.getAttribute('data-tab');
+
+            // Remove active class from all buttons and panels
+            tabButtons.forEach(btn => btn.classList.remove('active'));
+            tabPanels.forEach(panel => panel.classList.remove('active'));
+
+            // Add active class to clicked button and corresponding panel
+            button.classList.add('active');
+            const targetPanel = document.getElementById(targetTab);
+            if (targetPanel) {
+                targetPanel.classList.add('active');
+            }
+        });
+    });
+}

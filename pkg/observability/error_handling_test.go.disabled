@@ -354,7 +354,7 @@ func TestExporter_FailureHandling(t *testing.T) {
 
 		if err != nil {
 			// Network error is expected
-			assert.Contains(t, err.Error(), "network\|timeout\|connection", "Should indicate network issue")
+			assert.Contains(t, err.Error(), "network", "Should indicate network issue")
 		}
 	})
 
@@ -381,7 +381,7 @@ func TestExporter_FailureHandling(t *testing.T) {
 		// Should handle corrupted data gracefully
 		err := exporter.Export(corruptedData)
 		if err != nil {
-			assert.Contains(t, err.Error(), "invalid\|corrupt\|serialize", "Should indicate data issues")
+			assert.Contains(t, err.Error(), "invalid", "Should indicate data issues")
 		}
 	})
 }

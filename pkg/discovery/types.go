@@ -11,16 +11,6 @@ type ContainerScanner struct {
 	watchers      []EventWatcher
 }
 
-type ContainerInfo struct {
-	ID          string
-	Name        string
-	Namespace   string
-	Status      ContainerStatus
-	Labels      map[string]string
-	StartTime   time.Time
-	Image       string
-	Runtime     string
-}
 
 type PodInfo struct {
 	Name       string
@@ -133,7 +123,7 @@ func NewContainerScanner(interval time.Duration, maxContainers int) *ContainerSc
 
 // Methods
 func (ci *ContainerInfo) IsRunning() bool {
-	return ci.Status == ContainerStatusRunning
+	return ci.State == ContainerStateRunning
 }
 
 func (ci *ContainerInfo) HasLabel(key, value string) bool {
@@ -145,7 +135,10 @@ func (ci *ContainerInfo) HasLabel(key, value string) bool {
 }
 
 func (ci *ContainerInfo) GetAge() time.Duration {
-	return time.Since(ci.StartTime)
+	if ci.StartedAt != nil {
+		return time.Since(*ci.StartedAt)
+	}
+	return time.Since(ci.CreatedAt)
 }
 
 func (pi *PodInfo) IsReady() bool {
@@ -221,7 +214,7 @@ func (rf *ResourceFilter) Matches(container *ContainerInfo) bool {
 	if len(rf.Namespaces) > 0 {
 		found := false
 		for _, ns := range rf.Namespaces {
-			if ns == container.Namespace {
+			if ns == container.PodNamespace {
 				found = true
 				break
 			}

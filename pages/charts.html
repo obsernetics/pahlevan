@@ -27,7 +27,7 @@
 
     <header class="hero" style="padding: 6rem 0 3rem;">
         <div class="container">
-            <div class="hero-content" style="text-align: center; max-width: 800px; margin: 0 auto;">
+            <div class="hero-content" style="text-align: left; max-width: 800px; margin: 0 auto;">
                 <div class="hero-badge">
                     <span class="badge">Package Helm Repository</span>
                 </div>
@@ -49,7 +49,6 @@
             <div class="chart-grid">
                 <div class="chart-card">
                     <div class="chart-header">
-                        <div class="chart-icon">⛵</div>
                         <div class="chart-info">
                             <h3>pahlevan-operator</h3>
                             <span class="chart-version">v1.0.0</span>
@@ -58,15 +57,18 @@
                     <p class="chart-description">
                         Main security operator with eBPF monitoring, adaptive learning, and real-time enforcement capabilities.
                     </p>
-                    <div class="chart-meta">
-                        <div class="meta-item">
-                            <strong>App Version:</strong> v1.0.0
+                    <div class="chart-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">Version</span>
+                            <span class="stat-value">v1.0.0</span>
                         </div>
-                        <div class="meta-item">
-                            <strong>Kubernetes:</strong> ≥1.24.0
+                        <div class="stat-item">
+                            <span class="stat-label">Kubernetes</span>
+                            <span class="stat-value">≥1.24.0</span>
                         </div>
-                        <div class="meta-item">
-                            <strong>Type:</strong> Application
+                        <div class="stat-item">
+                            <span class="stat-label">Type</span>
+                            <span class="stat-value">Application</span>
                         </div>
                     </div>
                     <div class="chart-actions">
@@ -74,303 +76,24 @@
                         <button class="btn btn-outline" onclick="copyInstallCommand('pahlevan-operator')">Copy Install</button>
                     </div>
                 </div>
-            </div>
-        </div>
-    </section>
 
-    <section class="installation-guide" style="background-color: var(--bg-secondary);">
-        <div class="container">
-            <div class="section-header">
-                <h2 id="installation">Installation Guide</h2>
-                <p>Quick setup for Pahlevan Helm repository</p>
-            </div>
-
-            <div class="install-steps">
-                <div class="step-card">
-                    <div class="step-number">1</div>
-                    <h3>Add Repository</h3>
-                    <div class="code-block">
-                        <pre><code class="language-bash">helm repo add pahlevan https://obsernetics.github.io/pahlevan/</code></pre>
-                    </div>
-                </div>
-
-                <div class="step-card">
-                    <div class="step-number">2</div>
-                    <h3>Update Repository</h3>
-                    <div class="code-block">
-                        <pre><code class="language-bash">helm repo update</code></pre>
-                    </div>
-                </div>
-
-                <div class="step-card">
-                    <div class="step-number">3</div>
-                    <h3>Install Chart</h3>
-                    <div class="code-block">
-                        <pre><code class="language-bash">helm install pahlevan pahlevan/pahlevan-operator \
-  --namespace pahlevan-system \
-  --create-namespace</code></pre>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <section class="repository-info">
-        <div class="container">
-            <div class="section-header">
-                <h2>Repository Information</h2>
-                <p>Technical details and alternative installation methods</p>
-            </div>
-
-            <div class="info-grid">
-                <div class="info-card">
-                    <h3>📋 Repository Details</h3>
-                    <div class="detail-list">
-                        <div class="detail-item">
-                            <strong>Repository URL:</strong><br>
-                            <code>https://obsernetics.github.io/pahlevan/</code>
+                <div class="quick-install-card">
+                    <h3>Quick Install</h3>
+                    <div class="install-steps">
+                        <div class="step">
+                            <span class="step-number">1</span>
+                            <div class="step-content">
+                                <h4>Add Repository</h4>
+                                <code>helm repo add pahlevan https://obsernetics.github.io/pahlevan/</code>
+                            </div>
                         </div>
-                        <div class="detail-item">
-                            <strong>Chart Index:</strong><br>
-                            <a href="index.yaml">index.yaml</a>
+                        <div class="step">
+                            <span class="step-number">2</span>
+                            <div class="step-content">
+                                <h4>Install Chart</h4>
+                                <code>helm install pahlevan pahlevan/pahlevan-operator --namespace pahlevan-system --create-namespace</code>
+                            </div>
                         </div>
-                        <div class="detail-item">
-                            <strong>Chart Source:</strong><br>
-                            <a href="https://github.com/obsernetics/pahlevan/tree/main/charts" target="_blank">GitHub Repository</a>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="info-card">
-                    <h3>🐳 OCI Registry</h3>
-                    <p>Pull charts directly from GitHub Container Registry</p>
-                    <div class="code-block">
-                        <pre><code class="language-bash">helm install pahlevan \
-  oci://ghcr.io/obsernetics/charts/pahlevan-operator \
-  --namespace pahlevan-system \
-  --create-namespace</code></pre>
-                    </div>
-                </div>
-
-                <div class="info-card">
-                    <h3>Search Search Charts</h3>
-                    <p>Search for available charts in the repository</p>
-                    <div class="code-block">
-                        <pre><code class="language-bash"># Search for charts
-helm search repo pahlevan
-
-# Show chart information
-helm show chart pahlevan/pahlevan-operator
-
-# Show chart values
-helm show values pahlevan/pahlevan-operator</code></pre>
-                    </div>
-                </div>
-
-                <div class="info-card">
-                    <h3>Chart Chart Versions</h3>
-                    <p>List all available versions</p>
-                    <div class="code-block">
-                        <pre><code class="language-bash"># List all versions
-helm search repo pahlevan/pahlevan-operator --versions
-
-# Install specific version
-helm install pahlevan pahlevan/pahlevan-operator \
-  --version 1.0.0 \
-  --namespace pahlevan-system \
-  --create-namespace</code></pre>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <section class="configuration-examples" style="background-color: var(--bg-secondary);">
-        <div class="container">
-            <div class="section-header">
-                <h2>Configuration Examples</h2>
-                <p>Common deployment configurations</p>
-            </div>
-
-            <div class="config-grid">
-                <div class="config-card">
-                    <h3>Config Development Mode</h3>
-                    <p>Monitor-only configuration for development environments</p>
-                    <div class="code-block">
-                        <pre><code class="language-yaml"># values-dev.yaml
-operator:
-  replicaCount: 1
-
-ebpf:
-  config:
-    enableSyscallMonitoring: true
-    enableNetworkMonitoring: false
-    logLevel: 2
-
-development:
-  enabled: true
-  debug: true
-
-metrics:
-  enabled: true</code></pre>
-                    </div>
-                    <div class="code-block">
-                        <pre><code class="language-bash">helm install pahlevan pahlevan/pahlevan-operator \
-  --values values-dev.yaml \
-  --namespace pahlevan-system \
-  --create-namespace</code></pre>
-                    </div>
-                </div>
-
-                <div class="config-card">
-                    <h3>Security Production Mode</h3>
-                    <p>High availability configuration with enforcement</p>
-                    <div class="code-block">
-                        <pre><code class="language-yaml"># values-prod.yaml
-operator:
-  replicaCount: 3
-  resources:
-    requests:
-      cpu: 200m
-      memory: 256Mi
-    limits:
-      cpu: 1000m
-      memory: 1Gi
-
-ebpf:
-  config:
-    enableSyscallMonitoring: true
-    enableNetworkMonitoring: true
-    enableFileMonitoring: true
-
-metrics:
-  enabled: true
-  serviceMonitor:
-    enabled: true
-
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 2</code></pre>
-                    </div>
-                </div>
-
-                <div class="config-card">
-                    <h3>Chart Monitoring Setup</h3>
-                    <p>Full observability with Prometheus and Grafana</p>
-                    <div class="code-block">
-                        <pre><code class="language-yaml"># values-monitoring.yaml
-metrics:
-  enabled: true
-  serviceMonitor:
-    enabled: true
-    interval: 30s
-    labels:
-      monitoring: prometheus
-
-observability:
-  enabled: true
-  grafana:
-    enabled: true
-    dashboards:
-      - security-overview
-      - attack-surface
-      - policy-violations
-
-prometheusRule:
-  enabled: true
-  rules:
-    - alert: PahlevanDown
-      expr: up{job="pahlevan-operator"} == 0
-      for: 5m</code></pre>
-                    </div>
-                </div>
-
-                <div class="config-card">
-                    <h3>Security Hardening</h3>
-                    <p>Maximum security configuration for compliance</p>
-                    <div class="code-block">
-                        <pre><code class="language-yaml"># values-security.yaml
-operator:
-  securityContext:
-    allowPrivilegeEscalation: false
-    runAsNonRoot: true
-    runAsUser: 65532
-    capabilities:
-      drop: ["ALL"]
-      add: ["SYS_ADMIN"]
-    seccompProfile:
-      type: RuntimeDefault
-
-networkPolicy:
-  enabled: true
-
-podSecurityContext:
-  fsGroup: 65532
-  runAsNonRoot: true
-  seccompProfile:
-    type: RuntimeDefault
-
-compliance:
-  enabled: true
-  frameworks:
-    pci: true
-    hipaa: true</code></pre>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <section class="chart-source">
-        <div class="container">
-            <div class="section-header">
-                <h2>Chart Development</h2>
-                <p>Contributing to Pahlevan Helm charts</p>
-            </div>
-
-            <div class="source-content">
-                <div class="source-info">
-                    <h3>📂 Chart Structure</h3>
-                    <p>The Helm charts are maintained in the main repository:</p>
-                    <div class="code-block">
-                        <pre><code class="language-bash">charts/
-└── pahlevan-operator/
-    ├── Chart.yaml
-    ├── values.yaml
-    ├── templates/
-    │   ├── deployment.yaml
-    │   ├── service.yaml
-    │   ├── rbac.yaml
-    │   ├── configmap.yaml
-    │   └── monitoring.yaml
-    └── README.md</code></pre>
-                    </div>
-                    <div class="source-actions">
-                        <a href="https://github.com/obsernetics/pahlevan/tree/main/charts" class="btn btn-primary" target="_blank">View Source</a>
-                        <a href="https://github.com/obsernetics/pahlevan/blob/main/charts/pahlevan-operator/values.yaml" class="btn btn-outline" target="_blank">View Values</a>
-                    </div>
-                </div>
-
-                <div class="testing-info">
-                    <h3>Test Testing Charts</h3>
-                    <p>Local development and testing workflow:</p>
-                    <div class="code-block">
-                        <pre><code class="language-bash"># Clone repository
-git clone https://github.com/obsernetics/pahlevan.git
-cd pahlevan
-
-# Test chart template
-helm template test charts/pahlevan-operator \
-  --values charts/pahlevan-operator/values.yaml
-
-# Install locally
-helm install pahlevan charts/pahlevan-operator \
-  --namespace pahlevan-system \
-  --create-namespace \
-  --dry-run
-
-# Run chart tests
-helm test pahlevan -n pahlevan-system</code></pre>
                     </div>
                 </div>
             </div>
@@ -433,75 +156,180 @@ helm test pahlevan -n pahlevan-system</code></pre>
     </script>
 
     <style>
+        .code-block {
+            max-width: 100%;            /* make it responsive */
+            overflow-wrap: break-word;  /* allow breaking long words */
+            white-space: pre-wrap;      /* preserve formatting but allow wrapping */
+            word-break: break-all;      /* fallback for very long URLs */
+        
+        }
         .charts-section {
             padding: 4rem 0;
         }
 
         .chart-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 2rem;
+            grid-template-columns: 1fr 350px;
+            gap: 3rem;
+            align-items: start;
         }
 
         .chart-card {
-            background-color: var(--bg-primary);
+            background: linear-gradient(135deg, var(--bg-primary) 0%, rgba(255,255,255,0.02) 100%);
             border: 1px solid var(--border-color);
-            border-radius: var(--border-radius-lg);
-            padding: 2rem;
-            box-shadow: var(--shadow-md);
-            transition: var(--transition);
+            border-radius: 16px;
+            padding: 2.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .chart-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary-color), #4f46e5);
         }
 
         .chart-card:hover {
-            transform: translateY(-4px);
-            box-shadow: var(--shadow-lg);
+            transform: translateY(-8px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            border-color: rgba(99, 102, 241, 0.3);
         }
 
         .chart-header {
             display: flex;
-            align-items: center;
-            gap: 1rem;
-            margin-bottom: 1rem;
-        }
-
-        .chart-icon {
-            font-size: 2rem;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1.5rem;
         }
 
         .chart-info h3 {
             margin: 0;
-            color: var(--primary-color);
+            color: var(--text-primary);
+            font-size: 1.5rem;
+            font-weight: 600;
+            letter-spacing: -0.025em;
         }
 
         .chart-version {
-            background-color: var(--bg-tertiary);
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.25rem;
-            font-size: 0.75rem;
-            font-weight: 500;
+            background: linear-gradient(135deg, var(--primary-color), #4f46e5);
+            color: white;
+            padding: 0.375rem 0.875rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.025em;
         }
 
         .chart-description {
             color: var(--text-secondary);
-            margin-bottom: 1.5rem;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+            font-size: 1rem;
         }
 
-        .chart-meta {
-            margin-bottom: 1.5rem;
+        .chart-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            background-color: rgba(255, 255, 255, 0.02);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
         }
 
-        .meta-item {
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-label {
+            display: block;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
             margin-bottom: 0.5rem;
-            font-size: 0.875rem;
+            font-weight: 500;
         }
 
-        .meta-item strong {
+        .stat-value {
+            display: block;
+            font-weight: 600;
             color: var(--text-primary);
+            font-size: 0.9rem;
         }
 
         .chart-actions {
             display: flex;
             gap: 1rem;
+        }
+
+        .quick-install-card {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.05) 0%, rgba(139, 92, 246, 0.05) 100%);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 16px;
+            padding: 2rem;
+            position: sticky;
+            top: 2rem;
+        }
+
+        .quick-install-card h3 {
+            margin: 0 0 1.5rem 0;
+            color: var(--text-primary);
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .install-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .step {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-start;
+        }
+
+        .step-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--primary-color), #4f46e5);
+            color: white;
+            border-radius: 50%;
+            font-weight: 600;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
+
+        .step-content h4 {
+            margin: 0 0 0.5rem 0;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .step-content code {
+            display: block;
+            background-color: rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 0.75rem;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            word-break: break-all;
+            line-height: 1.4;
         }
 
         .install-steps {
@@ -582,17 +410,54 @@ helm test pahlevan -n pahlevan-system</code></pre>
             gap: 1rem;
         }
 
-        @media (max-width: 768px) {
-            .chart-actions,
-            .source-actions {
+        @media (max-width: 968px) {
+            .chart-grid {
+                grid-template-columns: 1fr;
+                gap: 2rem;
+            }
+
+            .quick-install-card {
+                position: static;
+            }
+
+            .chart-stats {
+                grid-template-columns: 1fr;
+                gap: 0.75rem;
+            }
+
+            .stat-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                text-align: left;
+            }
+
+            .stat-label, .stat-value {
+                display: inline;
+            }
+        }
+
+        @media (max-width: 640px) {
+            .chart-actions {
                 flex-direction: column;
             }
 
-            .install-steps,
-            .info-grid,
-            .config-grid,
-            .source-content {
-                grid-template-columns: 1fr;
+            .chart-card {
+                padding: 1.5rem;
+            }
+
+            .quick-install-card {
+                padding: 1.5rem;
+            }
+
+            .step {
+                flex-direction: column;
+                gap: 0.75rem;
+            }
+
+            .step-content code {
+                font-size: 0.7rem;
+                padding: 0.5rem;
             }
         }
     </style>

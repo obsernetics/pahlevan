@@ -101,6 +101,8 @@ type ContainerState string
 const (
 	ContainerStatePending    ContainerState = "Pending"
 	ContainerStateRunning    ContainerState = "Running"
+	ContainerStateStopped    ContainerState = "Stopped"
+	ContainerStatePaused     ContainerState = "Paused"
 	ContainerStateTerminated ContainerState = "Terminated"
 	ContainerStateUnknown    ContainerState = "Unknown"
 )

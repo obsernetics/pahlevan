@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/obsernetics/pahlevan/pkg/learner"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 )
 
 // Note: Self-healing types are defined in their respective implementation files:

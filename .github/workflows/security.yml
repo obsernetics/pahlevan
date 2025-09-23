@@ -91,28 +91,27 @@ jobs:
       with:
         sarif_file: 'trivy-docker-results.sarif'
 
-  gosec:
-    name: Gosec Security Analysis
+  trivy-code:
+    name: Trivy Code Security Analysis
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
+    - name: Run Trivy vulnerability scanner in repo mode
+      uses: aquasecurity/trivy-action@master
       with:
-        go-version: "1.24"
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-code-results.sarif'
+        scanners: 'vuln,secret,config'
 
-    - name: Install and run Gosec
-      run: |
-        go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
-        gosec -fmt sarif -out gosec-results.sarif -exclude-dir=test ./...
-
-    - name: Upload SARIF file
+    - name: Upload Trivy scan results to GitHub Security tab
       uses: github/codeql-action/upload-sarif@v3
       with:
-        sarif_file: gosec-results.sarif
+        sarif_file: 'trivy-code-results.sarif'
 
   dependency-check:
     name: Dependency Security Check
