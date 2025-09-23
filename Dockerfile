@@ -150,7 +150,7 @@ RUN make test-unit
 ##################################################
 # Documentation Stage (for generating docs)
 ##################################################
-FROM node:18-alpine AS docs
+FROM node:24-alpine AS docs
 
 WORKDIR /docs
 
