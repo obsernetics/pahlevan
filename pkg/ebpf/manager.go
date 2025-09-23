@@ -510,7 +510,9 @@ func (m *Manager) processSyscallEvents(ctx context.Context) {
 				// Notify handlers
 				m.mu.RLock()
 				for _, handler := range m.eventHandlers {
-					go handler.HandleSyscallEvent(event)
+					go func(h EventHandler, e *SyscallEvent) {
+						_ = h.HandleSyscallEvent(e)
+					}(handler, event)
 				}
 				m.mu.RUnlock()
 			}
@@ -545,7 +547,9 @@ func (m *Manager) processNetworkEvents(ctx context.Context) {
 				// Notify handlers
 				m.mu.RLock()
 				for _, handler := range m.eventHandlers {
-					go handler.HandleNetworkEvent(event)
+					go func(h EventHandler, e *NetworkEvent) {
+						_ = h.HandleNetworkEvent(e)
+					}(handler, event)
 				}
 				m.mu.RUnlock()
 			}
@@ -580,7 +584,9 @@ func (m *Manager) processFileEvents(ctx context.Context) {
 				// Notify handlers
 				m.mu.RLock()
 				for _, handler := range m.eventHandlers {
-					go handler.HandleFileEvent(event)
+					go func(h EventHandler, e *FileEvent) {
+						_ = h.HandleFileEvent(e)
+					}(handler, event)
 				}
 				m.mu.RUnlock()
 			}

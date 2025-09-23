@@ -264,7 +264,7 @@ func NewPolicyDescribeCommand() *cobra.Command {
 						cli.TruncateString(condition.Message, 50),
 					)
 				}
-				table.Render(writer)
+				_ = table.Render(writer)
 			}
 
 			// TODO: Implement events listing when kubeClient type is fixed

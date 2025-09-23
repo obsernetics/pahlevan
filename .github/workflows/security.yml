@@ -66,12 +66,12 @@ jobs:
         format: 'sarif'
         output: 'trivy-results.sarif'
 
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
-      if: github.actor != 'dependabot[bot]'
-      continue-on-error: true
+    - name: Upload scan results as artifact
+      uses: actions/upload-artifact@v4
       with:
-        sarif_file: 'trivy-results.sarif'
+        name: trivy-scan-results
+        path: 'trivy-results.sarif'
+        retention-days: 30
 
   docker-security:
     name: Docker Security Scan
@@ -124,12 +124,12 @@ jobs:
         output: 'trivy-code-results.sarif'
         scanners: 'vuln,secret,config'
 
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
-      if: github.actor != 'dependabot[bot]'
-      continue-on-error: true
+    - name: Upload scan results as artifact
+      uses: actions/upload-artifact@v4
       with:
-        sarif_file: 'trivy-code-results.sarif'
+        name: trivy-code-scan-results
+        path: 'trivy-code-results.sarif'
+        retention-days: 30
 
   dependency-check:
     name: Dependency Security Check
@@ -175,13 +175,23 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: TruffleHog OSS
+    - name: TruffleHog OSS - Differential Scan (PR)
+      if: github.event_name == 'pull_request'
       uses: trufflesecurity/trufflehog@main
       with:
         path: ./
-        base: main
-        head: HEAD
+        base: ${{ github.event.pull_request.base.sha }}
+        head: ${{ github.event.pull_request.head.sha }}
         extra_args: --debug --only-verified
+      continue-on-error: true
+
+    - name: TruffleHog OSS - Full Repository Scan (Push/Schedule)
+      if: github.event_name != 'pull_request'
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        extra_args: --debug --only-verified
+      continue-on-error: true
 
   supply-chain:
     name: Supply Chain Security
@@ -225,9 +235,9 @@ jobs:
         format: sarif
         output-file: grype-results.sarif
 
-    - name: Upload vulnerability scan results
-      uses: github/codeql-action/upload-sarif@v3
-      if: github.actor != 'dependabot[bot]'
-      continue-on-error: true
+    - name: Upload vulnerability scan results as artifact
+      uses: actions/upload-artifact@v4
       with:
-        sarif_file: grype-results.sarif
+        name: grype-scan-results
+        path: grype-results.sarif
+        retention-days: 30

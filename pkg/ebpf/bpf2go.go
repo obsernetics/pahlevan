@@ -753,21 +753,21 @@ func (m *EBPFProgramManager) RemoveContainerPolicy(containerID string) error {
 	// Remove from syscall policies
 	if m.syscallCollection != nil {
 		if policyMap := m.syscallCollection.Maps["container_policies"]; policyMap != nil {
-			policyMap.Delete(key)
+			_ = policyMap.Delete(key)
 		}
 	}
 
 	// Remove from network policies
 	if m.networkCollection != nil {
 		if policyMap := m.networkCollection.Maps["connection_policies"]; policyMap != nil {
-			policyMap.Delete(key)
+			_ = policyMap.Delete(key)
 		}
 	}
 
 	// Remove from file policies
 	if m.fileCollection != nil {
 		if policyMap := m.fileCollection.Maps["file_policies"]; policyMap != nil {
-			policyMap.Delete(key)
+			_ = policyMap.Delete(key)
 		}
 	}
 
