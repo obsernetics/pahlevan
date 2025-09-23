@@ -3,7 +3,7 @@
 ##################################################
 # Build Stage 1: eBPF Programs
 ##################################################
-FROM ubuntu:22.04 AS ebpf-builder
+FROM ubuntu:24.04 AS ebpf-builder
 
 # Install eBPF build dependencies
 RUN apt-get update && apt-get install -y \
@@ -96,7 +96,7 @@ ENTRYPOINT ["/usr/local/bin/manager"]
 ##################################################
 # Development Stage (for debugging)
 ##################################################
-FROM ubuntu:22.04 AS debug
+FROM ubuntu:24.04 AS debug
 
 # Install runtime dependencies and debugging tools
 RUN apt-get update && apt-get install -y \
