@@ -281,10 +281,10 @@ jobs:
       with:
         status: success
         text: |
-          📦 Pahlevan Helm Chart ${{ github.event.release.tag_name }} released!
+          Package Pahlevan Helm Chart ${{ github.event.release.tag_name }} released!
 
-          🚀 Install: `helm repo add pahlevan https://obsernetics.github.io/pahlevan/ && helm install pahlevan pahlevan/pahlevan-operator`
-          📦 OCI: `helm install pahlevan oci://ghcr.io/${{ github.repository_owner }}/charts/pahlevan-operator --version ${{ github.event.release.tag_name }}`
-          📖 Chart Docs: https://github.com/${{ github.repository }}/tree/${{ github.event.release.tag_name }}/charts/pahlevan-operator
+          Install Install: `helm repo add pahlevan https://obsernetics.github.io/pahlevan/ && helm install pahlevan pahlevan/pahlevan-operator`
+          Package OCI: `helm install pahlevan oci://ghcr.io/${{ github.repository_owner }}/charts/pahlevan-operator --version ${{ github.event.release.tag_name }}`
+          Docs Chart Docs: https://github.com/${{ github.repository }}/tree/${{ github.event.release.tag_name }}/charts/pahlevan-operator
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -33,7 +33,7 @@ pages/
 - Quick reference section
 - Links to GitHub source
 
-### 📦 Helm Charts (`charts.html`)
+### Package Helm Charts (`charts.html`)
 - Chart listing and metadata
 - Installation instructions
 - Configuration examples

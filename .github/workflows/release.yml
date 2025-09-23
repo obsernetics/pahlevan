@@ -451,9 +451,9 @@ jobs:
         text: |
           🎉 Pahlevan ${{ needs.validate.outputs.version }} has been released!
 
-          📦 Install: `kubectl apply -f https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml`
+          Package Install: `kubectl apply -f https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml`
           🐳 Docker: `docker pull obsernetics/pahlevan:${{ needs.validate.outputs.version }}`
-          📖 Release Notes: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+          Docs Release Notes: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
@@ -463,7 +463,7 @@ jobs:
       with:
         status: failure
         text: |
-          ❌ Release of Pahlevan ${{ needs.validate.outputs.version }} failed!
+          Release of Pahlevan ${{ needs.validate.outputs.version }} failed!
 
           Please check the GitHub Actions logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
       env:

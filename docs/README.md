@@ -107,13 +107,13 @@ If you need help with Pahlevan:
 
 | Document | Status | Last Updated |
 |----------|--------|--------------|
-| [Quick Start Guide](quick-start.md) | ✅ Complete | 2023-12-01 |
-| [Architecture Overview](architecture.md) | ✅ Complete | 2023-12-01 |
-| [Policy Reference](policy-reference.md) | ✅ Complete | 2023-12-01 |
-| [Deployment Guide](deployment.md) | ✅ Complete | 2023-12-01 |
-| [Troubleshooting](troubleshooting.md) | ✅ Complete | 2023-12-01 |
-| [API Reference](api-reference.md) | ✅ Complete | 2023-12-01 |
-| [System Requirements](system-requirements.md) | ✅ Complete | 2023-12-01 |
+| [Quick Start Guide](quick-start.md) | Complete | 2023-12-01 |
+| [Architecture Overview](architecture.md) | Complete | 2023-12-01 |
+| [Policy Reference](policy-reference.md) | Complete | 2023-12-01 |
+| [Deployment Guide](deployment.md) | Complete | 2023-12-01 |
+| [Troubleshooting](troubleshooting.md) | Complete | 2023-12-01 |
+| [API Reference](api-reference.md) | Complete | 2023-12-01 |
+| [System Requirements](system-requirements.md) | Complete | 2023-12-01 |
 
 ---
 

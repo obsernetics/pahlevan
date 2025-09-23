@@ -2,7 +2,7 @@
 
 This document summarizes the fixes applied to resolve linting and documentation workflow failures.
 
-## 🚨 Issues Identified
+## Issues Identified
 
 ### 1. Documentation Workflow Failures
 
@@ -16,7 +16,7 @@ This document summarizes the fixes applied to resolve linting and documentation 
 - **Chart Testing**: Missing `release-label` configuration in ct.yaml
 - **Namespace Configuration**: Invalid chart-testing configuration
 
-## 🔧 Fixes Applied
+## Fixes Applied
 
 ### Documentation Workflow (`.github/workflows/docs.yml`)
 
@@ -121,7 +121,7 @@ release-label: app.kubernetes.io/instance
 | `.github/ct.yaml` | Minor | Added missing release-label configuration |
 | `docs/*.md` | Automatic | Added trailing newlines to fix MD047 warnings |
 
-## ✅ Expected Results
+## Expected Results
 
 After these fixes:
 
@@ -138,7 +138,7 @@ After these fixes:
    - Sampling rate now accepts string values like "0.1" or "1.0"
    - Runtime code can parse strings to floats as needed
 
-## 🔍 Verification Steps
+## Verification Steps
 
 To verify fixes are working:
 
@@ -164,7 +164,7 @@ To verify fixes are working:
    helm lint charts/pahlevan-operator
    ```
 
-## 🚀 Next Steps
+## Next Steps
 
 1. **Push Changes**: Commit and push all fixes to trigger workflows
 2. **Monitor Workflows**: Watch GitHub Actions for successful runs

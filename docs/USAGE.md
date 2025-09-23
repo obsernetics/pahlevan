@@ -151,10 +151,10 @@ kubectl run pahlevan-check --rm -i --tty \
   --command -- /pahlevan debug system-capabilities
 
 # Expected output:
-# ✅ eBPF Support: true
-# ✅ TC Support: true
-# ✅ Tracepoint Support: true
-# ⚠️  KProbe Support: false (some features will be limited)
+# eBPF Support: true
+# TC Support: true
+# Tracepoint Support: true
+# KProbe Support: false (some features will be limited)
 ```
 
 ### Global Configuration

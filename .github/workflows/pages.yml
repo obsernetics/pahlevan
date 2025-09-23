@@ -146,8 +146,8 @@ jobs:
 
         - 🏠 Project homepage with interactive demos
         - 📚 Integrated documentation portal
-        - 📦 Helm repository with chart listings
-        - 🔍 Search functionality across content
+        - Package Helm repository with chart listings
+        - Search Search functionality across content
         - 📱 Mobile-responsive design
 
         ## Repository Structure
@@ -277,11 +277,11 @@ jobs:
       with:
         status: success
         text: |
-          🚀 Pahlevan GitHub Pages deployed successfully!
+          Deploy Pahlevan GitHub Pages deployed successfully!
 
-          📖 Website: ${{ steps.url.outputs.url }}
+          Website Website: ${{ steps.url.outputs.url }}
           📚 Documentation: ${{ steps.url.outputs.url }}docs.html
-          📦 Helm Charts: ${{ steps.url.outputs.url }}charts.html
+          Package Helm Charts: ${{ steps.url.outputs.url }}charts.html
           🔗 Repository: https://github.com/obsernetics/pahlevan
 
           Changes:

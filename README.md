@@ -121,4 +121,4 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
-**Ready to minimize your attack surface?** Star ⭐ this repository and get started in under 5 minutes!
+**Ready to minimize your attack surface?** Star this repository and get started in under 5 minutes!

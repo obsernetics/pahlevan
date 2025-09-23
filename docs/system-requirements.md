@@ -40,10 +40,10 @@ CONFIG_BPF_JIT=y
 
 | Kernel Version | eBPF Support | TC Support | LSM Support | Tracepoints | Notes |
 |---------------|--------------|------------|-------------|-------------|-------|
-| **4.18** | ✅ Basic | ✅ | ❌ | ✅ | Minimum supported |
-| **5.4** | ✅ Good | ✅ | ❌ | ✅ | Ubuntu 20.04 default |
-| **5.7** | ✅ Full | ✅ | ✅ | ✅ | BPF LSM introduced |
-| **5.8+** | ✅ Optimal | ✅ | ✅ | ✅ | **Recommended** |
+| **4.18** | Basic | Yes | No | Yes | Minimum supported |
+| **5.4** | Good | Yes | No | Yes | Ubuntu 20.04 default |
+| **5.7** | Full | Yes | Yes | Yes | BPF LSM introduced |
+| **5.8+** | Optimal | Yes | Yes | Yes | **Recommended** |
 
 > **Note**: Current implementation uses tracepoint-based file monitoring, not LSM hooks.
 
@@ -147,11 +147,11 @@ pahlevan:
 
 | Runtime | Version | Support Level | Notes |
 |---------|---------|--------------|-------|
-| **containerd** | 1.6+ | ✅ Full | Preferred runtime |
-| **Docker** | 20.10+ | ✅ Full | Legacy support |
-| **CRI-O** | 1.24+ | ✅ Full | OpenShift default |
-| **runc** | 1.1+ | ✅ Full | Low-level runtime |
-| **crun** | 1.5+ | ⚠️ Limited | Experimental |
+| **containerd** | 1.6+ | Full | Preferred runtime |
+| **Docker** | 20.10+ | Full | Legacy support |
+| **CRI-O** | 1.24+ | Full | OpenShift default |
+| **runc** | 1.1+ | Full | Low-level runtime |
+| **crun** | 1.5+ | Limited | Experimental |
 
 ### Runtime Configuration
 
@@ -184,11 +184,11 @@ pahlevan:
 
 | CNI Plugin | Version | Compatibility | Network Policies | Notes |
 |------------|---------|--------------|-----------------|-------|
-| **Calico** | 3.24+ | ✅ Full | ✅ | Excellent integration |
-| **Cilium** | 1.12+ | ✅ Full | ✅ | eBPF-native CNI |
-| **Flannel** | 0.20+ | ✅ Good | ❌ | Basic networking |
-| **Weave** | 2.8+ | ✅ Good | ✅ | Legacy support |
-| **Antrea** | 1.8+ | ✅ Good | ✅ | VMware CNI |
+| **Calico** | 3.24+ | Full | Yes | Excellent integration |
+| **Cilium** | 1.12+ | Full | Yes | eBPF-native CNI |
+| **Flannel** | 0.20+ | Good | No | Basic networking |
+| **Weave** | 2.8+ | Good | Yes | Legacy support |
+| **Antrea** | 1.8+ | Good | Yes | VMware CNI |
 
 ### CNI-Specific Considerations
 
@@ -225,10 +225,10 @@ calicoNetwork:
 
 | EKS Version | Pahlevan Support | Notes |
 |-------------|-----------------|-------|
-| **1.24** | ✅ Full | Minimum supported |
-| **1.25** | ✅ Full | Recommended |
-| **1.26** | ✅ Full | Latest stable |
-| **1.27** | ✅ Full | Latest |
+| **1.24** | Full | Minimum supported |
+| **1.25** | Full | Recommended |
+| **1.26** | Full | Latest stable |
+| **1.27** | Full | Latest |
 
 **EKS-Specific Requirements:**
 - Amazon Linux 2 or Bottlerocket AMI
@@ -248,14 +248,14 @@ calicoNetwork:
 
 | GKE Version | Pahlevan Support | Notes |
 |-------------|-----------------|-------|
-| **1.24** | ✅ Full | Minimum supported |
-| **1.25** | ✅ Full | Recommended |
-| **1.26** | ✅ Full | Latest stable |
+| **1.24** | Full | Minimum supported |
+| **1.25** | Full | Recommended |
+| **1.26** | Full | Latest stable |
 
 **GKE-Specific Requirements:**
 - Ubuntu or Container-Optimized OS
 - VPC-native networking
-- GKE Autopilot: ⚠️ Limited (eBPF restrictions)
+- GKE Autopilot: Limited (eBPF restrictions)
 
 #### Recommended Machine Types
 
@@ -269,9 +269,9 @@ calicoNetwork:
 
 | AKS Version | Pahlevan Support | Notes |
 |-------------|-----------------|-------|
-| **1.24** | ✅ Full | Minimum supported |
-| **1.25** | ✅ Full | Recommended |
-| **1.26** | ✅ Full | Latest stable |
+| **1.24** | Full | Minimum supported |
+| **1.25** | Full | Recommended |
+| **1.26** | Full | Latest stable |
 
 **AKS-Specific Requirements:**
 - Ubuntu 20.04 node image
@@ -304,26 +304,26 @@ echo "Kernel Version: $KERNEL_VERSION"
 echo -e "\n=== Kernel Features ==="
 for feature in CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BPF_JIT CONFIG_BPF_EVENTS; do
     if grep -q "${feature}=y" /boot/config-$(uname -r) 2>/dev/null; then
-        echo "✅ $feature: Enabled"
+        echo "Yes $feature: Enabled"
     else
-        echo "❌ $feature: Disabled or not found"
+        echo "No $feature: Disabled or not found"
     fi
 done
 
 # Check eBPF filesystem
 if [ -d "/sys/fs/bpf" ]; then
-    echo "✅ BPF filesystem: Available"
+    echo "Yes BPF filesystem: Available"
 else
-    echo "❌ BPF filesystem: Not available"
+    echo "No BPF filesystem: Not available"
 fi
 
 # Check for required commands
 echo -e "\n=== Required Commands ==="
 for cmd in kubectl tc ip; do
     if command -v $cmd >/dev/null 2>&1; then
-        echo "✅ $cmd: Available"
+        echo "Yes $cmd: Available"
     else
-        echo "❌ $cmd: Not found"
+        echo "No $cmd: Not found"
     fi
 done
 
@@ -395,26 +395,26 @@ echo "=== Pahlevan Readiness Check ==="
 
 # Check if Pahlevan is installed
 if ! kubectl get crd pahlevanpolicies.policy.pahlevan.io >/dev/null 2>&1; then
-    echo "❌ Pahlevan CRDs not installed"
+    echo "No Pahlevan CRDs not installed"
     exit 1
 fi
-echo "✅ Pahlevan CRDs installed"
+echo "Yes Pahlevan CRDs installed"
 
 # Check operator status
 if kubectl get deployment pahlevan-operator -n pahlevan-system >/dev/null 2>&1; then
-    echo "✅ Pahlevan operator deployed"
+    echo "Yes Pahlevan operator deployed"
 
     # Check operator readiness
     READY=$(kubectl get deployment pahlevan-operator -n pahlevan-system -o jsonpath='{.status.readyReplicas}')
     DESIRED=$(kubectl get deployment pahlevan-operator -n pahlevan-system -o jsonpath='{.spec.replicas}')
 
     if [ "$READY" = "$DESIRED" ]; then
-        echo "✅ Operator is ready ($READY/$DESIRED)"
+        echo "Yes Operator is ready ($READY/$DESIRED)"
     else
-        echo "⚠️  Operator not fully ready ($READY/$DESIRED)"
+        echo "Warning:  Operator not fully ready ($READY/$DESIRED)"
     fi
 else
-    echo "❌ Pahlevan operator not deployed"
+    echo "No Pahlevan operator not deployed"
 fi
 
 # Check operator logs for errors
