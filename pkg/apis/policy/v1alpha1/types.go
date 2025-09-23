@@ -334,8 +334,9 @@ type TracingConfig struct {
 	// Enabled enables tracing
 	Enabled bool `json:"enabled,omitempty"`
 
-	// SamplingRate specifies trace sampling rate
-	SamplingRate *float64 `json:"samplingRate,omitempty"`
+	// SamplingRate specifies trace sampling rate as a string to avoid CRD generation issues
+	// Format: "0.1" for 10% sampling, "1.0" for 100% sampling
+	SamplingRate *string `json:"samplingRate,omitempty"`
 
 	// Exporter specifies trace exporter
 	Exporter TracingExporter `json:"exporter,omitempty"`

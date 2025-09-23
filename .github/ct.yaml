@@ -34,6 +34,7 @@ helm-extra-args: --timeout 600s
 
 # Testing configurations
 namespace: ct-test
+release-label: app.kubernetes.io/instance
 
 # Default test values
 test-values:
