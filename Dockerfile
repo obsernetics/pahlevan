@@ -15,7 +15,8 @@ RUN apk add --no-cache \
     clang \
     llvm \
     linux-headers \
-    make
+    make \
+    bash
 
 WORKDIR /src
 
