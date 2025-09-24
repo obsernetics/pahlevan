@@ -559,7 +559,7 @@ jobs:
 
     - name: Create documentation pull request
       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      uses: peter-evans/create-pull-request@v5
+      uses: peter-evans/create-pull-request@v7
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         commit-message: "docs: Auto-update generated documentation"
