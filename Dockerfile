@@ -1,44 +1,21 @@
 # syntax=docker/dockerfile:1
 
 ##################################################
-# Build Stage 1: eBPF Programs
-##################################################
-FROM ubuntu:22.04 AS ebpf-builder
-
-# Install eBPF build dependencies
-RUN apt-get update && apt-get install -y \
-    clang \
-    llvm \
-    libbpf-dev \
-    linux-headers-generic \
-    linux-libc-dev \
-    build-essential \
-    make \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-
-# Copy eBPF source files
-COPY bpf/ ./bpf/
-COPY pkg/ebpf/ ./pkg/ebpf/
-COPY Makefile ./
-
-# Build eBPF programs
-RUN make ebpf-build
-
-##################################################
-# Build Stage 2: Go Application
+# Build Stage 1: Go Application with eBPF
 ##################################################
 FROM golang:1.24-alpine AS go-builder
 
-# Install build dependencies
+# Install build dependencies including eBPF tools
 RUN apk add --no-cache \
     git \
     ca-certificates \
     gcc \
     musl-dev \
     libbpf-dev \
-    linux-headers
+    clang \
+    llvm \
+    linux-headers \
+    make
 
 WORKDIR /src
 
@@ -49,8 +26,8 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Copy eBPF programs from previous stage
-COPY --from=ebpf-builder /src/pkg/ebpf/*.o ./pkg/ebpf/
+# Build eBPF programs and generate Go bindings
+RUN make ebpf-build
 
 # Build Go binaries with optimizations
 ARG VERSION=dev
@@ -77,7 +54,7 @@ COPY --from=go-builder /src/manager /usr/local/bin/manager
 COPY --from=go-builder /src/pahlevan /usr/local/bin/pahlevan
 
 # Copy eBPF programs
-COPY --from=ebpf-builder /src/pkg/ebpf/*.o /opt/pahlevan/ebpf/
+COPY --from=go-builder /src/bpf/*.o /opt/pahlevan/ebpf/
 
 # Set up non-root user (already set by distroless nonroot)
 USER 65532:65532
