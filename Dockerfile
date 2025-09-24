@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 ##################################################
 # Runtime Stage: Minimal Image
 ##################################################
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot AS runtime
 
 # Copy binaries
 COPY --from=builder /src/manager /manager
