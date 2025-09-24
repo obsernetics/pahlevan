@@ -5,18 +5,18 @@ go 1.24.0
 toolchain go1.24.6
 
 require (
-	github.com/cilium/ebpf v0.19.0
-	github.com/go-logr/logr v1.4.2
-	github.com/onsi/ginkgo/v2 v2.22.0
-	github.com/onsi/gomega v1.36.1
-	github.com/prometheus/client_golang v1.22.0
+	github.com/cilium/ebpf v0.12.3
+	github.com/go-logr/logr v1.4.3
+	github.com/onsi/ginkgo/v2 v2.21.0
+	github.com/onsi/gomega v1.35.1
+	github.com/prometheus/client_golang v1.19.1
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.11.1
-	go.opentelemetry.io/otel v1.35.0
-	go.opentelemetry.io/otel/metric v1.35.0
-	go.opentelemetry.io/otel/sdk v1.34.0
+	go.opentelemetry.io/otel v1.38.0
+	go.opentelemetry.io/otel/metric v1.38.0
+	go.opentelemetry.io/otel/sdk v1.28.0
 	go.opentelemetry.io/otel/sdk/metric v1.28.0
-	go.opentelemetry.io/otel/trace v1.35.0
+	go.opentelemetry.io/otel/trace v1.38.0
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
 	k8s.io/cli-runtime v0.34.1
