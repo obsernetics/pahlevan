@@ -5,8 +5,8 @@
 ##################################################
 FROM golang:1.24-alpine AS builder
 
-# Install only essential dependencies
-RUN apk add --no-cache gcc musl-dev
+# Install build dependencies (including eBPF tools)
+RUN apk add --no-cache gcc musl-dev clang llvm linux-headers
 
 WORKDIR /src
 
@@ -17,6 +17,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # Copy source code
 COPY . .
+
+# Generate eBPF bindings (required for build)
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go generate ./...
 
 # Build binaries in parallel with optimizations and caching
 ARG VERSION=dev
