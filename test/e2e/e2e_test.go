@@ -30,7 +30,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/api/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -146,7 +146,7 @@ func TestOperatorDeployment(t *testing.T) {
 }
 
 func TestTestWorkloadDeployment(t *testing.T) {
-	k8sClient, clientset, _ := setupClient(t)
+	_, clientset, _ := setupClient(t)
 	ctx := context.Background()
 
 	t.Run("TestAppIsRunning", func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestOperatorLogs(t *testing.T) {
 }
 
 func TestClusterHealth(t *testing.T) {
-	k8sClient, clientset, _ := setupClient(t)
+	_, clientset, _ := setupClient(t)
 	ctx := context.Background()
 
 	t.Run("AllPodsAreHealthy", func(t *testing.T) {
