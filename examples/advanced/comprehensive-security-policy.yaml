@@ -1,0 +1,293 @@
+# Comprehensive Pahlevan Security Policy Example
+# This example demonstrates advanced features including self-healing, attack surface analysis, and comprehensive monitoring
+
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: comprehensive-web-security
+  namespace: production
+  labels:
+    tier: web
+    security-level: high
+  annotations:
+    description: "Comprehensive security policy for production web applications with self-healing"
+spec:
+  # Target all web application pods
+  selector:
+    matchLabels:
+      tier: web
+    matchExpressions:
+    - key: security-level
+      operator: In
+      values: ["medium", "high"]
+
+  # Advanced learning configuration
+  learning:
+    enabled: true
+    duration: 10m
+    autoTransition: true
+    # Enable comprehensive profiling
+    syscalls: true
+    network: true
+    files: true
+    processes: true
+    # Advanced learning settings
+    adaptiveWindow: true
+    confidenceThreshold: 0.85
+    behaviorBaseline: true
+
+  # Strict enforcement settings
+  enforcement:
+    mode: "enforce"
+    blockUnknown: true
+    gracePeriod: 60s
+    # Advanced enforcement controls
+    allowList:
+      syscalls:
+        - "read"
+        - "write"
+        - "open"
+        - "close"
+        - "connect"
+        - "bind"
+        - "listen"
+        - "accept"
+      networks:
+        - protocol: "tcp"
+          ports: [80, 443, 8080]
+          direction: "inbound"
+        - protocol: "tcp"
+          ports: [443, 3306, 5432]
+          direction: "outbound"
+      files:
+        - path: "/usr/share/nginx/html/*"
+          permissions: ["read"]
+        - path: "/var/log/*"
+          permissions: ["write", "append"]
+        - path: "/tmp/*"
+          permissions: ["read", "write", "create", "delete"]
+
+  # Advanced self-healing configuration
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 2
+    recoveryStrategy: "Progressive"
+    # Self-healing policies
+    healthChecks:
+      enabled: true
+      interval: 30s
+      timeout: 10s
+      failureThreshold: 3
+    anomalyDetection:
+      enabled: true
+      sensitivity: "medium"
+      adaptiveThresholds: true
+    emergencyMode:
+      enabled: true
+      triggerConditions:
+        - "systemCompromise"
+        - "resourceExhaustion"
+      actions:
+        - "isolateContainer"
+        - "alertAdministrators"
+        - "rollbackPolicy"
+
+  # Attack surface analysis
+  attackSurface:
+    enabled: true
+    scanInterval: 5m
+    riskAssessment: true
+    exporters:
+      - type: "prometheus"
+        endpoint: "http://prometheus:9090/metrics"
+      - type: "json"
+        path: "/var/log/pahlevan/attack-surface.json"
+      - type: "grafana"
+        dashboardId: "pahlevan-security"
+
+  # Comprehensive observability
+  observability:
+    metrics:
+      enabled: true
+      interval: 30s
+      exporters: ["prometheus", "otel"]
+    tracing:
+      enabled: true
+      sampler: "probabilistic"
+      samplingRate: 0.1
+    logging:
+      enabled: true
+      level: "info"
+      structuredLogging: true
+    alerts:
+      enabled: true
+      channels:
+        - type: "webhook"
+          endpoint: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+        - type: "email"
+          recipients: ["security@company.com", "devops@company.com"]
+        - type: "pagerduty"
+          integrationKey: "YOUR_PAGERDUTY_KEY"
+      conditions:
+        - event: "policyViolation"
+          severity: "high"
+        - event: "selfHealingTriggered"
+          severity: "medium"
+        - event: "emergencyModeActivated"
+          severity: "critical"
+
+  # Advanced security controls
+  securityControls:
+    # Process execution controls
+    processExecution:
+      allowedBinaries:
+        - "/usr/sbin/nginx"
+        - "/bin/bash"
+        - "/bin/sh"
+      preventPrivilegeEscalation: true
+      requireSignedBinaries: false
+
+    # Network security
+    networkSecurity:
+      preventLateralMovement: true
+      isolateFromHostNetwork: true
+      requireTLS: true
+      allowedDomains:
+        - "api.company.com"
+        - "cdn.company.com"
+
+    # File system security
+    fileSystemSecurity:
+      preventWriteToSystem: true
+      requireSignedLibraries: false
+      monitorConfigChanges: true
+      protectedPaths:
+        - "/etc/nginx/"
+        - "/usr/share/nginx/html/"
+
+---
+# Example deployment that would be protected by the above policy
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-web-app
+  namespace: production
+  labels:
+    tier: web
+    security-level: high
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: secure-web-app
+      tier: web
+      security-level: high
+  template:
+    metadata:
+      labels:
+        app: secure-web-app
+        tier: web
+        security-level: high
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+            add:
+              - NET_BIND_SERVICE
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+        - name: var-cache-nginx
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+      - name: var-cache-nginx
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+
+---
+# Service for the web application
+apiVersion: v1
+kind: Service
+metadata:
+  name: secure-web-app-service
+  namespace: production
+spec:
+  selector:
+    app: secure-web-app
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# NetworkPolicy to complement Pahlevan security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: secure-web-app-netpol
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: secure-web-app
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-system
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: database-system
+    ports:
+    - protocol: TCP
+      port: 3306
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443

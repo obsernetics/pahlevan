@@ -1,0 +1,13 @@
+# markdownlint configuration
+default: true
+line-length: false
+MD013: false  # Line length
+MD033: false  # Allow inline HTML
+MD041: false  # First line in file should be a top level header
+MD034: false  # Bare URL used
+MD022: false  # Headings should be surrounded by blank lines
+MD024: false  # Multiple headings with the same content
+MD031: false  # Fenced code blocks should be surrounded by blank lines
+MD032: false  # Lists should be surrounded by blank lines
+MD040: false  # Fenced code blocks should have a language specified
+MD047: false  # Files should end with a single newline character

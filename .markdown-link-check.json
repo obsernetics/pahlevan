@@ -1,0 +1,36 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "^http://localhost"
+    },
+    {
+      "pattern": "^https://github.com/obsernetics/pahlevan"
+    },
+    {
+      "pattern": "^https://docs.pahlevan.io"
+    },
+    {
+      "pattern": "^https://pahlevan.readthedocs.io"
+    },
+    {
+      "pattern": "^https://github.com/pahlevan/operator"
+    },
+    {
+      "pattern": "^CONTRIBUTING.md$"
+    },
+    {
+      "pattern": "^LICENSE$"
+    }
+  ],
+  "replacementPatterns": [
+    {
+      "pattern": "^/",
+      "replacement": "https://github.com/obsernetics/pahlevan/blob/main/"
+    }
+  ],
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "30s",
+  "aliveStatusCodes": [200, 206]
+}

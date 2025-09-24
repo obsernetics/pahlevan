@@ -1,0 +1,290 @@
+# Self-Healing Security Policy Demo
+# This example demonstrates Pahlevan's self-healing capabilities with intentional security scenarios
+
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: self-healing-demo-policy
+  namespace: security-demo
+  labels:
+    demo: "self-healing"
+    security-level: "high"
+  annotations:
+    description: "Demonstration of self-healing security policies with intentional violation scenarios"
+    demo.pahlevan.io/scenario: "self-healing"
+spec:
+  # Target demo applications
+  selector:
+    matchLabels:
+      demo: "self-healing"
+      app: "demo-app"
+
+  # Quick learning for demo purposes
+  learning:
+    enabled: true
+    duration: 2m
+    autoTransition: true
+    syscalls: true
+    network: true
+    files: true
+    # Enhanced learning for self-healing demo
+    adaptiveWindow: true
+    confidenceThreshold: 0.80  # Lower threshold for demo
+    behaviorBaseline: true
+
+  # Start with enforcement to trigger self-healing
+  enforcement:
+    mode: "enforce"
+    blockUnknown: true
+    gracePeriod: 10s
+    # Intentionally restrictive for demo
+    allowList:
+      syscalls:
+        - "read"
+        - "write"
+        - "openat"
+        - "close"
+      networks:
+        - protocol: "tcp"
+          ports: [80]
+          direction: "inbound"
+      files:
+        - path: "/app/*"
+          permissions: ["read"]
+        - path: "/tmp/*"
+          permissions: ["read", "write"]
+
+  # Advanced self-healing configuration
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 2  # Trigger quickly for demo
+    recoveryStrategy: "Progressive"
+
+    # Health monitoring
+    healthChecks:
+      enabled: true
+      interval: 15s
+      timeout: 5s
+      failureThreshold: 2
+
+    # Anomaly detection
+    anomalyDetection:
+      enabled: true
+      sensitivity: "high"  # Sensitive detection for demo
+      adaptiveThresholds: true
+      patterns:
+        - "unusualSyscalls"
+        - "networkAnomalies"
+        - "processSpawning"
+
+    # Emergency response
+    emergencyMode:
+      enabled: true
+      triggerConditions:
+        - "systemCompromise"
+        - "resourceExhaustion"
+        - "policyViolationSpike"
+      actions:
+        - "rollbackPolicy"
+        - "alertAdministrators"
+        - "reduceEnforcement"
+
+  # Real-time observability for demo
+  observability:
+    metrics:
+      enabled: true
+      interval: 10s
+      exporters: ["prometheus"]
+    logging:
+      enabled: true
+      level: "debug"
+      structuredLogging: true
+    alerts:
+      enabled: true
+      channels:
+        - type: "webhook"
+          endpoint: "http://demo-webhook.security-demo.svc.cluster.local/alerts"
+      conditions:
+        - event: "selfHealingTriggered"
+          severity: "medium"
+        - event: "policyViolation"
+          severity: "low"
+        - event: "emergencyModeActivated"
+          severity: "high"
+
+---
+# Demo application that will trigger self-healing
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: security-demo
+  labels:
+    demo: "self-healing"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-app
+      demo: "self-healing"
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        demo: "self-healing"
+    spec:
+      containers:
+      - name: demo-app
+        image: alpine:3.18
+        command:
+        - "/bin/sh"
+        - "-c"
+        - |
+          # Create some baseline activity
+          echo "Starting demo application..."
+
+          # Normal operation
+          while true; do
+            echo "Normal operation at $(date)" >> /tmp/app.log
+            cat /app/config.txt > /dev/null 2>&1 || echo "config not found"
+            sleep 5
+
+            # Simulate escalating violations to trigger self-healing
+            if [ $(( $(date +%s) % 60 )) -eq 0 ]; then
+              echo "Triggering demo violations..."
+
+              # Try to access forbidden paths (will be blocked)
+              cat /etc/shadow > /dev/null 2>&1 || true
+
+              # Try unusual network activity
+              nc -z 1.1.1.1 443 2>&1 || true
+
+              # Try process execution (may trigger policy violation)
+              ps aux > /dev/null 2>&1 || true
+            fi
+          done
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        volumeMounts:
+        - name: app-config
+          mountPath: /app
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: app-config
+        configMap:
+          name: demo-app-config
+      - name: tmp
+        emptyDir: {}
+
+---
+# Configuration for the demo app
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-app-config
+  namespace: security-demo
+data:
+  config.txt: |
+    # Demo application configuration
+    app.name=self-healing-demo
+    app.version=1.0.0
+    security.enabled=true
+
+---
+# Service for demo app
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-service
+  namespace: security-demo
+spec:
+  selector:
+    app: demo-app
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Demo webhook service for alerts (simple echo server)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-webhook
+  namespace: security-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-webhook
+  template:
+    metadata:
+      labels:
+        app: demo-webhook
+    spec:
+      containers:
+      - name: webhook
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: webhook-config
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-config
+  namespace: security-demo
+data:
+  nginx.conf: |
+    events {
+        worker_connections 1024;
+    }
+    http {
+        server {
+            listen 80;
+            location /alerts {
+                access_log /var/log/nginx/alerts.log;
+                return 200 "Alert received: $request_body\n";
+                add_header Content-Type text/plain;
+            }
+        }
+    }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-webhook
+  namespace: security-demo
+spec:
+  selector:
+    app: demo-webhook
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Create the namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security-demo
+  labels:
+    demo: "security"

@@ -1,0 +1,304 @@
+# {{ .Name }}
+
+{{ .Description }}
+
+{{ template "chart.versionBadge" . }}{{ template "chart.typeBadge" . }}{{ template "chart.appVersionBadge" . }}
+
+## Features
+
+- **Proactive Prevention**: Blocks unknown behavior before execution using eBPF
+- **Adaptive Learning**: Automatically profiles workloads and generates minimal policies
+- **Self-Healing**: Intelligent rollback on policy failures with zero downtime
+- **Comprehensive Monitoring**: Real-time attack surface analysis with rich observability
+
+## Prerequisites
+
+- Kubernetes 1.24+
+- Linux kernel 5.8+ with eBPF support
+- Helm 3.8+
+
+## Installation
+
+### Add Helm Repository
+
+```bash
+helm repo add pahlevan https://obsernetics.github.io/pahlevan/
+helm repo update
+```
+
+### Install from Repository
+
+```bash
+helm install pahlevan pahlevan/{{ .Name }} \
+  --namespace pahlevan-system \
+  --create-namespace
+```
+
+### Install from OCI Registry
+
+```bash
+helm install pahlevan oci://ghcr.io/obsernetics/charts/{{ .Name }} \
+  --namespace pahlevan-system \
+  --create-namespace
+```
+
+### Development Installation
+
+```bash
+# Clone repository
+git clone https://github.com/obsernetics/pahlevan.git
+cd pahlevan
+
+# Install with development values
+helm install pahlevan charts/{{ .Name }} \
+  --namespace pahlevan-system \
+  --create-namespace \
+  --set development.enabled=true \
+  --set development.debug=true
+```
+
+## Configuration
+
+### Basic Configuration
+
+```yaml
+# Monitor-only mode for development
+enforcement:
+  mode: "monitor"
+  blockUnknown: false
+
+learning:
+  duration: "30m"
+  autoTransition: false
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+```
+
+### Production Configuration
+
+```yaml
+# Strict enforcement for production
+enforcement:
+  mode: "enforce"
+  blockUnknown: true
+
+learning:
+  duration: "5m"
+  autoTransition: true
+  strictMode: true
+
+selfHealing:
+  enabled: true
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+```
+
+### High Availability Configuration
+
+```yaml
+operator:
+  replicaCount: 3
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ .Name }}
+        topologyKey: kubernetes.io/hostname
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+```
+
+## Monitoring and Observability
+
+### Prometheus Integration
+
+```yaml
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    labels:
+      monitoring: prometheus
+
+prometheusRule:
+  enabled: true
+  rules:
+    - alert: PahlevanDown
+      expr: up{job="pahlevan-operator"} == 0
+      for: 5m
+      labels:
+        severity: critical
+```
+
+### Grafana Dashboards
+
+```yaml
+observability:
+  grafana:
+    enabled: true
+    dashboards:
+      - security-overview
+      - attack-surface
+      - policy-violations
+```
+
+## Security
+
+### Pod Security Standards
+
+```yaml
+operator:
+  podSecurityContext:
+    fsGroup: 65532
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    runAsUser: 65532
+    runAsGroup: 65532
+    capabilities:
+      drop: ["ALL"]
+      add: ["SYS_ADMIN", "SYS_RESOURCE", "NET_ADMIN"]
+```
+
+### Network Policies
+
+```yaml
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+      ports:
+      - protocol: TCP
+        port: 8080
+```
+
+## Compliance
+
+### PCI DSS Configuration
+
+```yaml
+compliance:
+  enabled: true
+  frameworks:
+    pci: true
+  audit:
+    enabled: true
+    retentionDays: 365
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **eBPF Programs Not Loading**
+   ```bash
+   # Check kernel version
+   uname -r
+
+   # Verify eBPF support
+   kubectl logs -n pahlevan-system deployment/pahlevan-operator
+   ```
+
+2. **High Resource Usage**
+   ```yaml
+   # Reduce monitoring scope
+   ebpf:
+     config:
+       maxEvents: 5000
+       bufferSize: 32768
+   ```
+
+3. **Webhook Certificate Issues**
+   ```yaml
+   # Use cert-manager
+   webhooks:
+     certificate:
+       autoGenerate: false
+       issuer: "cert-manager"
+   ```
+
+### Debug Mode
+
+```yaml
+development:
+  enabled: true
+  debug: true
+  profiling:
+    enabled: true
+    port: 6060
+```
+
+## Upgrading
+
+### Version Compatibility
+
+| Chart Version | App Version | Kubernetes | Notes |
+|---------------|-------------|------------|-------|
+| 1.x           | 1.x         | 1.24+      | Initial release |
+
+### Upgrade Process
+
+```bash
+# Update repository
+helm repo update
+
+# Upgrade release
+helm upgrade pahlevan pahlevan/{{ .Name }} \
+  --namespace pahlevan-system \
+  --reuse-values
+```
+
+## Uninstallation
+
+```bash
+# Uninstall release
+helm uninstall pahlevan --namespace pahlevan-system
+
+# Remove CRDs (if desired)
+kubectl delete crd securitypolicies.security.pahlevan.io
+kubectl delete crd attacksurfaces.security.pahlevan.io
+```
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "helm-docs.versionFooter" . }}
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make changes and add tests
+4. Submit a pull request
+
+## License
+
+{{ template "chart.homepageLine" . }}
+
+This chart is licensed under the Apache License 2.0.
+
+## Support
+
+- **Documentation**: [GitHub Repository]({{ template "chart.homepage" . }})
+- **Issues**: [GitHub Issues]({{ template "chart.homepage" . }}/issues)
+- **Community**: [Kubernetes Slack #pahlevan](https://kubernetes.slack.com/channels/pahlevan)

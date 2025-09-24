@@ -1,0 +1,105 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+!docs/
+
+# Build artifacts
+bin/
+dist/
+.cache/
+node_modules/
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+coverage.out
+*.test
+testdata/
+
+# Temporary files
+tmp/
+temp/
+.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# CI/CD files (except for multi-stage builds)
+.github/
+!.github/workflows/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+
+# Docker files
+Dockerfile.*
+docker-compose*.yml
+.dockerignore
+
+# Kubernetes manifests
+config/
+manifests/
+charts/
+helm/
+k8s/
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Backup files
+*.backup
+*.bak
+
+# Archives
+*.tar
+*.tar.gz
+*.zip
+*.rar
+
+# IDE specific
+*.iml
+.idea/
+.vscode/settings.json
+
+# Go specific
+vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+*.out
+coverage.html
+
+# Local development
+local/
+scripts/dev/
+Makefile.local
+
+# Security scanning results
+.snyk
+snyk-*.json
+
+# Helm specific
+charts/*/charts/
+charts/*/Chart.lock
+charts/*/requirements.lock

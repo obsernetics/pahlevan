@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pahlevan - eBPF Kubernetes Security Operator</title>
+    <meta name="description" content="Pahlevan is a next-generation Kubernetes security operator that provides proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:title" content="Pahlevan - eBPF Kubernetes Security Operator">
+    <meta property="og:description" content="Proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://obsernetics.github.io/pahlevan/">
+    <meta property="og:image" content="https://obsernetics.github.io/pahlevan/assets/pahlevan-logo.png">
+
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Pahlevan - eBPF Kubernetes Security Operator">
+    <meta name="twitter:description" content="Proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+    <meta name="twitter:image" content="https://obsernetics.github.io/pahlevan/assets/pahlevan-logo.png">
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="assets/css/main.css">
+
+    <!-- Prism.js for code highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <img src="assets/pahlevan-icon.svg" alt="Pahlevan" class="nav-logo">
+                <a href="https://obsernetics.github.io/pahlevan/" class="nav-link" target="_blank">Pahlevan</a>
+            </div>
+            <div class="nav-toggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+    </nav>
+
+    <header class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <div class="hero-badge">
+                    <span class="badge">eBPF Security</span>
+                </div>
+                <h1 class="hero-title">
+                    Kubernetes Security <br>
+                    <span class="text-gradient">Operator</span>
+                </h1>
+                <p class="hero-description">
+                    Adaptive learning and real-time enforcement for Kubernetes workloads through kernel-level eBPF monitoring.
+                </p>
+                <div class="hero-actions">
+
+                    <a href="https://github.com/obsernetics/pahlevan" class="btn btn-outline" target="_blank">
+                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+                        </svg>
+                        GitHub
+                    </a>
+                </div>
+            </div>
+            <div class="hero-visual">
+                <div class="terminal-window">
+                    <div class="terminal-header">
+                        <div class="terminal-buttons">
+                            <span class="btn-close"></span>
+                            <span class="btn-minimize"></span>
+                            <span class="btn-maximize"></span>
+                        </div>
+                        <div class="terminal-title">~/kubectl apply -f</div>
+                    </div>
+                    <div class="terminal-body">
+                        <div class="terminal-line">
+                            <span class="prompt">$</span>
+                            <span class="command">helm repo add pahlevan https://obsernetics.github.io/pahlevan/</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">"pahlevan" has been added to your repositories</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="prompt">$</span>
+                            <span class="command">helm install pahlevan pahlevan/pahlevan-operator</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">Success eBPF programs loaded successfully</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">Security Attack surface monitoring active</span>
+                        </div>
+                        <div class="terminal-line">
+                            <span class="output">Target Learning phase initiated</span>
+                        </div>
+                        <div class="terminal-cursor">_</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="assets/js/main.js"></script>
+</body>
+</html>

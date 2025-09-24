@@ -1,0 +1,216 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pahlevan-operator.fullname" . }}
+  namespace: {{ include "pahlevan-operator.namespace" . }}
+  labels:
+    {{- include "pahlevan-operator.labels" . | nindent 4 }}
+  {{- with .Values.operator.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pahlevan-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pahlevan-operator.selectorLabels" . | nindent 8 }}
+        {{- with .Values.operator.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.operator.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pahlevan-operator.serviceAccountName" . }}
+      {{- with .Values.operator.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: manager
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+        - /manager
+        args:
+        - --health-probe-bind-address={{ .Values.operator.env.HEALTH_PROBE_BIND_ADDRESS }}
+        - --metrics-bind-address={{ .Values.operator.env.METRICS_BIND_ADDRESS }}
+        - --leader-elect={{ .Values.operator.env.ENABLE_LEADER_ELECTION }}
+        {{- if .Values.operator.env.ENABLE_LEADER_ELECTION }}
+        - --leader-election-lease-duration={{ .Values.operator.env.LEADER_ELECTION_LEASE_DURATION }}
+        - --leader-election-renew-deadline={{ .Values.operator.env.LEADER_ELECTION_RENEW_DEADLINE }}
+        - --leader-election-retry-period={{ .Values.operator.env.LEADER_ELECTION_RETRY_PERIOD }}
+        {{- end }}
+        {{- if .Values.webhooks.enabled }}
+        - --webhook-port={{ .Values.webhooks.port }}
+        {{- end }}
+        {{- if .Values.development.enabled }}
+        - --development-mode=true
+        {{- if .Values.development.debug }}
+        - --log-level=debug
+        {{- end }}
+        {{- if .Values.development.profiling.enabled }}
+        - --enable-profiling=true
+        - --profiling-port={{ .Values.development.profiling.port }}
+        {{- end }}
+        {{- end }}
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        {{- range $key, $value := .Values.operator.env }}
+        - name: {{ $key }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- if .Values.ebpf.enabled }}
+        - name: ENABLE_EBPF
+          value: "true"
+        - name: EBPF_SYSCALL_MONITORING
+          value: {{ .Values.ebpf.config.enableSyscallMonitoring | quote }}
+        - name: EBPF_NETWORK_MONITORING
+          value: {{ .Values.ebpf.config.enableNetworkMonitoring | quote }}
+        - name: EBPF_FILE_MONITORING
+          value: {{ .Values.ebpf.config.enableFileMonitoring | quote }}
+        - name: EBPF_LOG_LEVEL
+          value: {{ .Values.ebpf.config.logLevel | quote }}
+        - name: EBPF_MAX_EVENTS
+          value: {{ .Values.ebpf.config.maxEvents | quote }}
+        - name: EBPF_BUFFER_SIZE
+          value: {{ .Values.ebpf.config.bufferSize | quote }}
+        {{- end }}
+        {{- if .Values.development.mockEBPF }}
+        - name: MOCK_EBPF
+          value: "true"
+        {{- end }}
+        ports:
+        - name: webhook
+          containerPort: {{ .Values.webhooks.port }}
+          protocol: TCP
+        - name: metrics
+          containerPort: {{ int (split ":" .Values.operator.env.METRICS_BIND_ADDRESS)._1 }}
+          protocol: TCP
+        - name: health
+          containerPort: {{ int (split ":" .Values.operator.env.HEALTH_PROBE_BIND_ADDRESS)._1 }}
+          protocol: TCP
+        {{- if .Values.development.profiling.enabled }}
+        - name: profiling
+          containerPort: {{ .Values.development.profiling.port }}
+          protocol: TCP
+        {{- end }}
+        {{- if .Values.health.enabled }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          {{- toYaml .Values.health.livenessProbe | nindent 10 }}
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          {{- toYaml .Values.health.readinessProbe | nindent 10 }}
+        {{- end }}
+        {{- with .Values.operator.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- if .Values.ebpf.privileged }}
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - SYS_ADMIN
+            - SYS_RESOURCE
+            - NET_ADMIN
+        {{- end }}
+        resources:
+          {{- toYaml .Values.operator.resources | nindent 10 }}
+        volumeMounts:
+        {{- if .Values.webhooks.enabled }}
+        - name: webhook-certs
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
+        {{- end }}
+        {{- if .Values.ebpf.enabled }}
+        - name: bpffs
+          mountPath: {{ .Values.ebpf.hostPaths.bpffs }}
+          mountPropagation: Bidirectional
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        {{- if .Values.ebpf.hostPaths.debugfs }}
+        - name: debugfs
+          mountPath: /host/debug
+          readOnly: true
+        {{- end }}
+        {{- end }}
+        - name: config
+          mountPath: /etc/operator
+          readOnly: true
+      volumes:
+      {{- if .Values.webhooks.enabled }}
+      - name: webhook-certs
+        secret:
+          secretName: {{ include "pahlevan-operator.fullname" . }}-webhook-certs
+          defaultMode: 420
+      {{- end }}
+      {{- if .Values.ebpf.enabled }}
+      - name: bpffs
+        hostPath:
+          path: {{ .Values.ebpf.hostPaths.bpffs }}
+          type: DirectoryOrCreate
+      - name: proc
+        hostPath:
+          path: {{ .Values.ebpf.hostPaths.proc }}
+          type: Directory
+      - name: sys
+        hostPath:
+          path: {{ .Values.ebpf.hostPaths.sys }}
+          type: Directory
+      {{- if .Values.ebpf.hostPaths.debugfs }}
+      - name: debugfs
+        hostPath:
+          path: {{ .Values.ebpf.hostPaths.debugfs }}
+          type: Directory
+      {{- end }}
+      {{- end }}
+      - name: config
+        configMap:
+          name: {{ include "pahlevan-operator.fullname" . }}-config
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
