@@ -121,8 +121,8 @@ spec:
     spec:
       serviceAccountName: pahlevan-operator
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
+        runAsNonRoot: false
+        runAsUser: 0
         fsGroup: 65532
       containers:
       - name: operator
@@ -163,13 +163,14 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
-          runAsNonRoot: true
-          runAsUser: 65532
+          runAsNonRoot: false
+          runAsUser: 0
           capabilities:
             add:
-            - SYS_ADMIN
-            - NET_ADMIN
             - BPF
+            - NET_ADMIN
+            - SYS_RESOURCE
+            - IPC_LOCK
             drop:
             - ALL
         env:
@@ -177,6 +178,50 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: ENABLE_EBPF
+          value: "true"
+        - name: EBPF_SYSCALL_MONITORING
+          value: "true"
+        - name: EBPF_NETWORK_MONITORING
+          value: "true"
+        - name: EBPF_FILE_MONITORING
+          value: "true"
+        - name: EBPF_LOG_LEVEL
+          value: "1"
+        - name: EBPF_MAX_EVENTS
+          value: "10000"
+        - name: EBPF_BUFFER_SIZE
+          value: "65536"
+        volumeMounts:
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+          mountPropagation: HostToContainer
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: debugfs
+          mountPath: /host/debug
+          readOnly: true
+      volumes:
+      - name: bpffs
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: proc
+        hostPath:
+          path: /proc
+          type: Directory
+      - name: sys
+        hostPath:
+          path: /sys
+          type: Directory
+      - name: debugfs
+        hostPath:
+          path: /sys/kernel/debug
+          type: Directory
 ---
 apiVersion: v1
 kind: Service

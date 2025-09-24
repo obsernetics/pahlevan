@@ -24,7 +24,6 @@ data:
     {{- if .Values.ebpf.enabled }}
     ebpf:
       enabled: true
-      privileged: {{ .Values.ebpf.privileged }}
       config:
         syscallMonitoring: {{ .Values.ebpf.config.enableSyscallMonitoring }}
         networkMonitoring: {{ .Values.ebpf.config.enableNetworkMonitoring }}

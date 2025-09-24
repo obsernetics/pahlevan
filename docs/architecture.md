@@ -330,18 +330,19 @@ The Pahlevan operator requires specific privileges to function:
 capabilities:
   add:
   - CAP_BPF          # Load eBPF programs
-  - CAP_SYS_ADMIN    # Manage kernel resources
   - CAP_NET_ADMIN    # Network program attachment
+  - CAP_SYS_RESOURCE # Adjust memory limits
+  - CAP_IPC_LOCK     # Memory locking
 
-# Security context
+# Security context - minimal privileges for eBPF operations
 securityContext:
-  runAsNonRoot: true
-  runAsUser: 65534
+  runAsNonRoot: false  # eBPF requires root for some operations
+  runAsUser: 0
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   capabilities:
     drop: ["ALL"]
-    add: ["CAP_BPF", "CAP_SYS_ADMIN", "CAP_NET_ADMIN"]
+    add: ["CAP_BPF", "CAP_NET_ADMIN", "CAP_SYS_RESOURCE", "CAP_IPC_LOCK"]
 ```
 
 ### eBPF Program Security

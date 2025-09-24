@@ -122,13 +122,10 @@ spec:
             port: health
           {{- toYaml .Values.health.readinessProbe | nindent 10 }}
         {{- end }}
+        {{- with .Values.operator.securityContext }}
         securityContext:
-          {{- if .Values.ebpf.enabled }}
-          privileged: {{ .Values.ebpf.privileged }}
-          {{- end }}
-          {{- with .Values.operator.securityContext }}
           {{- toYaml . | nindent 10 }}
-          {{- end }}
+        {{- end }}
         resources:
           {{- toYaml .Values.operator.resources | nindent 10 }}
         volumeMounts:
@@ -140,7 +137,7 @@ spec:
         {{- if .Values.ebpf.enabled }}
         - name: bpffs
           mountPath: {{ .Values.ebpf.hostPaths.bpffs }}
-          mountPropagation: Bidirectional
+          mountPropagation: HostToContainer
         - name: proc
           mountPath: /host/proc
           readOnly: true

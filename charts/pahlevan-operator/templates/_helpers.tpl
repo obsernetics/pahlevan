@@ -210,7 +210,7 @@ Create pod annotations
 Validate eBPF configuration
 */}}
 {{- define "pahlevan-operator.validateEBPF" -}}
-{{- /* eBPF requires privileged mode for BPF filesystem mount propagation */ -}}
+{{- /* eBPF uses specific capabilities (BPF, NET_ADMIN, SYS_RESOURCE, IPC_LOCK) instead of privileged mode */ -}}
 {{- end }}
 
 {{/*

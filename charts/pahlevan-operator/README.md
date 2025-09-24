@@ -54,14 +54,14 @@ helm install pahlevan ./charts/pahlevan-operator \
 
 ### Security Context
 
-The operator requires elevated privileges for eBPF operations:
+The operator uses minimal privileges for eBPF operations:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `operator.securityContext.allowPrivilegeEscalation` | Allow privilege escalation | `true` |
+| `operator.securityContext.allowPrivilegeEscalation` | Allow privilege escalation | `false` |
 | `operator.securityContext.runAsUser` | User ID | `0` (root) |
-| `operator.securityContext.capabilities.add` | Linux capabilities | `[NET_ADMIN, BPF, SYS_ADMIN, SYS_RESOURCE, IPC_LOCK]` |
-| `operator.securityContext.seccompProfile.type` | Seccomp profile | `Unconfined` |
+| `operator.securityContext.capabilities.add` | Linux capabilities | `[BPF, NET_ADMIN, SYS_RESOURCE, IPC_LOCK]` |
+| `operator.securityContext.seccompProfile.type` | Seccomp profile | `RuntimeDefault` |
 
 ### eBPF Configuration
 
@@ -103,10 +103,12 @@ The operator binary supports the following flags:
 ## Recent Changes
 
 ### Version 0.2.0
-- **Security Context Updates**: Added required privileges for eBPF operations
-  - Changed to run as root (UID 0) for eBPF functionality
-  - Added SYS_ADMIN, SYS_RESOURCE, and IPC_LOCK capabilities
-  - Set seccomp profile to Unconfined for eBPF access
+- **Minimal Security Context**: Completely removed privileged mode requirements
+  - Uses only essential capabilities: BPF, NET_ADMIN, SYS_RESOURCE, IPC_LOCK
+  - Removed SYS_ADMIN and all privileged mode configurations
+  - Changed mount propagation from Bidirectional to HostToContainer
+  - Uses RuntimeDefault seccomp profile instead of Unconfined
+  - No privileged containers or security context constraints required
 
 - **Fixed Leader Election**: Simplified leader election configuration
   - Removed unsupported detailed lease configuration flags
@@ -124,9 +126,9 @@ The operator binary supports the following flags:
 
 ### eBPF Permission Errors
 If you see errors like `failed to remove memory limit: operation not permitted`:
-1. Ensure the security context has the required capabilities
-2. Check that your cluster allows privileged containers
-3. Verify kernel version supports eBPF (5.8+)
+1. Ensure the security context has the required capabilities (BPF, NET_ADMIN, SYS_RESOURCE, IPC_LOCK)
+2. Verify kernel version supports eBPF (5.8+)
+3. Check that BPF filesystem is mounted at /sys/fs/bpf
 
 ### Image Pull Errors
 For local development with Minikube:

@@ -97,11 +97,13 @@ Ensure the Pahlevan operator has the necessary permissions:
 apiVersion: v1
 kind: SecurityContext
 spec:
-  privileged: true
+  privileged: false  # No privileged mode required
   capabilities:
     add:
-    - SYS_ADMIN
-    - SYS_RESOURCE
+    - BPF           # Required for eBPF operations
+    - NET_ADMIN     # Required for network eBPF programs
+    - SYS_RESOURCE  # Required to adjust memory limits
+    - IPC_LOCK      # Required for memory locking
 ```
 
 ### Kernel Configuration
@@ -141,7 +143,8 @@ spec:
     mode: "enforce"
     lsmEnabled: true  # Prefer LSM when available
     capabilities:
-      - CAP_SYS_ADMIN: false
+      - CAP_BPF: true        # Required for eBPF operations
+      - CAP_SYS_ADMIN: false # Not needed with minimal privileges
       - CAP_NET_RAW: false
     processExecution:
       allowedBinaries:

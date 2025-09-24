@@ -169,11 +169,11 @@ operator:
 
   securityContext:
     allowPrivilegeEscalation: false
-    runAsUser: 65532
-    runAsGroup: 65532
+    runAsUser: 0  # Required for eBPF operations
+    runAsGroup: 0
     capabilities:
       drop: ["ALL"]
-      add: ["SYS_ADMIN", "SYS_RESOURCE", "NET_ADMIN"]
+      add: ["BPF", "NET_ADMIN", "SYS_RESOURCE", "IPC_LOCK"]
 ```
 
 ### Network Policies

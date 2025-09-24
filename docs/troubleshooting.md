@@ -60,13 +60,14 @@ grep CONFIG_BPF_SYSCALL /boot/config-$(uname -r)
 
 **Insufficient Privileges:**
 ```yaml
-# Ensure operator has required capabilities
+# Ensure operator has required capabilities (minimal set for eBPF)
 securityContext:
   capabilities:
     add:
-    - CAP_BPF
-    - CAP_SYS_ADMIN
-    - CAP_NET_ADMIN
+    - CAP_BPF        # Required for eBPF operations
+    - CAP_NET_ADMIN  # Required for network eBPF programs
+    - CAP_SYS_RESOURCE # Required to adjust memory limits
+    - CAP_IPC_LOCK   # Required for memory locking
 ```
 
 **Kernel Too Old:**
