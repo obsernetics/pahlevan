@@ -8,6 +8,10 @@ on:
   schedule:
     - cron: '0 2 * * *'  # Daily at 2 AM
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   trivy:
     name: Trivy Security Scan

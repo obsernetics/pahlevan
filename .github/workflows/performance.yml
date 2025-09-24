@@ -9,6 +9,10 @@ on:
     - cron: '0 4 * * 0'  # Weekly on Sunday at 4 AM
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GO_VERSION: "1.24"
 

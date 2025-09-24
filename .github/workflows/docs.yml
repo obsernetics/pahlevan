@@ -14,6 +14,10 @@ on:
       - 'README.md'
       - '*.md'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-docs:
     name: Lint Documentation

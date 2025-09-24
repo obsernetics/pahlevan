@@ -9,6 +9,10 @@ on:
   repository_dispatch:
     types: [run-e2e]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GO_VERSION: "1.24"
   REGISTRY: ghcr.io
