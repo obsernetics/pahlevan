@@ -4,8 +4,19 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/obsernetics/pahlevan)](https://goreportcard.com/report/github.com/obsernetics/pahlevan)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![CI](https://github.com/obsernetics/pahlevan/workflows/CI/badge.svg)](https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/obsernetics/pahlevan/branch/main/graph/badge.svg)](https://codecov.io/gh/obsernetics/pahlevan)
+
+## 🚀 Workflow Status
+
+| Workflow | Status | Description |
+|----------|--------|-------------|
+| CI | [![CI](https://github.com/obsernetics/pahlevan/workflows/CI/badge.svg)](https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml) | Core build, test, and integration |
+| Security | [![Security](https://github.com/obsernetics/pahlevan/workflows/Security/badge.svg)](https://github.com/obsernetics/pahlevan/actions/workflows/security.yml) | Security scanning, CodeQL, vulnerabilities |
+| Build & Publish | [![Build and Publish](https://github.com/obsernetics/pahlevan/workflows/Build%20and%20Publish/badge.svg)](https://github.com/obsernetics/pahlevan/actions/workflows/build.yml) | Docker build and GHCR publishing |
+| E2E Tests | [![E2E Tests](https://github.com/obsernetics/pahlevan/workflows/E2E%20Tests/badge.svg)](https://github.com/obsernetics/pahlevan/actions/workflows/e2e.yml) | End-to-end testing in real K8s cluster |
+| Documentation | [![Documentation](https://github.com/obsernetics/pahlevan/workflows/Documentation/badge.svg)](https://github.com/obsernetics/pahlevan/actions/workflows/docs.yml) | Documentation building and deployment |
+
+📊 **Container Registry:** [`ghcr.io/obsernetics/pahlevan`](https://github.com/obsernetics/pahlevan/pkgs/container/pahlevan)
+📚 **Documentation:** [GitHub Pages](https://obsernetics.github.io/pahlevan/)
 
 **Pahlevan** is a Kubernetes security operator that provides **runtime security monitoring and enforcement** through eBPF-powered workload profiling and policy-based protection.
 
