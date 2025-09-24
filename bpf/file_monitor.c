@@ -20,8 +20,24 @@
 
 #include <linux/bpf.h>
 #include <linux/ptrace.h>
+#include <linux/errno.h>
+#include <linux/fs.h>
+#include <linux/dcache.h>
+#include <linux/security.h>
+#include <linux/sched.h>
+#include <linux/nsproxy.h>
+#include <linux/pid_namespace.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+
+/* File access permission masks */
+#define MAY_EXEC    0x00000001
+#define MAY_WRITE   0x00000002
+#define MAY_READ    0x00000004
+#define MAY_APPEND  0x00000008
+#define MAY_ACCESS  0x00000010
+#define MAY_OPEN    0x00000020
+#define MAY_CHDIR   0x00000040
 
 /* --------------------------------------------------------------------------
  * Data Structures
@@ -71,12 +87,34 @@ struct {
  * -------------------------------------------------------------------------- */
 
 /**
- * Resolve a simplified container identifier for the current process.
- * NOTE: This is a placeholder hash, not suitable for production.
+ * Resolve container identifier for the current process using cgroup information.
+ * Uses a combination of PID namespace and cgroup hash for better uniqueness.
  */
 static __always_inline __u32 get_container_id(void) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    return pid % 1000; /* Very naive hashing for demonstration */
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return 0;
+    }
+
+    // Get PID namespace ID as primary identifier
+    __u32 pid_ns_inum = 0;
+    struct pid_namespace *pid_ns = task->nsproxy ? task->nsproxy->pid_ns_for_children : NULL;
+    if (pid_ns) {
+        pid_ns_inum = pid_ns->ns.inum;
+    }
+
+    // If we can't get namespace info, fall back to PID-based approach
+    if (pid_ns_inum == 0) {
+        __u32 pid = bpf_get_current_pid_tgid() >> 32;
+        __u32 tgid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+        // Create a better hash using both PID and TGID
+        __u32 hash = pid ^ (tgid << 16);
+        return hash % 65536;  // Expanded range for better distribution
+    }
+
+    // Use namespace inode number as container ID
+    return pid_ns_inum;
 }
 
 /**
@@ -97,12 +135,129 @@ static __always_inline int is_file_access_allowed(__u32 container_id, const char
         return 1;
     }
 
-    /* Enforcement mode: placeholder logic (always allow in demo) */
-    return 1;
+    /* Enforcement mode: check if file path is allowed */
+    char current_path[256];
+    bpf_d_path(&file->f_path, current_path, sizeof(current_path));
+
+    /* Check against allowed paths */
+    for (int i = 0; i < policy->path_count && i < 1024; i++) {
+        if (bpf_strncmp(current_path, policy->allowed_paths[i], 64) == 0) {
+            return 1; /* Allow access */
+        }
+
+        /* Check for directory prefix match */
+        int path_len = bpf_strlen(policy->allowed_paths[i]);
+        if (path_len > 0 && policy->allowed_paths[i][path_len-1] == '/') {
+            if (bpf_strncmp(current_path, policy->allowed_paths[i], path_len) == 0) {
+                return 1; /* Allow access to files in allowed directory */
+            }
+        }
+    }
+
+    /* Default: deny access */
+    return 0;
 }
 
 /* --------------------------------------------------------------------------
- * Probes
+ * LSM Hooks (Linux Security Module)
+ * -------------------------------------------------------------------------- */
+
+/**
+ * LSM hook: file_open
+ * Monitors file open operations at the security layer
+ */
+SEC("lsm/file_open")
+int BPF_PROG(lsm_file_open, struct file *file) {
+    struct file_access_event evt = {};
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+
+    evt.pid          = pid_tgid >> 32;
+    evt.tid          = pid_tgid & 0xffffffff;
+    evt.operation    = 2; /* open */
+    evt.timestamp_ns = bpf_ktime_get_ns();
+    evt.container_id = get_container_id();
+
+    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
+    if (file && file->f_path.dentry && file->f_path.dentry->d_name.name) {
+        bpf_probe_read_str(evt.filename, sizeof(evt.filename),
+                          file->f_path.dentry->d_name.name);
+    } else {
+        bpf_probe_read_str(evt.filename, sizeof(evt.filename), "unknown");
+    }
+
+    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
+        bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
+        return -EACCES; /* Access denied */
+    }
+
+    /* Record file access for learning */
+    bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
+    return 0;
+}
+
+/**
+ * LSM hook: file_permission
+ * Monitors file permission checks
+ */
+SEC("lsm/file_permission")
+int BPF_PROG(lsm_file_permission, struct file *file, int mask) {
+    struct file_access_event evt = {};
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+
+    evt.pid          = pid_tgid >> 32;
+    evt.tid          = pid_tgid & 0xffffffff;
+    evt.operation    = (mask & MAY_WRITE) ? 1 : 0; /* write : read */
+    evt.timestamp_ns = bpf_ktime_get_ns();
+    evt.container_id = get_container_id();
+    evt.access_mode  = mask;
+
+    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
+    if (file && file->f_path.dentry && file->f_path.dentry->d_name.name) {
+        bpf_probe_read_str(evt.filename, sizeof(evt.filename),
+                          file->f_path.dentry->d_name.name);
+    } else {
+        bpf_probe_read_str(evt.filename, sizeof(evt.filename), "unknown");
+    }
+
+    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
+        bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
+        return -EACCES;
+    }
+
+    /* Record permission check for learning */
+    bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
+    return 0;
+}
+
+/**
+ * LSM hook: inode_permission
+ * Monitors inode-level permission checks
+ */
+SEC("lsm/inode_permission")
+int BPF_PROG(lsm_inode_permission, struct inode *inode, int mask) {
+    struct file_access_event evt = {};
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+
+    evt.pid          = pid_tgid >> 32;
+    evt.tid          = pid_tgid & 0xffffffff;
+    evt.operation    = (mask & MAY_WRITE) ? 1 : 0;
+    evt.timestamp_ns = bpf_ktime_get_ns();
+    evt.container_id = get_container_id();
+    evt.access_mode  = mask;
+
+    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
+    bpf_probe_read_str(evt.filename, sizeof(evt.filename), "inode");
+
+    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
+        bpf_perf_event_output(inode, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
+        return -EACCES;
+    }
+
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Kprobe Fallback Probes (for compatibility)
  * -------------------------------------------------------------------------- */
 
 /* Kprobe: file open */

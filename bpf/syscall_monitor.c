@@ -20,6 +20,9 @@
 
 #include <linux/bpf.h>
 #include <linux/ptrace.h>
+#include <linux/sched.h>
+#include <linux/nsproxy.h>
+#include <linux/pid_namespace.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
@@ -86,12 +89,33 @@ struct {
  * -------------------------------------------------------------------------- */
 
 /**
- * Resolve a simplified container identifier for the current process.
- * NOTE: For demonstration; production should extract from cgroups.
+ * Resolve container identifier for the current process using namespace information.
+ * Uses PID namespace inode number for proper container identification.
  */
 static __always_inline __u32 get_container_id(void) {
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    return pid % 1000; /* Simple hash for demo purposes */
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        return 0;
+    }
+
+    // Get PID namespace ID as container identifier
+    __u32 pid_ns_inum = 0;
+    struct pid_namespace *pid_ns = task->nsproxy ? task->nsproxy->pid_ns_for_children : NULL;
+    if (pid_ns) {
+        pid_ns_inum = pid_ns->ns.inum;
+    }
+
+    // Fallback to enhanced PID-based approach if namespace unavailable
+    if (pid_ns_inum == 0) {
+        __u32 pid = bpf_get_current_pid_tgid() >> 32;
+        __u32 tgid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+        // Better hash combining PID and TGID
+        __u32 hash = pid ^ (tgid << 16);
+        return hash % 65536;
+    }
+
+    return pid_ns_inum;
 }
 
 /**

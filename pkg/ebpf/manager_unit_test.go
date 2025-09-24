@@ -220,40 +220,40 @@ func TestStatistics_Reset(t *testing.T) {
 
 	stats.Reset()
 
-	assert.Equal(t, uint64(0), stats.EventsProcessed)
-	assert.Equal(t, uint64(0), stats.PoliciesUpdated)
-	assert.Equal(t, uint64(0), stats.ViolationsDetected)
-	assert.True(t, stats.LastUpdate.IsZero())
+	assert.Equal(t, uint64(0), stats.GetEventsProcessed())
+	assert.Equal(t, uint64(0), stats.GetPoliciesUpdated())
+	assert.Equal(t, uint64(0), stats.GetViolationsDetected())
+	assert.True(t, stats.GetLastUpdate().IsZero())
 }
 
 func TestStatistics_IncrementEvents(t *testing.T) {
 	stats := &Statistics{}
 
 	stats.IncrementEvents()
-	assert.Equal(t, uint64(1), stats.EventsProcessed)
+	assert.Equal(t, uint64(1), stats.GetEventsProcessed())
 
 	stats.IncrementEvents()
-	assert.Equal(t, uint64(2), stats.EventsProcessed)
+	assert.Equal(t, uint64(2), stats.GetEventsProcessed())
 }
 
 func TestStatistics_IncrementPolicies(t *testing.T) {
 	stats := &Statistics{}
 
 	stats.IncrementPolicies()
-	assert.Equal(t, uint64(1), stats.PoliciesUpdated)
+	assert.Equal(t, uint64(1), stats.GetPoliciesUpdated())
 
 	stats.IncrementPolicies()
-	assert.Equal(t, uint64(2), stats.PoliciesUpdated)
+	assert.Equal(t, uint64(2), stats.GetPoliciesUpdated())
 }
 
 func TestStatistics_IncrementViolations(t *testing.T) {
 	stats := &Statistics{}
 
 	stats.IncrementViolations()
-	assert.Equal(t, uint64(1), stats.ViolationsDetected)
+	assert.Equal(t, uint64(1), stats.GetViolationsDetected())
 
 	stats.IncrementViolations()
-	assert.Equal(t, uint64(2), stats.ViolationsDetected)
+	assert.Equal(t, uint64(2), stats.GetViolationsDetected())
 }
 
 func TestStatistics_UpdateTimestamp(t *testing.T) {

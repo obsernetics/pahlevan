@@ -135,8 +135,11 @@ func (m *MockLearningEngine) HandleFileEvent(event *ebpf.FileEvent) error {
 }
 
 func (m *MockLearningEngine) GetProfile(containerID string) *learner.LearningProfile {
-	m.Called(containerID)
-	return m.profiles[containerID]
+	args := m.Called(containerID)
+	if args.Get(0) == nil {
+		return m.profiles[containerID]
+	}
+	return args.Get(0).(*learner.LearningProfile)
 }
 
 // MockObservabilityManager implements a mock observability manager
@@ -188,6 +191,17 @@ func (m *MockObservabilityManager) GetMetrics(containerID string) *observability
 
 // Integration Tests
 
+// Helper function to setup common mock expectations
+func setupCommonMocks(ebpfManager *MockEBPFManager, learningEngine *MockLearningEngine, obsManager *MockObservabilityManager) {
+	ebpfManager.On("Start", mock.Anything).Return(nil)
+	ebpfManager.On("Stop").Return(nil).Maybe()
+	ebpfManager.On("AddEventHandler", mock.Anything).Return()
+	learningEngine.On("HandleSyscallEvent", mock.Anything).Return(nil)
+	learningEngine.On("GetProfile", mock.Anything).Return(nil).Maybe()
+	obsManager.On("RecordViolation", mock.Anything, mock.Anything).Return().Maybe()
+	obsManager.On("GetMetrics", mock.Anything).Return(nil).Maybe()
+}
+
 func TestPahlevanSystemIntegration(t *testing.T) {
 	// Create mock components
 	ebpfManager := NewMockEBPFManager()
@@ -195,11 +209,7 @@ func TestPahlevanSystemIntegration(t *testing.T) {
 	obsManager := NewMockObservabilityManager()
 
 	// Setup expectations
-	ebpfManager.On("Start", mock.Anything).Return(nil)
-	ebpfManager.On("AddEventHandler", mock.Anything).Return()
-	ebpfManager.On("GetCapabilities").Return()
-	learningEngine.On("HandleSyscallEvent", mock.Anything).Return(nil)
-	obsManager.On("RecordViolation", mock.Anything, mock.Anything).Return()
+	setupCommonMocks(ebpfManager, learningEngine, obsManager)
 
 	// Test system initialization
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -259,10 +269,7 @@ func TestLearningToEnforcementTransition(t *testing.T) {
 	obsManager := NewMockObservabilityManager()
 
 	// Setup expectations
-	ebpfManager.On("Start", mock.Anything).Return(nil)
-	ebpfManager.On("AddEventHandler", mock.Anything).Return()
-	learningEngine.On("HandleSyscallEvent", mock.Anything).Return(nil)
-	obsManager.On("RecordViolation", mock.Anything, mock.Anything).Return()
+	setupCommonMocks(ebpfManager, learningEngine, obsManager)
 	obsManager.On("CreateAlert", mock.Anything, mock.Anything).Return()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -333,9 +340,7 @@ func TestMultiContainerScenario(t *testing.T) {
 	obsManager := NewMockObservabilityManager()
 
 	// Setup expectations
-	ebpfManager.On("Start", mock.Anything).Return(nil)
-	ebpfManager.On("AddEventHandler", mock.Anything).Return()
-	learningEngine.On("HandleSyscallEvent", mock.Anything).Return(nil)
+	setupCommonMocks(ebpfManager, learningEngine, obsManager)
 	learningEngine.On("HandleNetworkEvent", mock.Anything).Return(nil)
 	learningEngine.On("HandleFileEvent", mock.Anything).Return(nil)
 
@@ -422,11 +427,10 @@ func TestSystemUnderLoad(t *testing.T) {
 	// Test system behavior under high load
 	ebpfManager := NewMockEBPFManager()
 	learningEngine := NewMockLearningEngine()
+	obsManager := NewMockObservabilityManager()
 
 	// Setup expectations for high volume
-	ebpfManager.On("Start", mock.Anything).Return(nil)
-	ebpfManager.On("AddEventHandler", mock.Anything).Return()
-	learningEngine.On("HandleSyscallEvent", mock.Anything).Return(nil)
+	setupCommonMocks(ebpfManager, learningEngine, obsManager)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

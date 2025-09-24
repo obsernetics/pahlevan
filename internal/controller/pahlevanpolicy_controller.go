@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -233,7 +234,41 @@ func (r *PahlevanPolicyReconciler) handleTransition(ctx context.Context, policy 
 	logger.Info("Handling transition phase", "policy", policy.Name)
 
 	// Generate enforcement policies based on learned behavior
-	// This would integrate with the enforcement engine to generate policies
+	// Get workload containers for policy enforcement
+	workload, err := r.getWorkloadForPolicy(ctx, policy)
+	if err != nil {
+		log.Log.Error(err, "Failed to get workload for policy", "policy", policy.Name)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+	}
+
+	containerIDs, err := r.getWorkloadContainers(ctx, workload)
+	if err != nil {
+		log.Log.Error(err, "Failed to get container IDs", "policy", policy.Name)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+	}
+
+	if r.EBPFManager != nil && len(containerIDs) > 0 {
+		// Create enforcement policies for each container
+		for _, containerID := range containerIDs {
+			// Generate policy based on learning phase data
+			err := r.EBPFManager.UpdateContainerPolicy(containerID, &ebpf.ContainerPolicy{
+				AllowedSyscalls:  make(map[uint64]bool),
+				LastUpdate:       time.Now(),
+				LearningWindowMs: uint32(r.LearningWindow.Milliseconds()),
+				EnforcementMode:  1, // Enforcement mode
+				SelfHealing:      policy.Spec.SelfHealing.Enabled,
+			})
+			if err != nil {
+				log.Log.Error(err, "Failed to update container policy", "containerID", containerID)
+				continue
+			}
+
+			log.Log.Info("Applied enforcement policy to container",
+				"policyName", policy.Name,
+				"containerID", containerID,
+				"learningWindow", r.LearningWindow)
+		}
+	}
 
 	// Wait for enforcement delay
 	time.Sleep(r.EnforcementDelay)
@@ -378,12 +413,38 @@ func (r *PahlevanPolicyReconciler) getWorkloadContainers(ctx context.Context, wo
 	// Get pods for the workload
 	pods := &corev1.PodList{}
 
-	// Get selector based on workload type - currently simplified
-	_ = workload
+	// Get label selector based on workload type
+	var listOptions client.ListOptions
+	listOptions.Namespace = workload.GetNamespace()
 
-	if err := r.List(ctx, pods, &client.ListOptions{
-		Namespace: workload.GetNamespace(),
-	}); err != nil {
+	// Extract label selector from different workload types
+	switch obj := workload.(type) {
+	case *appsv1.Deployment:
+		if obj.Spec.Selector != nil && len(obj.Spec.Selector.MatchLabels) > 0 {
+			selector := labels.SelectorFromSet(labels.Set(obj.Spec.Selector.MatchLabels))
+			listOptions.LabelSelector = selector
+		}
+	case *appsv1.StatefulSet:
+		if obj.Spec.Selector != nil && len(obj.Spec.Selector.MatchLabels) > 0 {
+			selector := labels.SelectorFromSet(labels.Set(obj.Spec.Selector.MatchLabels))
+			listOptions.LabelSelector = selector
+		}
+	case *appsv1.DaemonSet:
+		if obj.Spec.Selector != nil && len(obj.Spec.Selector.MatchLabels) > 0 {
+			selector := labels.SelectorFromSet(labels.Set(obj.Spec.Selector.MatchLabels))
+			listOptions.LabelSelector = selector
+		}
+	case *appsv1.ReplicaSet:
+		if obj.Spec.Selector != nil && len(obj.Spec.Selector.MatchLabels) > 0 {
+			selector := labels.SelectorFromSet(labels.Set(obj.Spec.Selector.MatchLabels))
+			listOptions.LabelSelector = selector
+		}
+	default:
+		// For other workload types or when selector is unavailable, list all pods in namespace
+		// This is less efficient but ensures we don't miss any pods
+	}
+
+	if err := r.List(ctx, pods, &listOptions); err != nil {
 		return nil, err
 	}
 
@@ -562,4 +623,45 @@ func (h *PolicyEventHandler) HandleNetworkEvent(event *ebpf.NetworkEvent) error 
 func (h *PolicyEventHandler) HandleFileEvent(event *ebpf.FileEvent) error {
 	// Handle file events
 	return nil
+}
+
+// getWorkloadForPolicy finds the workload object that matches the policy selector
+func (r *PahlevanPolicyReconciler) getWorkloadForPolicy(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) (metav1.Object, error) {
+	// Try to find Deployment first
+	deployments := &appsv1.DeploymentList{}
+	if err := r.List(ctx, deployments, &client.ListOptions{
+		Namespace:     policy.Namespace,
+		LabelSelector: labels.SelectorFromSet(policy.Spec.Selector.MatchLabels),
+	}); err == nil && len(deployments.Items) > 0 {
+		return &deployments.Items[0], nil
+	}
+
+	// Try StatefulSet
+	statefulSets := &appsv1.StatefulSetList{}
+	if err := r.List(ctx, statefulSets, &client.ListOptions{
+		Namespace:     policy.Namespace,
+		LabelSelector: labels.SelectorFromSet(policy.Spec.Selector.MatchLabels),
+	}); err == nil && len(statefulSets.Items) > 0 {
+		return &statefulSets.Items[0], nil
+	}
+
+	// Try DaemonSet
+	daemonSets := &appsv1.DaemonSetList{}
+	if err := r.List(ctx, daemonSets, &client.ListOptions{
+		Namespace:     policy.Namespace,
+		LabelSelector: labels.SelectorFromSet(policy.Spec.Selector.MatchLabels),
+	}); err == nil && len(daemonSets.Items) > 0 {
+		return &daemonSets.Items[0], nil
+	}
+
+	// Try ReplicaSet
+	replicaSets := &appsv1.ReplicaSetList{}
+	if err := r.List(ctx, replicaSets, &client.ListOptions{
+		Namespace:     policy.Namespace,
+		LabelSelector: labels.SelectorFromSet(policy.Spec.Selector.MatchLabels),
+	}); err == nil && len(replicaSets.Items) > 0 {
+		return &replicaSets.Items[0], nil
+	}
+
+	return nil, fmt.Errorf("no workload found matching policy selector in namespace %s", policy.Namespace)
 }

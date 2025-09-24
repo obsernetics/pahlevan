@@ -2,6 +2,7 @@ package ebpf
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type PolicyUpdateEvent struct {
 }
 
 type Statistics struct {
+	mu                 sync.RWMutex
 	EventsProcessed    uint64
 	PoliciesUpdated    uint64
 	ViolationsDetected uint64
@@ -46,6 +48,8 @@ func (pue *PolicyUpdateEvent) Validate() error {
 }
 
 func (s *Statistics) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.EventsProcessed = 0
 	s.PoliciesUpdated = 0
 	s.ViolationsDetected = 0
@@ -53,20 +57,59 @@ func (s *Statistics) Reset() {
 }
 
 func (s *Statistics) IncrementEvents() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.EventsProcessed++
-	s.UpdateTimestamp()
+	s.lastUpdateNoLock()
 }
 
 func (s *Statistics) IncrementPolicies() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.PoliciesUpdated++
-	s.UpdateTimestamp()
+	s.lastUpdateNoLock()
 }
 
 func (s *Statistics) IncrementViolations() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ViolationsDetected++
-	s.UpdateTimestamp()
+	s.lastUpdateNoLock()
 }
 
 func (s *Statistics) UpdateTimestamp() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.LastUpdate = time.Now()
+}
+
+// lastUpdateNoLock updates timestamp without acquiring the lock
+// Should only be called when the caller already holds the lock
+func (s *Statistics) lastUpdateNoLock() {
+	s.LastUpdate = time.Now()
+}
+
+// Thread-safe getters
+func (s *Statistics) GetEventsProcessed() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.EventsProcessed
+}
+
+func (s *Statistics) GetPoliciesUpdated() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PoliciesUpdated
+}
+
+func (s *Statistics) GetViolationsDetected() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ViolationsDetected
+}
+
+func (s *Statistics) GetLastUpdate() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.LastUpdate
 }

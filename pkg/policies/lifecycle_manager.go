@@ -19,11 +19,13 @@ package policies
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/obsernetics/pahlevan/internal/learner"
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -827,7 +829,24 @@ func (lm *LifecycleManager) TightenPolicy(
 	if state == nil {
 		return fmt.Errorf("workload not found for container: %s", containerID)
 	}
-	_ = workloadKey // TODO: Use workloadKey for logging or metrics
+
+	// Log workload context for debugging and update metrics
+	log.Log.V(1).Info("Updating container learning profile",
+		"containerID", containerID,
+		"workloadKey", workloadKey,
+		"workloadKind", state.WorkloadRef.Kind,
+		"workloadName", state.WorkloadRef.Name,
+		"namespace", state.WorkloadRef.Namespace)
+
+	// Update workload-level metrics using existing counters
+	if lm.lifecycleTransitionCounter != nil {
+		lm.lifecycleTransitionCounter.Add(context.Background(), 1,
+			metric.WithAttributes(
+				attribute.String("container_id", containerID),
+				attribute.String("workload_key", workloadKey),
+				attribute.String("operation", "learning_profile_update"),
+			))
+	}
 
 	containerState, exists := state.ContainerStates[containerID]
 	if !exists {
@@ -904,23 +923,139 @@ func (lm *LifecycleManager) getWorkloadKey(workloadRef learner.WorkloadReference
 }
 
 func (lm *LifecycleManager) createLifecycleConfig(policy *policyv1alpha1.PahlevanPolicy) *LifecycleConfiguration {
-	// Implementation would create lifecycle configuration from policy
-	return &LifecycleConfiguration{
+	// Create comprehensive lifecycle configuration from policy
+	config := &LifecycleConfiguration{
 		AutomaticTightening: policy.Spec.LearningConfig.LifecycleAware,
 		GracefulTightening:  true,
 		RollbackEnabled:     policy.Spec.SelfHealing.Enabled,
 		MonitoringEnabled:   true,
 		NotificationEnabled: true,
 	}
+
+	// Configure tightening schedule based on policy
+	if policy.Spec.LearningConfig.Duration != nil {
+		config.TighteningSchedule = &TighteningSchedule{
+			PeriodicTightening: policy.Spec.LearningConfig.Duration.Duration,
+			CustomSchedule:     make([]ScheduledTightening, 0),
+		}
+	}
+
+
+	return config
 }
 
 func (lm *LifecycleManager) determineContainerType(containerID string, workloadRef learner.WorkloadReference) ContainerType {
-	// Implementation would determine container type based on workload metadata
-	return ContainerTypeMain
+	// Determine container type based on workload metadata and container patterns
+
+	// Default to main container
+	containerType := ContainerTypeMain
+
+	// Check if it's an init container based on naming patterns
+	if strings.Contains(containerID, "init-") || strings.Contains(containerID, "setup-") {
+		containerType = ContainerTypeInit
+	}
+
+	// Check for sidecar patterns (common sidecar names)
+	sidecarPatterns := []string{
+		"istio-proxy", "envoy", "proxy", "sidecar",
+		"fluentd", "fluent-bit", "logging",
+		"vault-agent", "consul-connect",
+		"jaeger-agent", "opentelemetry",
+	}
+
+	for _, pattern := range sidecarPatterns {
+		if strings.Contains(strings.ToLower(containerID), pattern) {
+			containerType = ContainerTypeSidecar
+			break
+		}
+	}
+
+	// For specific workload types, infer container types
+	switch workloadRef.Kind {
+	case "DaemonSet":
+		// DaemonSet containers are usually infrastructure-related
+		if containerType == ContainerTypeMain {
+			// Could be system container if it matches system patterns
+			systemPatterns := []string{"node-", "system-", "kube-", "cni-"}
+			for _, pattern := range systemPatterns {
+				if strings.Contains(strings.ToLower(containerID), pattern) {
+					containerType = ContainerTypeSidecar // Treat as sidecar for policy purposes
+					break
+				}
+			}
+		}
+	case "Job", "CronJob":
+		// Jobs typically have main containers that are short-lived
+		containerType = ContainerTypeMain
+	}
+
+	log.Log.V(1).Info("Determined container type",
+		"containerID", containerID,
+		"workloadKind", workloadRef.Kind,
+		"containerType", containerType)
+
+	return containerType
 }
 
 func (lm *LifecycleManager) scheduleInitialTighteningEvents(workloadKey string, state *WorkloadLifecycleState) {
-	// Implementation would schedule initial tightening events
+	// Schedule initial tightening events based on lifecycle configuration
+	if state.LifecycleConfig == nil || !state.LifecycleConfig.AutomaticTightening {
+		return
+	}
+
+	// Schedule tightening based on different triggers
+	tighteningSchedule := state.LifecycleConfig.TighteningSchedule
+	if tighteningSchedule != nil {
+		// Schedule periodic tightening
+		if tighteningSchedule.PeriodicTightening > 0 {
+			tighteningTask := &ScheduledTighteningTask{
+				ID:             fmt.Sprintf("%s-periodic-%d", workloadKey, time.Now().Unix()),
+				ContainerID:    "", // Applies to whole workload
+				ScheduledTime:  time.Now().Add(tighteningSchedule.PeriodicTightening),
+				TighteningType: TighteningTypeSyscall,
+			}
+
+			// Add to scheduler's map
+			if lm.policyTighteningScheduler != nil {
+				if lm.policyTighteningScheduler.scheduledTightenings == nil {
+					lm.policyTighteningScheduler.scheduledTightenings = make(map[string][]*ScheduledTighteningTask)
+				}
+				lm.policyTighteningScheduler.scheduledTightenings[workloadKey] =
+					append(lm.policyTighteningScheduler.scheduledTightenings[workloadKey], tighteningTask)
+			}
+
+			log.Log.Info("Scheduled periodic tightening",
+				"workloadKey", workloadKey,
+				"scheduledTime", tighteningTask.ScheduledTime)
+		}
+
+		// Schedule custom tightening events
+		for _, customEvent := range tighteningSchedule.CustomSchedule {
+			tighteningTask := &ScheduledTighteningTask{
+				ID:             fmt.Sprintf("%s-custom-%d", workloadKey, time.Now().Unix()),
+				ContainerID:    "",
+				ScheduledTime:  time.Now().Add(customEvent.Delay),
+				TighteningType: TighteningTypeCombined,
+			}
+
+			if lm.policyTighteningScheduler != nil {
+				lm.policyTighteningScheduler.scheduledTightenings[workloadKey] =
+					append(lm.policyTighteningScheduler.scheduledTightenings[workloadKey], tighteningTask)
+			}
+		}
+
+		// Track the scheduling event
+		state.PhaseHistory = append(state.PhaseHistory, PhaseTransition{
+			From:      state.CurrentPhase,
+			To:        WorkloadPhaseSteady, // Target steady phase
+			Timestamp: time.Now(),
+			Trigger:   TriggerAutomatic,
+			Metadata: map[string]string{
+				"workload_key": workloadKey,
+				"action":       "tightening_scheduled",
+			},
+		})
+	}
 }
 
 func (lm *LifecycleManager) findWorkloadByContainer(containerID string) (string, *WorkloadLifecycleState) {
@@ -937,12 +1072,132 @@ func (lm *LifecycleManager) determineNewContainerPhase(
 	eventType LifecycleEventType,
 	eventData map[string]interface{},
 ) ContainerPhase {
-	// Implementation would determine new phase based on event
-	return containerState.CurrentPhase
+	// Determine new phase based on event type and current state
+	currentPhase := containerState.CurrentPhase
+
+	switch eventType {
+	case EventTypeContainerStarted:
+		if currentPhase == ContainerPhaseInitializing {
+			return ContainerPhaseStarting
+		}
+
+	case EventTypeContainerHealthy:
+		if currentPhase == ContainerPhaseStarting {
+			return ContainerPhaseRunning
+		} else if currentPhase == ContainerPhaseRunning {
+			return ContainerPhaseReady
+		}
+
+	case EventTypeContainerSteady:
+		if currentPhase == ContainerPhaseReady {
+			return ContainerPhaseSteady
+		}
+
+	case EventTypeViolationDetected:
+		return ContainerPhaseFailed
+
+	case EventTypeRollbackTriggered:
+		// Reset to ready phase after rollback
+		return ContainerPhaseReady
+	}
+
+	// Check if we need to transition based on event data
+	if eventData != nil {
+		if readyCount, exists := eventData["ready_containers"]; exists {
+			if count, ok := readyCount.(int); ok && count > 0 {
+				if currentPhase == ContainerPhaseStarting {
+					return ContainerPhaseRunning
+				}
+			}
+		}
+
+		if stabilityScore, exists := eventData["stability_score"]; exists {
+			if score, ok := stabilityScore.(float64); ok && score > 0.8 {
+				if currentPhase == ContainerPhaseRunning {
+					return ContainerPhaseSteady
+				}
+			}
+		}
+	}
+
+	// No transition needed
+	return currentPhase
 }
 
 func (lm *LifecycleManager) updateWorkloadPhase(state *WorkloadLifecycleState) {
-	// Implementation would update workload phase based on container phases
+	// Update workload phase based on container phases
+	if state == nil {
+		return
+	}
+
+	// Count containers in different phases
+	phaseCount := make(map[ContainerPhase]int)
+	totalContainers := 0
+
+	// Count main containers
+	for _, containerState := range state.MainContainers {
+		phaseCount[containerState.CurrentPhase]++
+		totalContainers++
+	}
+
+	// Count sidecar containers (less weight in decision)
+	sidecarCount := 0
+	for _, containerState := range state.SidecarContainers {
+		phaseCount[containerState.CurrentPhase]++
+		sidecarCount++
+	}
+	totalContainers += sidecarCount
+
+	if totalContainers == 0 {
+		state.CurrentPhase = WorkloadPhaseInitializing
+		return
+	}
+
+	// Determine workload phase based on container distribution
+	steadyContainers := phaseCount[ContainerPhaseSteady]
+	readyContainers := phaseCount[ContainerPhaseReady]
+	runningContainers := phaseCount[ContainerPhaseRunning]
+	startingContainers := phaseCount[ContainerPhaseStarting]
+	failedContainers := phaseCount[ContainerPhaseFailed]
+
+	// Priority-based phase determination
+	if failedContainers > 0 {
+		state.CurrentPhase = WorkloadPhaseFailed
+	} else if steadyContainers == totalContainers {
+		state.CurrentPhase = WorkloadPhaseSteady
+	} else if (steadyContainers + readyContainers) >= totalContainers/2 {
+		state.CurrentPhase = WorkloadPhaseRunning
+	} else if runningContainers > 0 {
+		state.CurrentPhase = WorkloadPhaseHealthChecking
+	} else if startingContainers > 0 {
+		state.CurrentPhase = WorkloadPhaseStarting
+	} else {
+		// Check if init containers are running
+		initRunning := 0
+		for _, containerState := range state.InitContainers {
+			if containerState.CurrentPhase == ContainerPhaseRunning ||
+			   containerState.CurrentPhase == ContainerPhaseStarting {
+				initRunning++
+			}
+		}
+
+		if initRunning > 0 {
+			state.CurrentPhase = WorkloadPhaseInitContainers
+		} else {
+			state.CurrentPhase = WorkloadPhaseMainStarting
+		}
+	}
+
+	// Log phase change if it's different
+	if len(state.PhaseHistory) == 0 || state.PhaseHistory[len(state.PhaseHistory)-1].To != state.CurrentPhase {
+		log.Log.V(1).Info("Workload phase updated",
+			"workload", lm.getWorkloadKey(state.WorkloadRef),
+			"newPhase", state.CurrentPhase,
+			"steadyContainers", steadyContainers,
+			"readyContainers", readyContainers,
+			"runningContainers", runningContainers,
+			"totalContainers", totalContainers)
+	}
 }
 
 func (lm *LifecycleManager) shouldTriggerPolicyTightening(
@@ -999,10 +1254,61 @@ func (lm *LifecycleManager) performLifecycleMonitoring() {
 	// Implementation would perform periodic lifecycle monitoring
 }
 
-// Additional helper methods would be implemented here...
+// Additional helper methods for policy lifecycle management
 func (lm *LifecycleManager) assessCurrentPrivileges(containerState *ContainerLifecycleState) RequiredPrivileges {
-	// Implementation would assess current privileges
-	return RequiredPrivileges{}
+	privileges := RequiredPrivileges{
+		Capabilities: []string{},
+		Syscalls:     []uint64{},
+		NetworkPorts: []NetworkPortRequirement{},
+		FilePaths:    []FilePathRequirement{},
+		Special:      []SpecialPrivilege{},
+	}
+
+	if containerState == nil || containerState.CurrentPolicy == nil {
+		return privileges
+	}
+
+	policy := containerState.CurrentPolicy
+
+	// Extract syscalls from policy
+	if policy.SyscallPolicy != nil && policy.SyscallPolicy.AllowedSyscalls != nil {
+		for syscallID := range policy.SyscallPolicy.AllowedSyscalls {
+			privileges.Syscalls = append(privileges.Syscalls, syscallID)
+		}
+	}
+
+	// Extract network ports from network policy
+	if policy.NetworkPolicy != nil {
+		for _, rule := range policy.NetworkPolicy.EgressRules {
+			if rule.RemoteEndpoint != nil && rule.RemoteEndpoint.PortRange != nil {
+				privileges.NetworkPorts = append(privileges.NetworkPorts, NetworkPortRequirement{
+					Port:     rule.RemoteEndpoint.PortRange.Start,
+					Protocol: rule.Protocol,
+				})
+			}
+		}
+		for _, rule := range policy.NetworkPolicy.IngressRules {
+			if rule.LocalEndpoint != nil && rule.LocalEndpoint.PortRange != nil {
+				privileges.NetworkPorts = append(privileges.NetworkPorts, NetworkPortRequirement{
+					Port:     rule.LocalEndpoint.PortRange.Start,
+					Protocol: rule.Protocol,
+				})
+			}
+		}
+	}
+
+	// Extract file paths from file policy
+	if policy.FilePolicy != nil && policy.FilePolicy.AllowedPaths != nil {
+		for path, rule := range policy.FilePolicy.AllowedPaths {
+			privileges.FilePaths = append(privileges.FilePaths, FilePathRequirement{
+				Path:        path,
+				AccessModes: rule.AccessModes,
+				Required:    true,
+			})
+		}
+	}
+
+	return privileges
 }
 
 func (lm *LifecycleManager) calculateTightenedPrivileges(
@@ -1011,8 +1317,83 @@ func (lm *LifecycleManager) calculateTightenedPrivileges(
 	intensity TighteningIntensity,
 	containerState *ContainerLifecycleState,
 ) (RequiredPrivileges, error) {
-	// Implementation would calculate tightened privileges
-	return RequiredPrivileges{}, nil
+	tightened := RequiredPrivileges{
+		Capabilities: make([]string, 0),
+		Syscalls:     make([]uint64, 0),
+		NetworkPorts: make([]NetworkPortRequirement, 0),
+		FilePaths:    make([]FilePathRequirement, 0),
+		Special:      make([]SpecialPrivilege, 0),
+	}
+
+	switch intensity {
+	case IntensityGentle:
+		// Remove only clearly unnecessary privileges (keep 90%)
+		tightened.Capabilities = lm.filterCapabilitiesByUsage(current.Capabilities, 0.9)
+		tightened.Syscalls = lm.filterSyscallsByUsage(current.Syscalls, 0.9)
+		tightened.NetworkPorts = lm.filterNetworkPortsByUsage(current.NetworkPorts, 0.9)
+		tightened.FilePaths = lm.filterFilePathsByUsage(current.FilePaths, 0.9)
+
+	case IntensityModerate:
+		// Remove privileges not used recently (keep 70%)
+		tightened.Capabilities = lm.filterCapabilitiesByUsage(current.Capabilities, 0.7)
+		tightened.Syscalls = lm.filterSyscallsByUsage(current.Syscalls, 0.7)
+		tightened.NetworkPorts = lm.filterNetworkPortsByUsage(current.NetworkPorts, 0.7)
+		tightened.FilePaths = lm.filterFilePathsByUsage(current.FilePaths, 0.7)
+
+	case IntensityAggressive:
+		// Keep only essential privileges (keep 50%)
+		tightened.Capabilities = lm.filterCapabilitiesByUsage(current.Capabilities, 0.5)
+		tightened.Syscalls = lm.filterSyscallsByUsage(current.Syscalls, 0.5)
+		tightened.NetworkPorts = lm.filterNetworkPortsByUsage(current.NetworkPorts, 0.5)
+		tightened.FilePaths = lm.filterFilePathsByUsage(current.FilePaths, 0.5)
+
+	case IntensityMaximal:
+		// Keep only critical privileges (keep 25%)
+		tightened.Capabilities = lm.filterCapabilitiesByUsage(current.Capabilities, 0.25)
+		tightened.Syscalls = lm.filterSyscallsByUsage(current.Syscalls, 0.25)
+		tightened.NetworkPorts = lm.filterNetworkPortsByUsage(current.NetworkPorts, 0.25)
+		tightened.FilePaths = lm.filterFilePathsByUsage(current.FilePaths, 0.25)
+
+	default:
+		return current, fmt.Errorf("unknown tightening intensity: %v", intensity)
+	}
+
+	// Apply type-specific adjustments
+	switch tighteningType {
+	case TighteningTypeSyscall:
+		// Focus on syscall restrictions only
+		tightened.Syscalls = lm.filterSyscallsByUsage(current.Syscalls, 0.3)
+		tightened.Capabilities = current.Capabilities
+		tightened.NetworkPorts = current.NetworkPorts
+		tightened.FilePaths = current.FilePaths
+
+	case TighteningTypeNetwork:
+		// Focus on network restrictions only
+		tightened.NetworkPorts = lm.filterNetworkPortsByUsage(current.NetworkPorts, 0.3)
+		tightened.Capabilities = current.Capabilities
+		tightened.Syscalls = current.Syscalls
+		tightened.FilePaths = current.FilePaths
+
+	case TighteningTypeFile:
+		// Focus on file access restrictions only
+		tightened.FilePaths = lm.filterFilePathsByUsage(current.FilePaths, 0.3)
+		tightened.Capabilities = current.Capabilities
+		tightened.Syscalls = current.Syscalls
+		tightened.NetworkPorts = current.NetworkPorts
+
+	case TighteningTypeCapability:
+		// Focus on capability restrictions only
+		tightened.Capabilities = lm.filterCapabilitiesByUsage(current.Capabilities, 0.3)
+		tightened.Syscalls = current.Syscalls
+		tightened.NetworkPorts = current.NetworkPorts
+		tightened.FilePaths = current.FilePaths
+
+	case TighteningTypeCombined:
+		// Apply combined restrictions (already done above by intensity)
+		// No additional changes needed
+	}
+
+	return tightened, nil
 }
 
 func (lm *LifecycleManager) assessTighteningImpact(
@@ -1142,4 +1523,183 @@ func (pts *PolicyTighteningScheduler) executeTask(task *ScheduledTighteningTask)
 	task.Status = TaskStatusCompleted
 	now := time.Now()
 	task.CompletedTime = &now
+}
+
+// Helper methods for filtering privileges based on usage patterns
+func (lm *LifecycleManager) filterCapabilitiesByUsage(capabilities []string, retentionRatio float64) []string {
+	if retentionRatio >= 1.0 {
+		return capabilities
+	}
+
+	// Simple implementation: retain most commonly used capabilities
+	essentialCaps := []string{
+		"CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE", "CAP_FOWNER",
+		"CAP_NET_BIND_SERVICE", "CAP_CHOWN",
+	}
+
+	result := make([]string, 0)
+	keepCount := int(float64(len(capabilities)) * retentionRatio)
+
+	// Always keep essential capabilities
+	for _, cap := range capabilities {
+		for _, essential := range essentialCaps {
+			if cap == essential {
+				result = append(result, cap)
+				break
+			}
+		}
+	}
+
+	// Add remaining capabilities up to the limit
+	for _, cap := range capabilities {
+		if len(result) >= keepCount {
+			break
+		}
+		// Check if not already added
+		found := false
+		for _, existing := range result {
+			if existing == cap {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, cap)
+		}
+	}
+
+	return result
+}
+
+func (lm *LifecycleManager) filterSyscallsByUsage(syscalls []uint64, retentionRatio float64) []uint64 {
+	if retentionRatio >= 1.0 {
+		return syscalls
+	}
+
+	// Simple implementation: retain most critical syscalls
+	essentialSyscalls := []uint64{
+		1, 2, 3, 4, 5, 6, 59, 60, // read, write, open, close, stat, fstat, execve, exit
+		9, 10, 11, 12, // mmap, mprotect, munmap, brk
+		102, 158, // getuid, arch_prctl
+	}
+
+	result := make([]uint64, 0)
+	keepCount := int(float64(len(syscalls)) * retentionRatio)
+
+	// Always keep essential syscalls
+	for _, syscall := range syscalls {
+		for _, essential := range essentialSyscalls {
+			if syscall == essential {
+				result = append(result, syscall)
+				break
+			}
+		}
+	}
+
+	// Add remaining syscalls up to the limit
+	for _, syscall := range syscalls {
+		if len(result) >= keepCount {
+			break
+		}
+		// Check if not already added
+		found := false
+		for _, existing := range result {
+			if existing == syscall {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, syscall)
+		}
+	}
+
+	return result
+}
+
+func (lm *LifecycleManager) filterNetworkPortsByUsage(ports []NetworkPortRequirement, retentionRatio float64) []NetworkPortRequirement {
+	if retentionRatio >= 1.0 {
+		return ports
+	}
+
+	// Simple implementation: retain most common ports
+	essentialPorts := []int32{80, 443, 53, 22, 8080, 3000, 5000}
+
+	result := make([]NetworkPortRequirement, 0)
+	keepCount := int(float64(len(ports)) * retentionRatio)
+
+	// Always keep essential ports
+	for _, port := range ports {
+		for _, essential := range essentialPorts {
+			if port.Port == essential {
+				result = append(result, port)
+				break
+			}
+		}
+	}
+
+	// Add remaining ports up to the limit
+	for _, port := range ports {
+		if len(result) >= keepCount {
+			break
+		}
+		// Check if not already added
+		found := false
+		for _, existing := range result {
+			if existing.Port == port.Port && existing.Protocol == port.Protocol {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, port)
+		}
+	}
+
+	return result
+}
+
+func (lm *LifecycleManager) filterFilePathsByUsage(paths []FilePathRequirement, retentionRatio float64) []FilePathRequirement {
+	if retentionRatio >= 1.0 {
+		return paths
+	}
+
+	// Simple implementation: retain most critical file paths
+	essentialPaths := []string{
+		"/", "/bin", "/usr", "/lib", "/lib64", "/etc", "/var", "/tmp", "/proc", "/sys",
+		"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
+	}
+
+	result := make([]FilePathRequirement, 0)
+	keepCount := int(float64(len(paths)) * retentionRatio)
+
+	// Always keep essential paths
+	for _, path := range paths {
+		for _, essential := range essentialPaths {
+			if path.Path == essential || strings.HasPrefix(path.Path, essential+"/") {
+				result = append(result, path)
+				break
+			}
+		}
+	}
+
+	// Add remaining paths up to the limit
+	for _, path := range paths {
+		if len(result) >= keepCount {
+			break
+		}
+		// Check if not already added
+		found := false
+		for _, existing := range result {
+			if existing.Path == path.Path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, path)
+		}
+	}
+
+	return result
 }

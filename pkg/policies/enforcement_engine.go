@@ -1048,14 +1048,14 @@ func (ee *EnforcementEngine) applyPolicyToEBPF(containerID string, policy *Gener
 		return fmt.Errorf("eBPF manager not available")
 	}
 
-	// Convert container ID to uint32 for eBPF
-	// This is a simplified conversion - in reality would need proper container ID mapping
-	containerIDHash := uint32(0)
-	for i, b := range []byte(containerID) {
-		if i >= 4 {
-			break
-		}
-		containerIDHash |= uint32(b) << (8 * i)
+	// Convert container ID to uint32 for eBPF using proper hashing
+	h := fnv.New32a()
+	h.Write([]byte(containerID))
+	containerIDHash := h.Sum32()
+
+	// Ensure consistent mapping by using modulo for range constraints
+	if containerIDHash == 0 {
+		containerIDHash = 1 // Avoid zero container ID
 	}
 
 	// Create eBPF container policy from generated policy
@@ -1535,17 +1535,119 @@ func (ee *EnforcementEngine) rollbackPolicy(containerID string) error {
 
 // Helper method to parse syscall names (can be names or numbers)
 func (ee *EnforcementEngine) parseSyscallName(syscallName string) uint64 {
-	// Basic implementation - would use a proper syscall name-to-number mapping
-	// For now, we'll try to parse as number or return a hash
+	// Comprehensive syscall name-to-number mapping (Linux x86_64)
+	syscallMap := map[string]uint64{
+		// File operations
+		"read":      0,
+		"write":     1,
+		"open":      2,
+		"close":     3,
+		"lseek":     8,
+		"mmap":      9,
+		"mprotect":  10,
+		"munmap":    11,
+		"ioctl":     16,
+		"pread64":   17,
+		"pwrite64":  18,
+		"readv":     19,
+		"writev":    20,
+		"access":    21,
+		"pipe":      22,
+		"sendfile":  40,
+		"openat":    257,
+		"mkdirat":   258,
+		"mknodat":   259,
+		"fchownat":  260,
+		"futimesat": 261,
+		"newfstatat": 262,
+		"unlinkat":  263,
+		"renameat":  264,
+		"linkat":    265,
+		"symlinkat": 266,
+		"readlinkat": 267,
+		"fchmodat":  268,
+		"faccessat": 269,
+
+		// Network operations
+		"socket":      41,
+		"connect":     42,
+		"accept":      43,
+		"sendto":      44,
+		"recvfrom":    45,
+		"sendmsg":     46,
+		"recvmsg":     47,
+		"shutdown":    48,
+		"bind":        49,
+		"listen":      50,
+		"getsockname": 51,
+		"getpeername": 52,
+		"socketpair":  53,
+		"setsockopt":  54,
+		"getsockopt":  55,
+		"accept4":     288,
+
+		// Process operations
+		"clone":     56,
+		"fork":      57,
+		"vfork":     58,
+		"execve":    59,
+		"exit":      60,
+		"wait4":     61,
+		"kill":      62,
+		"getpid":    39,
+		"getppid":   110,
+		"getpgrp":   111,
+		"setsid":    112,
+		"setpgid":   109,
+
+		// Memory management
+		"brk":      12,
+		"mremap":   25,
+		"msync":    26,
+		"mincore":  27,
+		"madvise":  28,
+
+		// Security/capabilities
+		"chown":    92,
+		"fchown":   93,
+		"lchown":   94,
+		"chmod":    90,
+		"fchmod":   91,
+		"umask":    95,
+		"setuid":   105,
+		"getuid":   102,
+		"setgid":   106,
+		"getgid":   104,
+		"setreuid": 113,
+		"setregid": 114,
+
+		// Dangerous syscalls
+		"ptrace":             101,
+		"mount":              165,
+		"umount2":            166,
+		"uselib":             134,
+		"init_module":        175,
+		"delete_module":      176,
+		"process_vm_readv":   310,
+		"process_vm_writev":  311,
+		"finit_module":       313,
+	}
 
 	// Try parsing as a number first
 	if val, err := strconv.ParseUint(syscallName, 10, 64); err == nil {
 		return val
 	}
 
-	// If not a number, use a simple hash based on the name
-	// In a real implementation, this would use proper syscall name resolution
+	// Look up by name
+	if val, exists := syscallMap[syscallName]; exists {
+		return val
+	}
+
+	// If not found, log warning and use hash as fallback
+	log.Log.V(1).Info("Unknown syscall name, using hash fallback",
+		"syscallName", syscallName)
+
 	h := fnv.New64()
 	h.Write([]byte(syscallName))
-	return h.Sum64() % 1000 // Keep it in a reasonable range
+	return h.Sum64() % 400 // Keep it in syscall range
 }

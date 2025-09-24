@@ -238,6 +238,23 @@ func (asa *AttackSurfaceAnalyzer) AnalyzeContainer(profile *learner.LearningProf
 		analysis.RiskFactors = append(analysis.RiskFactors, risk)
 	}
 
+	// Create attack surface dimensions
+	if len(analysis.RiskFactors) > 0 {
+		dimensions := make(map[RiskType][]*RiskFactor)
+		for _, factor := range analysis.RiskFactors {
+			dimensions[factor.Type] = append(dimensions[factor.Type], factor)
+		}
+
+		for riskType, factors := range dimensions {
+			dimension := &AttackSurfaceDimension{
+				Name:        string(riskType),
+				Weight:      1.0,
+				RiskFactors: factors,
+			}
+			analysis.Dimensions = append(analysis.Dimensions, dimension)
+		}
+	}
+
 	// Calculate total risk score
 	totalScore := 0.0
 	for _, factor := range analysis.RiskFactors {

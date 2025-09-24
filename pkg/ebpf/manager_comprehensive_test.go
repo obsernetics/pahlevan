@@ -403,16 +403,18 @@ func TestStatistics_ConcurrentUpdates(t *testing.T) {
 
 	expectedCount := uint64(goroutines * updatesPerGoroutine)
 
-	// Since we don't have atomic operations in the Statistics type,
-	// the actual count might be less due to race conditions
-	// We test that operations completed without panic and counts are reasonable
-	assert.True(t, stats.EventsProcessed > 0, "Events should be processed")
-	assert.True(t, stats.PoliciesUpdated > 0, "Policies should be updated")
-	assert.True(t, stats.ViolationsDetected > 0, "Violations should be detected")
+	// Now we have thread-safe operations in the Statistics type
+	// All operations should complete successfully with the correct counts
+	assert.True(t, stats.GetEventsProcessed() > 0, "Events should be processed")
+	assert.True(t, stats.GetPoliciesUpdated() > 0, "Policies should be updated")
+	assert.True(t, stats.GetViolationsDetected() > 0, "Violations should be detected")
+	assert.Equal(t, expectedCount, stats.GetEventsProcessed(), "All events should be processed")
+	assert.Equal(t, expectedCount, stats.GetPoliciesUpdated(), "All policies should be updated")
+	assert.Equal(t, expectedCount, stats.GetViolationsDetected(), "All violations should be detected")
 
 	// Log actual vs expected for debugging
 	t.Logf("Expected: %d, Actual Events: %d, Policies: %d, Violations: %d",
-		expectedCount, stats.EventsProcessed, stats.PoliciesUpdated, stats.ViolationsDetected)
+		expectedCount, stats.GetEventsProcessed(), stats.GetPoliciesUpdated(), stats.GetViolationsDetected())
 }
 
 func TestPerformanceMetrics(t *testing.T) {

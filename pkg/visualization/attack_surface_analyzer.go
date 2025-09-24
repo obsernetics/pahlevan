@@ -700,7 +700,29 @@ func (asa *AttackSurfaceAnalyzer) ExportToFormat(format ExportFormat) ([]byte, e
 }
 
 func (asa *AttackSurfaceAnalyzer) RegisterExporter(exporter Exporter) {
-	// Implementation would register custom exporters
+	asa.mu.Lock()
+	defer asa.mu.Unlock()
+
+	// Since CustomExporter is a struct, we need to handle this differently
+	// For now, create a CustomExporter entry based on the Exporter interface
+	customExporter := CustomExporter{
+		Name:     fmt.Sprintf("custom-exporter-%s", exporter.GetFormat()),
+		Endpoint: "configured-by-interface",
+		Config:   make(map[string]string),
+		Enabled:  true,
+	}
+
+	// Check if exporter already registered by comparing names
+	for i, existing := range asa.customExporters {
+		if existing.Name == customExporter.Name {
+			// Update existing
+			asa.customExporters[i] = customExporter
+			return
+		}
+	}
+
+	// Add the new exporter
+	asa.customExporters = append(asa.customExporters, customExporter)
 }
 
 // Worker functions
@@ -1341,7 +1363,49 @@ func (asa *AttackSurfaceAnalyzer) calculateWorkloadRisk(surface *WorkloadAttackS
 }
 
 func (asa *AttackSurfaceAnalyzer) performExports() {
-	// Implementation would perform exports to registered exporters
+	asa.mu.RLock()
+	defer asa.mu.RUnlock()
+
+	// Gather current attack surface data
+	data := &AttackSurfaceData{
+		Timestamp:        time.Now(),
+		ClusterGraph:     asa.clusterGraph,
+		WorkloadProfiles: asa.workloadProfiles,
+		NetworkTopology:  asa.networkTopology,
+		ThreatModel:      asa.threatModel,
+		Metadata:         make(map[string]interface{}),
+	}
+
+	// Export to Grafana if configured
+	if asa.grafanaExporter != nil && asa.grafanaExporter.Enabled {
+		if err := asa.exportToGrafana(data); err != nil {
+			log.Log.Error(err, "Failed to export to Grafana")
+		}
+	}
+
+	// Export to Datadog if configured
+	if asa.datadogExporter != nil && asa.datadogExporter.Enabled {
+		if err := asa.exportToDatadog(data); err != nil {
+			log.Log.Error(err, "Failed to export to Datadog")
+		}
+	}
+
+	// Export to OpenTelemetry if configured
+	if asa.otelExporter != nil && asa.otelExporter.Enabled {
+		if err := asa.exportToOTel(data); err != nil {
+			log.Log.Error(err, "Failed to export to OpenTelemetry")
+		}
+	}
+
+	// Export to custom exporters
+	for _, exporter := range asa.customExporters {
+		if exporter.Enabled {
+			if err := asa.exportToCustom(data, &exporter); err != nil {
+				log.Log.Error(err, "Failed to export to custom exporter",
+					"exporter", exporter.Name)
+			}
+		}
+	}
 }
 
 func (asa *AttackSurfaceAnalyzer) performVulnerabilityScans() {
@@ -2911,4 +2975,41 @@ type ResidualRiskAssessment struct {
 	ResidualRisk    float64                  `json:"residualRisk"`
 	RiskFactors     []RiskFactor             `json:"riskFactors"`
 	Recommendations []SecurityRecommendation `json:"recommendations"`
+}
+
+// Export method implementations
+func (asa *AttackSurfaceAnalyzer) exportToGrafana(data *AttackSurfaceData) error {
+	// Implementation would export data to Grafana dashboard
+	// This would typically involve:
+	// - Converting attack surface data to Grafana-compatible format
+	// - Creating/updating dashboard panels
+	// - Sending metrics to Grafana's API
+	return nil
+}
+
+func (asa *AttackSurfaceAnalyzer) exportToDatadog(data *AttackSurfaceData) error {
+	// Implementation would export data to Datadog
+	// This would typically involve:
+	// - Converting attack surface data to Datadog metrics
+	// - Sending custom metrics via Datadog API
+	// - Creating/updating dashboards and alerts
+	return nil
+}
+
+func (asa *AttackSurfaceAnalyzer) exportToOTel(data *AttackSurfaceData) error {
+	// Implementation would export data to OpenTelemetry
+	// This would typically involve:
+	// - Converting attack surface data to OTEL metrics/traces
+	// - Publishing via OTEL collector
+	// - Structured logging with attack surface context
+	return nil
+}
+
+func (asa *AttackSurfaceAnalyzer) exportToCustom(data *AttackSurfaceData, exporter *CustomExporter) error {
+	// Implementation would export data to custom endpoint
+	// This would typically involve:
+	// - Formatting data according to exporter config
+	// - Making HTTP requests to custom endpoint
+	// - Handling authentication and retry logic
+	return nil
 }

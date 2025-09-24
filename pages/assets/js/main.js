@@ -317,11 +317,60 @@ function addSearch() {
     });
 }
 
-// Analytics tracking (placeholder)
-function trackEvent(category, action, label) {
-    // Add your analytics tracking code here
-    // Example: gtag('event', action, { category, label });
-    console.log('Event tracked:', { category, action, label });
+// Analytics tracking with multiple providers support
+function trackEvent(category, action, label, value) {
+    const eventData = {
+        category: category,
+        action: action,
+        label: label,
+        value: value || 0
+    };
+
+    // Google Analytics 4 (gtag)
+    if (typeof gtag !== 'undefined') {
+        gtag('event', action, {
+            event_category: category,
+            event_label: label,
+            value: value
+        });
+    }
+
+    // Google Analytics Universal (ga)
+    if (typeof ga !== 'undefined') {
+        ga('send', 'event', category, action, label, value);
+    }
+
+    // Plausible Analytics
+    if (typeof plausible !== 'undefined') {
+        plausible(action, {
+            props: {
+                category: category,
+                label: label,
+                value: value
+            }
+        });
+    }
+
+    // Custom analytics endpoint (replace with your endpoint)
+    if (window.ANALYTICS_ENDPOINT) {
+        fetch(window.ANALYTICS_ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                ...eventData,
+                timestamp: new Date().toISOString(),
+                url: window.location.href,
+                userAgent: navigator.userAgent
+            })
+        }).catch(err => console.warn('Analytics tracking failed:', err));
+    }
+
+    // Console logging for development
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        console.log('Event tracked:', eventData);
+    }
 }
 
 // Track button clicks

@@ -24,6 +24,9 @@
 #include <linux/tcp.h>
 #include <linux/udp.h>
 #include <linux/in.h>
+#include <linux/sched.h>
+#include <linux/nsproxy.h>
+#include <linux/pid_namespace.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
@@ -77,11 +80,35 @@ struct {
  * -------------------------------------------------------------------------- */
 
 /**
- * Resolve container identifier for the given skb.
- * NOTE: Placeholder implementation. In production, derive from cgroups/namespaces.
+ * Resolve container identifier from current process context.
+ * For network monitoring, we use the current task's namespace information.
  */
 static __always_inline __u32 get_container_id_from_skb(void) {
-    return 42; /* Demo container ID */
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (!task) {
+        // Fallback to PID-based approach when task is unavailable
+        __u32 pid = bpf_get_current_pid_tgid() >> 32;
+        return pid % 65536;
+    }
+
+    // Get PID namespace ID as container identifier
+    __u32 pid_ns_inum = 0;
+    struct pid_namespace *pid_ns = task->nsproxy ? task->nsproxy->pid_ns_for_children : NULL;
+    if (pid_ns) {
+        pid_ns_inum = pid_ns->ns.inum;
+    }
+
+    // Fallback to enhanced PID-based approach if namespace unavailable
+    if (pid_ns_inum == 0) {
+        __u32 pid = bpf_get_current_pid_tgid() >> 32;
+        __u32 tgid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+        // Better hash combining PID and TGID
+        __u32 hash = pid ^ (tgid << 16);
+        return hash % 65536;
+    }
+
+    return pid_ns_inum;
 }
 
 /* --------------------------------------------------------------------------

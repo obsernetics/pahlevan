@@ -2,6 +2,7 @@ package ebpf
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -595,36 +596,346 @@ func (m *Manager) processFileEvents(ctx context.Context) {
 }
 
 // Helper functions for converting between Go and eBPF data structures
-func convertToEBPFPolicy(policy *ContainerPolicy) interface{} {
-	// Implementation would convert Go policy struct to eBPF-compatible format
-	// This is a placeholder - actual implementation would match the eBPF struct layout
-	return policy
+
+// EBPFContainerPolicy represents the eBPF container_policy struct layout
+type EBPFContainerPolicy struct {
+	ContainerID      uint32    // container_id
+	LearningMode     uint32    // learning_mode (1 = learning, 0 = enforcement)
+	AllowedSyscalls  [64]uint64 // allowed_syscalls bitmap for syscalls 0-4095
+	ViolationCount   uint32    // violation_count
+	LastUpdateNs     uint64    // last_update_ns
 }
 
-func convertToEBPFNetworkPolicy(policy *NetworkPolicy) interface{} {
-	// Implementation would convert Go network policy struct to eBPF-compatible format
-	return policy
+func convertToEBPFPolicy(policy *ContainerPolicy) *EBPFContainerPolicy {
+	ebpfPolicy := &EBPFContainerPolicy{
+		ContainerID:      0, // Will be set by caller as map key
+		LearningMode:     0, // 0 = enforcement mode by default
+		ViolationCount:   0,
+		LastUpdateNs:     uint64(policy.LastUpdate.UnixNano()),
+	}
+
+	// Convert enforcement mode
+	if policy.EnforcementMode == 0 { // Assuming 0 = monitoring/learning
+		ebpfPolicy.LearningMode = 1
+	}
+
+	// Convert syscall map to bitmap
+	for syscallNr, allowed := range policy.AllowedSyscalls {
+		if allowed && syscallNr < 4096 { // eBPF supports 0-4095
+			wordIdx := syscallNr / 64
+			bitIdx := syscallNr % 64
+			if wordIdx < 64 {
+				ebpfPolicy.AllowedSyscalls[wordIdx] |= (1 << bitIdx)
+			}
+		}
+	}
+
+	return ebpfPolicy
 }
 
-func convertToEBPFFilePolicy(policy *FilePolicy) interface{} {
-	// Implementation would convert Go file policy struct to eBPF-compatible format
-	return policy
+// EBPFConnectionPolicy represents the eBPF connection_policy struct layout
+type EBPFConnectionPolicy struct {
+	ContainerID            uint32     // container_id
+	AllowedDestinations    [256]uint32 // allowed_destinations (IP addresses)
+	AllowedPorts          [64]uint16  // allowed_ports
+	LearningMode          uint32     // learning_mode (1 = learning, 0 = enforcement)
+	LastUpdateNs          uint64     // last_update_ns
+}
+
+func convertToEBPFNetworkPolicy(policy *NetworkPolicy) *EBPFConnectionPolicy {
+	ebpfPolicy := &EBPFConnectionPolicy{
+		ContainerID:   0, // Will be set by caller as map key
+		LearningMode:  0, // 0 = enforcement mode by default
+		LastUpdateNs:  uint64(policy.LastUpdate.UnixNano()),
+	}
+
+	// Convert enforcement mode
+	if policy.EnforcementMode == 0 { // Assuming 0 = monitoring/learning
+		ebpfPolicy.LearningMode = 1
+	}
+
+	// Convert allowed IPs (both egress and ingress)
+	destIdx := 0
+	for _, ip := range policy.AllowedEgressIPs {
+		if destIdx < 256 {
+			ebpfPolicy.AllowedDestinations[destIdx] = ip
+			destIdx++
+		}
+	}
+	for _, ip := range policy.AllowedIngressIPs {
+		if destIdx < 256 {
+			ebpfPolicy.AllowedDestinations[destIdx] = ip
+			destIdx++
+		}
+	}
+
+	// Convert allowed ports (both egress and ingress)
+	portIdx := 0
+	for port := range policy.AllowedEgressPorts {
+		if portIdx < 64 {
+			ebpfPolicy.AllowedPorts[portIdx] = port
+			portIdx++
+		}
+	}
+	for port := range policy.AllowedIngressPorts {
+		if portIdx < 64 {
+			ebpfPolicy.AllowedPorts[portIdx] = port
+			portIdx++
+		}
+	}
+
+	return ebpfPolicy
+}
+
+// EBPFFileAccessPolicy represents the eBPF file_access_policy struct layout
+type EBPFFileAccessPolicy struct {
+	ContainerID   uint32        // container_id
+	LearningMode  uint32        // learning_mode (1 = learning, 0 = enforcement)
+	AllowedPaths  [1024][64]byte // allowed_paths (char array)
+	PathCount     uint32        // path_count (number of valid paths)
+	LastUpdateNs  uint64        // last_update_ns
+}
+
+func convertToEBPFFilePolicy(policy *FilePolicy) *EBPFFileAccessPolicy {
+	ebpfPolicy := &EBPFFileAccessPolicy{
+		ContainerID:   0, // Will be set by caller as map key
+		LearningMode:  0, // 0 = enforcement mode by default
+		PathCount:     0,
+		LastUpdateNs:  uint64(policy.LastUpdate.UnixNano()),
+	}
+
+	// Convert enforcement mode
+	if policy.EnforcementMode == 0 { // Assuming 0 = monitoring/learning
+		ebpfPolicy.LearningMode = 1
+	}
+
+	// Convert allowed paths to fixed-size char arrays
+	for i, path := range policy.AllowedPaths {
+		if i >= 1024 { // eBPF limit
+			break
+		}
+
+		// Copy path to fixed-size array (max 63 chars + null terminator)
+		pathBytes := []byte(path)
+		copyLen := len(pathBytes)
+		if copyLen >= 64 {
+			copyLen = 63 // Leave space for null terminator
+		}
+
+		copy(ebpfPolicy.AllowedPaths[i][:copyLen], pathBytes)
+		ebpfPolicy.AllowedPaths[i][copyLen] = 0 // Null terminator
+		ebpfPolicy.PathCount++
+	}
+
+	return ebpfPolicy
 }
 
 func parseSyscallEvent(data []byte) *SyscallEvent {
-	// Implementation would parse raw eBPF event data into Go struct
-	// This is a placeholder - actual implementation would use unsafe pointers or binary encoding
-	return &SyscallEvent{}
+	// Parse raw eBPF syscall_event struct data
+	if len(data) < 32 { // Minimum size for syscall_event struct
+		return nil
+	}
+
+	event := &SyscallEvent{}
+
+	// Parse eBPF syscall_event struct layout:
+	// __u32 pid; __u32 tid; __u32 syscall_nr; __u64 timestamp_ns; char comm[16]; __u32 container_id;
+	offset := 0
+
+	// Parse PID (uint32)
+	event.PID = uint32(data[offset]) | uint32(data[offset+1])<<8 |
+	           uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
+	offset += 4
+
+	// Parse TID (uint32) - note Go SyscallEvent has TGID but eBPF has tid
+	event.TGID = uint32(data[offset]) | uint32(data[offset+1])<<8 |
+	            uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
+	offset += 4
+
+	// Parse syscall_nr (uint32 in eBPF, but uint64 in Go)
+	event.SyscallNr = uint64(uint32(data[offset]) | uint32(data[offset+1])<<8 |
+	                 uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24)
+	offset += 4
+
+	// Parse timestamp_ns (uint64)
+	event.Timestamp = uint64(data[offset]) | uint64(data[offset+1])<<8 |
+	                 uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
+	                 uint64(data[offset+4])<<32 | uint64(data[offset+5])<<40 |
+	                 uint64(data[offset+6])<<48 | uint64(data[offset+7])<<56
+	offset += 8
+
+	// Parse comm (char[16]) - find null terminator
+	commBytes := make([]byte, 0, 16)
+	for i := 0; i < 16 && offset+i < len(data); i++ {
+		if data[offset+i] == 0 {
+			break
+		}
+		commBytes = append(commBytes, data[offset+i])
+	}
+	event.Comm = string(commBytes)
+	offset += 16
+
+	// Parse container_id (uint32) - convert to string
+	if offset+4 <= len(data) {
+		containerID := uint32(data[offset]) | uint32(data[offset+1])<<8 |
+		              uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
+		event.ContainerID = fmt.Sprintf("%d", containerID)
+	}
+
+	return event
 }
 
 func parseNetworkEvent(data []byte) *NetworkEvent {
-	// Implementation would parse raw eBPF event data into Go struct
-	return &NetworkEvent{}
+	if len(data) < 32 { // Minimum size for network event
+		return &NetworkEvent{}
+	}
+
+	event := &NetworkEvent{}
+
+	// Parse binary data using encoding/binary
+	offset := 0
+
+	// Parse PID (4 bytes)
+	event.PID = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse TGID (4 bytes)
+	event.TGID = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse SrcIP (4 bytes)
+	event.SrcIP = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse DstIP (4 bytes)
+	event.DstIP = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse SrcPort (2 bytes)
+	event.SrcPort = binary.LittleEndian.Uint16(data[offset : offset+2])
+	offset += 2
+
+	// Parse DstPort (2 bytes)
+	event.DstPort = binary.LittleEndian.Uint16(data[offset : offset+2])
+	offset += 2
+
+	// Parse Protocol (1 byte)
+	if offset < len(data) {
+		event.Protocol = data[offset]
+		offset++
+	}
+
+	// Parse Direction (1 byte)
+	if offset < len(data) {
+		event.Direction = data[offset]
+		offset++
+	}
+
+	// Parse Action (1 byte)
+	if offset < len(data) {
+		event.Action = data[offset]
+		offset++
+	}
+
+	// Skip padding byte
+	offset++
+
+	// Parse Timestamp (8 bytes)
+	if offset+8 <= len(data) {
+		event.Timestamp = binary.LittleEndian.Uint64(data[offset : offset+8])
+		offset += 8
+	}
+
+	// Container ID would be determined from PID namespace or passed separately
+	event.ContainerID = fmt.Sprintf("container-%d", event.PID)
+
+	return event
 }
 
 func parseFileEvent(data []byte) *FileEvent {
-	// Implementation would parse raw eBPF event data into Go struct
-	return &FileEvent{}
+	if len(data) < 40 { // Minimum size for file event
+		return &FileEvent{}
+	}
+
+	event := &FileEvent{}
+	offset := 0
+
+	// Parse PID (4 bytes)
+	event.PID = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse TGID (4 bytes)
+	event.TGID = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse UID (4 bytes)
+	event.UID = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse GID (4 bytes)
+	event.GID = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse Timestamp (8 bytes)
+	event.Timestamp = binary.LittleEndian.Uint64(data[offset : offset+8])
+	offset += 8
+
+	// Parse SyscallNr (4 bytes)
+	event.SyscallNr = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse Flags (4 bytes)
+	event.Flags = binary.LittleEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Parse Mode (2 bytes)
+	event.Mode = binary.LittleEndian.Uint16(data[offset : offset+2])
+	offset += 2
+
+	// Parse Action (1 byte)
+	if offset < len(data) {
+		event.Action = data[offset]
+		offset++
+	}
+
+	// Skip padding byte
+	offset++
+
+	// Parse Comm (null-terminated string, up to 16 bytes)
+	commEnd := offset + 16
+	if commEnd > len(data) {
+		commEnd = len(data)
+	}
+
+	for i := offset; i < commEnd; i++ {
+		if data[i] == 0 {
+			event.Comm = string(data[offset:i])
+			break
+		}
+		if i == commEnd-1 {
+			event.Comm = string(data[offset:commEnd])
+		}
+	}
+	offset = commEnd
+
+	// Parse Path (remaining bytes, null-terminated)
+	if offset < len(data) {
+		pathData := data[offset:]
+		for i, b := range pathData {
+			if b == 0 {
+				event.Path = string(pathData[:i])
+				break
+			}
+			if i == len(pathData)-1 {
+				event.Path = string(pathData)
+			}
+		}
+	}
+
+	// Container ID would be determined from PID namespace
+	event.ContainerID = fmt.Sprintf("container-%d", event.PID)
+
+	return event
 }
 
 // Validation methods for policy types

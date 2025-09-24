@@ -18,6 +18,7 @@ package webhooks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -364,11 +365,27 @@ func (v *PahlevanPolicyValidator) validateMetricsExporter(exporter policyv1alpha
 		if exporter.Endpoint == "" {
 			return fmt.Errorf("datadog exporter requires endpoint")
 		}
-		// Config validation would require unmarshaling the RawExtension
-		// Simplified validation for now
+		// Validate Datadog-specific config
+		if err := v.validateDatadogConfig(exporter); err != nil {
+			return fmt.Errorf("invalid datadog config: %w", err)
+		}
 	case "otlp":
 		if exporter.Endpoint == "" {
 			return fmt.Errorf("otlp exporter requires endpoint")
+		}
+		// Validate OTLP-specific config
+		if err := v.validateOTLPConfig(exporter); err != nil {
+			return fmt.Errorf("invalid otlp config: %w", err)
+		}
+	case "prometheus":
+		// Validate Prometheus-specific config
+		if err := v.validatePrometheusConfig(exporter); err != nil {
+			return fmt.Errorf("invalid prometheus config: %w", err)
+		}
+	case "grafana":
+		// Validate Grafana-specific config
+		if err := v.validateGrafanaConfig(exporter); err != nil {
+			return fmt.Errorf("invalid grafana config: %w", err)
 		}
 	}
 
@@ -462,8 +479,30 @@ func (v *PahlevanPolicyValidator) selectorsOverlap(selector1, selector2 policyv1
 		}
 	}
 
-	// This is a simplified check - a full implementation would need to consider
-	// matchExpressions and complex label selector logic
+	// Check label selectors for overlap
+	return v.checkLabelSelectorsOverlap(selector1.MatchLabels, selector2.MatchLabels)
+}
+
+// checkLabelSelectorsOverlap checks if two sets of match labels have any overlap
+func (v *PahlevanPolicyValidator) checkLabelSelectorsOverlap(labels1, labels2 map[string]string) bool {
+	if len(labels1) == 0 || len(labels2) == 0 {
+		return false
+	}
+
+	// Check if any labels in labels1 match labels in labels2
+	for key, value := range labels1 {
+		if value2, exists := labels2[key]; exists {
+			// Same key exists in both selectors
+			if value == value2 {
+				// Same key-value pair means potential overlap
+				return true
+			}
+			// Same key with different values means no overlap possible
+			return false
+		}
+	}
+
+	// No common keys, so no overlap
 	return false
 }
 
@@ -512,8 +551,36 @@ func (v *PahlevanPolicyValidator) selectorsEqual(selector1, selector2 policyv1al
 	if len(selector1.MatchExpressions) != len(selector2.MatchExpressions) {
 		return false
 	}
-	// For full comparison, we'd need to check each expression
-	// This is simplified for this example
+
+	// Compare each match expression
+	for i, expr1 := range selector1.MatchExpressions {
+		expr2 := selector2.MatchExpressions[i]
+		if expr1.Key != expr2.Key || expr1.Operator != expr2.Operator {
+			return false
+		}
+
+		// Compare values
+		if len(expr1.Values) != len(expr2.Values) {
+			return false
+		}
+
+		// Create maps for value comparison
+		values1 := make(map[string]bool)
+		values2 := make(map[string]bool)
+		for _, v := range expr1.Values {
+			values1[v] = true
+		}
+		for _, v := range expr2.Values {
+			values2[v] = true
+		}
+
+		// Check if all values match
+		for v := range values1 {
+			if !values2[v] {
+				return false
+			}
+		}
+	}
 
 	return true
 }
@@ -536,5 +603,118 @@ func validateLabelValue(value string) error {
 		return fmt.Errorf("label value cannot be longer than 63 characters")
 	}
 	// Additional validation rules for Kubernetes label values would go here
+	return nil
+}
+
+// validateDatadogConfig validates Datadog-specific exporter configuration
+func (v *PahlevanPolicyValidator) validateDatadogConfig(exporter policyv1alpha1.MetricsExporter) error {
+	// Validate endpoint format for Datadog
+	if exporter.Endpoint != "" {
+		if !strings.HasPrefix(exporter.Endpoint, "https://") && !strings.HasPrefix(exporter.Endpoint, "http://") {
+			return fmt.Errorf("datadog endpoint must be a valid URL")
+		}
+	}
+
+	// Validate required config fields through RawExtension
+	if exporter.Config.Raw != nil && len(exporter.Config.Raw) > 0 {
+		var config map[string]interface{}
+		if err := json.Unmarshal(exporter.Config.Raw, &config); err != nil {
+			return fmt.Errorf("invalid config JSON: %w", err)
+		}
+
+		// Check for required fields
+		if apiKey, exists := config["api_key"]; !exists || apiKey == "" {
+			return fmt.Errorf("datadog exporter requires api_key in config")
+		}
+	}
+
+	return nil
+}
+
+// validateOTLPConfig validates OTLP-specific exporter configuration
+func (v *PahlevanPolicyValidator) validateOTLPConfig(exporter policyv1alpha1.MetricsExporter) error {
+	// Validate endpoint format for OTLP
+	if exporter.Endpoint != "" {
+		if !strings.HasPrefix(exporter.Endpoint, "https://") && !strings.HasPrefix(exporter.Endpoint, "http://") &&
+		   !strings.HasPrefix(exporter.Endpoint, "grpc://") {
+			return fmt.Errorf("otlp endpoint must be a valid URL with http/https/grpc scheme")
+		}
+	}
+
+	// Validate protocol if specified in config
+	if exporter.Config.Raw != nil && len(exporter.Config.Raw) > 0 {
+		var config map[string]interface{}
+		if err := json.Unmarshal(exporter.Config.Raw, &config); err != nil {
+			return fmt.Errorf("invalid config JSON: %w", err)
+		}
+
+		if protocol, exists := config["protocol"]; exists {
+			switch protocol {
+			case "grpc", "http/protobuf", "http/json":
+				// Valid protocols
+			default:
+				return fmt.Errorf("invalid otlp protocol: %v", protocol)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validatePrometheusConfig validates Prometheus-specific exporter configuration
+func (v *PahlevanPolicyValidator) validatePrometheusConfig(exporter policyv1alpha1.MetricsExporter) error {
+	// Prometheus typically doesn't need endpoint validation as it's pull-based
+	// Validate config for scrape settings
+	if exporter.Config.Raw != nil && len(exporter.Config.Raw) > 0 {
+		var config map[string]interface{}
+		if err := json.Unmarshal(exporter.Config.Raw, &config); err != nil {
+			return fmt.Errorf("invalid config JSON: %w", err)
+		}
+
+		// Validate scrape interval if specified
+		if interval, exists := config["scrape_interval"]; exists {
+			if intervalStr, ok := interval.(string); ok {
+				if _, err := time.ParseDuration(intervalStr); err != nil {
+					return fmt.Errorf("invalid scrape_interval format: %w", err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateGrafanaConfig validates Grafana-specific exporter configuration
+func (v *PahlevanPolicyValidator) validateGrafanaConfig(exporter policyv1alpha1.MetricsExporter) error {
+	// Validate endpoint format for Grafana
+	if exporter.Endpoint != "" {
+		if !strings.HasPrefix(exporter.Endpoint, "https://") && !strings.HasPrefix(exporter.Endpoint, "http://") {
+			return fmt.Errorf("grafana endpoint must be a valid URL")
+		}
+	}
+
+	// Validate authentication config
+	if exporter.Config.Raw != nil && len(exporter.Config.Raw) > 0 {
+		var config map[string]interface{}
+		if err := json.Unmarshal(exporter.Config.Raw, &config); err != nil {
+			return fmt.Errorf("invalid config JSON: %w", err)
+		}
+
+		// Check for authentication fields
+		hasAuth := false
+		if apiKey, exists := config["api_key"]; exists && apiKey != "" {
+			hasAuth = true
+		}
+		if username, exists := config["username"]; exists && username != "" {
+			if _, hasPassword := config["password"]; hasPassword {
+				hasAuth = true
+			}
+		}
+
+		if !hasAuth && exporter.Endpoint != "" {
+			return fmt.Errorf("grafana exporter requires authentication (api_key or username/password)")
+		}
+	}
+
 	return nil
 }

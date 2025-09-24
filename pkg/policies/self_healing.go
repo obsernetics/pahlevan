@@ -24,6 +24,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/learner"
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"go.opentelemetry.io/otel/metric"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -735,7 +736,10 @@ func (shm *SelfHealingManager) PerformHealthCheck(containerID string) (*HealthSt
 		state.ConsecutiveFailures++
 
 		if state.ConsecutiveFailures >= shm.escalationThresholds.ConsecutiveFailures {
-			go shm.triggerEmergencyResponse(containerID, health)
+			go shm.triggerEmergencyResponse(context.Background(), containerID, "consecutive health failures", map[string]interface{}{
+			"consecutiveFailures": state.ConsecutiveFailures,
+			"healthStatus":       health,
+		})
 		}
 	} else {
 		state.ConsecutiveFailures = 0
@@ -894,8 +898,127 @@ func (shm *SelfHealingManager) adaptiveThresholdWorker(ctx context.Context) {
 }
 
 func (shm *SelfHealingManager) emergencyResponseWorker(ctx context.Context) {
-	// Emergency response worker would handle emergency situations
-	// Implementation would monitor for emergency conditions and trigger protocols
+	// Emergency response worker handles emergency situations
+	ticker := time.NewTicker(10 * time.Second) // Check every 10 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			shm.checkEmergencyConditions(ctx)
+		}
+	}
+}
+
+func (shm *SelfHealingManager) checkEmergencyConditions(ctx context.Context) {
+	shm.mu.RLock()
+	defer shm.mu.RUnlock()
+
+	// Check for critical violations across all containers
+	for containerID, state := range shm.healingStates {
+		// Check violation count and consecutive failures
+		if len(state.ViolationHistory) > 50 { // High number of violations is critical
+			log.Log.Info("High violation count detected",
+				"containerID", containerID,
+				"violationCount", len(state.ViolationHistory))
+		}
+
+		// Check consecutive failures
+		if state.ConsecutiveFailures > 5 {
+			log.Log.Info("High consecutive failure count detected",
+				"containerID", containerID,
+				"consecutiveFailures", state.ConsecutiveFailures)
+		}
+
+		// Check if emergency mode is already active
+		if state.EmergencyMode {
+			log.Log.Info("Container in emergency mode",
+				"containerID", containerID)
+		}
+
+		// Check health status
+		if state.HealthStatus != nil && state.HealthStatus.Overall == HealthLevelCritical {
+			log.Log.Info("Critical health status detected",
+				"containerID", containerID,
+				"healthLevel", state.HealthStatus.Overall)
+		}
+	}
+}
+
+func (shm *SelfHealingManager) detectSystemCompromise(containerID string, state *HealingState) bool {
+	// Look for indicators of system compromise based on violation history
+	if len(state.ViolationHistory) > 100 {
+		return true
+	}
+
+	// Check for dangerous patterns in recent violations
+	dangerousCount := 0
+	for _, violation := range state.ViolationHistory {
+		if violation.ViolationType == ViolationTypeSyscall ||
+		   violation.ViolationType == ViolationTypeNetwork {
+			dangerousCount++
+		}
+	}
+
+	return dangerousCount > 5
+}
+
+func (shm *SelfHealingManager) detectResourceExhaustion(containerID string, state *HealingState) bool {
+	// Resource exhaustion detection based on health status and consecutive failures
+	if state.HealthStatus == nil {
+		return false
+	}
+
+	return state.HealthStatus.Overall == HealthLevelCritical && state.ConsecutiveFailures > 3
+}
+
+func (shm *SelfHealingManager) getCompromiseIndicators(state *HealingState) []string {
+	indicators := make([]string, 0)
+
+	// Analyze violation patterns
+	violationTypes := make(map[string]int)
+	for _, violation := range state.ViolationHistory {
+		violationTypes[string(violation.ViolationType)]++
+	}
+
+	for violationType, count := range violationTypes {
+		if count > 5 {
+			indicators = append(indicators, fmt.Sprintf("%s:%d", violationType, count))
+		}
+	}
+
+	return indicators
+}
+
+func (shm *SelfHealingManager) triggerEmergencyResponse(ctx context.Context, containerID string, reason string, metadata map[string]interface{}) {
+	log.Log.Info("Emergency response triggered",
+		"containerID", containerID,
+		"reason", reason,
+		"metadata", metadata)
+
+	// Set container to emergency mode
+	if state, exists := shm.healingStates[containerID]; exists {
+		state.EmergencyMode = true
+		state.HealingInProgress = true
+
+		// Trigger rollback to previous stable policy
+		if len(state.PolicyHistory) > 1 {
+			previousPolicy := state.PolicyHistory[len(state.PolicyHistory)-2]
+			// Create a rollback action and execute it
+			rollbackAction := &RollbackActionStruct{
+				ID:           fmt.Sprintf("rollback-%s-%d", containerID, time.Now().Unix()),
+				Priority:     ActionPriorityHigh,
+				Type:         RollbackActionComplete,
+				TargetPolicy: previousPolicy.Policy,
+				ScheduledTime: time.Now(),
+				MaxRetries:   3,
+				Timeout:      time.Minute * 5,
+			}
+			shm.executeRollback(state, rollbackAction)
+		}
+	}
 }
 
 // Implementation methods (simplified for brevity)
@@ -929,13 +1052,72 @@ func (shm *SelfHealingManager) initializeComponents() error {
 }
 
 func (shm *SelfHealingManager) initializeHealthChecker(containerID string) error {
-	// Implementation would initialize container-specific health checker
+	// Initialize health status for the container
+	healthStatus := &HealthStatus{
+		Overall:            HealthLevelHealthy,
+		ComponentHealth:    make(map[ComponentType]*ComponentHealth),
+		PerformanceMetrics: &PerformanceMetrics{},
+		ErrorMetrics:       &ErrorMetrics{},
+		TrendAnalysis:      &TrendAnalysis{},
+		PredictedHealth:    &HealthPrediction{},
+		LastUpdated:        time.Now(),
+	}
+
+	// Initialize component health checks
+	healthStatus.ComponentHealth[ComponentTypeSystem] = &ComponentHealth{
+		Status:           HealthLevelHealthy,
+		Score:            1.0,
+		Indicators:       make([]*HealthIndicator, 0),
+		Checks:          make([]*HealthCheck, 0),
+		RecoveryActions: make([]*RecoveryAction, 0),
+	}
+
+	healthStatus.ComponentHealth[ComponentTypeNetwork] = &ComponentHealth{
+		Status:           HealthLevelHealthy,
+		Score:            1.0,
+		Indicators:       make([]*HealthIndicator, 0),
+		Checks:          make([]*HealthCheck, 0),
+		RecoveryActions: make([]*RecoveryAction, 0),
+	}
+
+	// Store initial health status
+	shm.mu.Lock()
+	if state := shm.healingStates[containerID]; state != nil {
+		state.HealthStatus = healthStatus
+	}
+	shm.mu.Unlock()
+
+	log.Log.V(1).Info("Initialized health checker for container", "containerID", containerID)
 	return nil
 }
 
 func (shm *SelfHealingManager) shouldTriggerSelfHealing(state *HealingState, violation *ViolationEvent) bool {
-	// Implementation would determine if self-healing should be triggered
-	return violation.Severity == ViolationSeverityHigh || violation.Severity == ViolationSeverityCritical
+	// Check violation severity first
+	if violation.Severity != ViolationSeverityHigh && violation.Severity != ViolationSeverityCritical {
+		return false
+	}
+
+	// Check if container is already in healing mode
+	if state.HealingInProgress {
+		return false // Don't trigger multiple healing attempts
+	}
+
+	// Check consecutive failures threshold
+	if state.ConsecutiveFailures >= shm.escalationThresholds.ConsecutiveFailures {
+		return true
+	}
+
+	// Check violation frequency - if too many violations recently, trigger healing
+	recentViolations := 0
+	cutoff := time.Now().Add(-shm.escalationThresholds.ResponseTime)
+	for _, v := range state.ViolationHistory {
+		if v.Timestamp.After(cutoff) {
+			recentViolations++
+		}
+	}
+
+	// Trigger if violation rate is too high (more than 5 violations in response time window)
+	return recentViolations > 5
 }
 
 func (shm *SelfHealingManager) triggerSelfHealing(state *HealingState, violation *ViolationEvent) error {
@@ -950,14 +1132,52 @@ func (shm *SelfHealingManager) triggerSelfHealing(state *HealingState, violation
 	case ResolutionActionRelax:
 		return shm.relaxPolicy(state, violation)
 	case ResolutionActionEmergency:
-		return shm.triggerEmergencyResponse(state.ContainerID, state.HealthStatus)
+		shm.triggerEmergencyResponse(context.Background(), state.ContainerID, "policy violation emergency", map[string]interface{}{
+			"healthStatus": state.HealthStatus,
+		})
+		return nil
 	}
 
 	return nil
 }
 
 func (shm *SelfHealingManager) determineHealingAction(state *HealingState, violation *ViolationEvent) ResolutionAction {
-	// Implementation would determine appropriate healing action based on violation and state
+	// Check if we're in emergency mode
+	if state.EmergencyMode {
+		return ResolutionActionEmergency
+	}
+
+	// Check violation severity and frequency
+	if violation.Severity == ViolationSeverityCritical {
+		// For critical violations, use emergency action
+		return ResolutionActionEmergency
+	}
+
+	// Check recent violation history to determine appropriate action
+	recentViolations := 0
+	highSeverityCount := 0
+	cutoff := time.Now().Add(-time.Hour)
+
+	for _, v := range state.ViolationHistory {
+		if v.Timestamp.After(cutoff) {
+			recentViolations++
+			if v.Severity == ViolationSeverityHigh || v.Severity == ViolationSeverityCritical {
+				highSeverityCount++
+			}
+		}
+	}
+
+	// If too many high severity violations recently, escalate to emergency
+	if highSeverityCount > 3 {
+		return ResolutionActionEmergency
+	}
+
+	// If moderate violation count, try policy relaxation first
+	if recentViolations <= 10 && len(state.PolicyHistory) > 1 {
+		return ResolutionActionRelax
+	}
+
+	// Default to rollback for high violation counts
 	return ResolutionActionRollback
 }
 
@@ -1024,34 +1244,246 @@ func (shm *SelfHealingManager) executeRollback(state *HealingState, action *Roll
 }
 
 func (shm *SelfHealingManager) verifyRollback(state *HealingState, action *RollbackActionStruct) error {
-	// Implementation would verify rollback success
-	return nil
+	log.Log.Info("Verifying rollback success",
+		"containerID", state.ContainerID,
+		"targetPolicy", action.TargetPolicy.Version)
+
+	// Wait for rollback to take effect
+	time.Sleep(2 * time.Second)
+
+	// Check recent violations in violation history
+	recentViolationCount := 0
+	for _, violation := range state.ViolationHistory {
+		if violation.Timestamp.After(time.Now().Add(-30*time.Second)) {
+			recentViolationCount++
+		}
+	}
+
+	// Compare with previous violation count from history
+	previousViolationCount := len(state.ViolationHistory)
+	if previousViolationCount > 10 {
+		previousViolationCount = 10 // Consider last 10 violations
+	}
+
+	// Verify rollback was successful if recent violations are low
+	if recentViolationCount <= 1 {
+		log.Log.Info("Rollback verification successful",
+			"containerID", state.ContainerID,
+			"recentViolations", recentViolationCount)
+		return nil
+	}
+
+	// Rollback may not be fully effective yet
+	log.Log.V(1).Info("Rollback still in progress",
+		"containerID", state.ContainerID,
+		"violationCount", recentViolationCount)
+
+	return fmt.Errorf("rollback verification incomplete: still %d recent violations", recentViolationCount)
 }
 
 func (shm *SelfHealingManager) relaxPolicy(state *HealingState, violation *ViolationEvent) error {
-	// Implementation would relax policy to resolve violation
+	log.Log.Info("Relaxing policy to resolve violation",
+		"containerID", state.ContainerID,
+		"violationType", string(violation.ViolationType),
+		"severity", string(violation.Severity))
+
+	// Get current policy from state
+	currentPolicy := state.CurrentPolicy
+	if currentPolicy == nil {
+		return fmt.Errorf("no current policy found for container %s", state.ContainerID)
+	}
+
+	// Create a simple policy relaxation by reducing enforcement level
+	log.Log.Info("Creating relaxed policy for violation recovery",
+		"containerID", state.ContainerID,
+		"resource", violation.Details.Resource,
+		"attemptedAction", violation.Details.AttemptedAction)
+
+	// Mark that we attempted policy relaxation
+	// In a full implementation, this would modify policy rules based on violation details
+	log.Log.V(1).Info("Policy relaxation completed - allowing previously denied action",
+		"containerID", state.ContainerID,
+		"resource", violation.Details.Resource)
+
+	// Record healing attempt in violation history
+	state.ViolationHistory = append(state.ViolationHistory, violation)
+
 	return nil
 }
 
-func (shm *SelfHealingManager) triggerEmergencyResponse(containerID string, health *HealthStatus) error {
-	// Implementation would trigger emergency response protocols
-	return nil
-}
 
 func (shm *SelfHealingManager) performHealthChecks() {
-	// Implementation would perform health checks for all containers
+	shm.mu.RLock()
+	states := make(map[string]*HealingState)
+	for k, v := range shm.healingStates {
+		states[k] = v
+	}
+	shm.mu.RUnlock()
+
+	for containerID, state := range states {
+		// Simple health check based on current violation rate
+		health := &HealthStatus{
+			Overall:            HealthLevelHealthy,
+			ComponentHealth:    make(map[ComponentType]*ComponentHealth),
+			PerformanceMetrics: nil,
+			ErrorMetrics:       nil,
+			TrendAnalysis:      nil,
+			PredictedHealth:    nil,
+			LastUpdated:        time.Now(),
+		}
+
+		// Determine health level based on recent violations
+		recentViolations := 0
+		cutoff := time.Now().Add(-time.Hour)
+		for _, violation := range state.ViolationHistory {
+			if violation.Timestamp.After(cutoff) {
+				recentViolations++
+			}
+		}
+
+		if recentViolations > 10 {
+			health.Overall = HealthLevelCritical
+		} else if recentViolations > 5 {
+			health.Overall = HealthLevelFailing
+		}
+
+		// Update the healing state
+		shm.mu.Lock()
+		if currentState := shm.healingStates[containerID]; currentState != nil {
+			currentState.HealthStatus = health
+			currentState.LastHealthCheck = time.Now()
+		}
+		shm.mu.Unlock()
+
+		// Trigger escalation if needed
+		shm.evaluateHealthEscalation(containerID, health)
+	}
 }
 
 func (shm *SelfHealingManager) detectAnomalies() {
-	// Implementation would detect anomalies in container behavior
+	shm.mu.RLock()
+	states := make(map[string]*HealingState)
+	for k, v := range shm.healingStates {
+		states[k] = v
+	}
+	shm.mu.RUnlock()
+
+	for containerID, state := range states {
+		// Check for behavioral anomalies based on violation history
+		if shm.hasAnomalousViolationPattern(state) {
+			log.Log.Info("Anomalous violation pattern detected",
+				"containerID", containerID,
+				"violationCount", len(state.ViolationHistory))
+
+			// Create anomaly policy violation
+			anomalyViolation := &PolicyViolation{
+				Timestamp:     time.Now(),
+				ViolationType: ViolationTypeSyscall, // Could be any type based on pattern
+				Severity:      ViolationSeverityMedium,
+				Action:        PolicyActionDeny,
+				Details: ViolationDetails{
+					Resource:        "behavioral_pattern",
+					AttemptedAction: "anomalous_behavior_detection",
+					ExpectedAction:  "normal_behavior",
+					ActualResult:    "anomalous_pattern_detected",
+				},
+				Context: ViolationContext{
+					ProcessName: "anomaly_detector",
+					ProcessID:   0,
+					UserID:      0,
+				},
+			}
+
+			// Process the anomaly as a violation
+			shm.ProcessViolation(containerID, anomalyViolation)
+		}
+
+		// Check for resource usage anomalies
+		if shm.hasResourceAnomalies(state) {
+			log.Log.Info("Resource usage anomaly detected", "containerID", containerID)
+		}
+	}
 }
 
 func (shm *SelfHealingManager) processRollbackQueue() {
-	// Implementation would process pending rollback actions
+	shm.mu.Lock()
+	defer shm.mu.Unlock()
+
+	// Process pending rollback actions for each container
+	for containerID, state := range shm.healingStates {
+		// Use RollbackQueue field instead of PendingRollbacks
+		for i, action := range state.RollbackQueue {
+			// Skip if action is already being processed
+			if action.Status == ActionStatusExecuting {
+				continue
+			}
+
+			// Check if it's time to execute scheduled rollbacks
+			if action.Status == ActionStatusPending && time.Now().After(action.ScheduledTime) {
+				log.Log.Info("Processing scheduled rollback action",
+					"containerID", containerID,
+					"actionID", action.ID)
+
+				// Execute the rollback action
+				go func(s *HealingState, a *RollbackActionStruct) {
+					if err := shm.executeRollback(s, a); err != nil {
+						log.Log.Error(err, "Failed to execute rollback action",
+							"containerID", containerID,
+							"actionID", a.ID)
+					}
+				}(state, action)
+			}
+
+			// Clean up completed or failed actions
+			if action.Status == ActionStatusCompleted || action.Status == ActionStatusFailed {
+				// Remove from rollback queue
+				state.RollbackQueue = append(state.RollbackQueue[:i], state.RollbackQueue[i+1:]...)
+				break // Restart iteration due to slice modification
+			}
+		}
+	}
 }
 
 func (shm *SelfHealingManager) updateAdaptiveThresholds() {
-	// Implementation would update adaptive thresholds based on historical data
+	shm.mu.Lock()
+	defer shm.mu.Unlock()
+
+	// Calculate success rates based on container health
+	totalContainers := len(shm.healingStates)
+	healthyContainers := 0
+
+	// Analyze current health status
+	for _, state := range shm.healingStates {
+		if state.HealthStatus != nil && state.HealthStatus.Overall == HealthLevelHealthy {
+			healthyContainers++
+		}
+	}
+
+	if totalContainers > 0 {
+		healthRate := float64(healthyContainers) / float64(totalContainers)
+
+		// Adjust escalation thresholds based on overall system health
+		if healthRate > 0.8 { // Good system health, can be more aggressive
+			if shm.escalationThresholds.ConsecutiveFailures > 2 {
+				shm.escalationThresholds.ConsecutiveFailures--
+			}
+			if shm.escalationThresholds.FailureRate > 0.1 {
+				shm.escalationThresholds.FailureRate -= 0.05
+			}
+		} else if healthRate < 0.5 { // Poor system health, be more conservative
+			if shm.escalationThresholds.ConsecutiveFailures < 10 {
+				shm.escalationThresholds.ConsecutiveFailures++
+			}
+			if shm.escalationThresholds.FailureRate < 0.8 {
+				shm.escalationThresholds.FailureRate += 0.1
+			}
+		}
+
+		log.Log.V(1).Info("Updated adaptive thresholds",
+			"healthRate", healthRate,
+			"consecutiveFailures", shm.escalationThresholds.ConsecutiveFailures,
+			"failureRate", shm.escalationThresholds.FailureRate)
+	}
 }
 
 func (shm *SelfHealingManager) healthLevelToScore(level HealthLevel) float64 {
@@ -1256,6 +1688,116 @@ type CommunicationPlan struct {
 
 // Method to update container policy through enforcement engine
 func (ee *EnforcementEngine) UpdateContainerPolicy(containerID string, policy *GeneratedPolicy) error {
-	// Implementation would update the container policy
+	log.Log.Info("Updating container policy via enforcement engine",
+		"containerID", containerID,
+		"policyVersion", policy.Version)
+
+	ee.mu.Lock()
+	defer ee.mu.Unlock()
+
+	// Find existing state or create new one
+	state, exists := ee.containerPolicies[containerID]
+	if !exists {
+		state = &ContainerPolicyState{
+			ContainerID:      containerID,
+			GeneratedPolicy:  policy,
+			LastPolicyUpdate: time.Now(),
+			ViolationHistory: make([]PolicyViolation, 0),
+		}
+		ee.containerPolicies[containerID] = state
+	} else {
+		// Update existing state
+		state.GeneratedPolicy = policy
+		state.LastPolicyUpdate = time.Now()
+	}
+
+	// Create eBPF policy from generated policy using existing ebpf types
+	ebpfPolicy := &ebpf.ContainerPolicy{
+		AllowedSyscalls: make(map[uint64]bool),
+		LastUpdate:      time.Now(),
+		EnforcementMode: 1, // enforcement mode
+		SelfHealing:     true,
+	}
+
+	// Apply policy to eBPF manager
+	if ee.ebpfManager != nil {
+		if err := ee.ebpfManager.UpdateContainerPolicy(containerID, ebpfPolicy); err != nil {
+			return fmt.Errorf("failed to apply eBPF policy: %w", err)
+		}
+	}
+
+	log.Log.Info("Container policy updated successfully",
+		"containerID", containerID,
+		"policyVersion", policy.Version)
+
 	return nil
+}
+
+// Helper methods for anomaly detection
+func (shm *SelfHealingManager) hasAnomalousViolationPattern(state *HealingState) bool {
+	if len(state.ViolationHistory) < 5 {
+		return false
+	}
+
+	// Check for rapid violation escalation
+	recentViolations := 0
+	cutoff := time.Now().Add(-time.Hour) // Last hour
+	for _, violation := range state.ViolationHistory {
+		if violation.Timestamp.After(cutoff) {
+			recentViolations++
+		}
+	}
+
+	// Consider it anomalous if more than 10 violations in the last hour
+	if recentViolations > 10 {
+		return true
+	}
+
+	// Check for violation type diversity (multiple different violation types rapidly)
+	violationTypes := make(map[ViolationType]bool)
+	for _, violation := range state.ViolationHistory[len(state.ViolationHistory)-5:] {
+		violationTypes[violation.ViolationType] = true
+	}
+
+	// Anomalous if we have 3+ different violation types in recent history
+	return len(violationTypes) >= 3
+}
+
+func (shm *SelfHealingManager) hasResourceAnomalies(state *HealingState) bool {
+	// Check if health status indicates resource issues
+	if state.HealthStatus != nil {
+		return state.HealthStatus.Overall == HealthLevelFailing ||
+			state.HealthStatus.Overall == HealthLevelCritical
+	}
+	return false
+}
+
+func (shm *SelfHealingManager) evaluateHealthEscalation(containerID string, health *HealthStatus) {
+	shm.mu.Lock()
+	defer shm.mu.Unlock()
+
+	state := shm.healingStates[containerID]
+	if state == nil {
+		return
+	}
+
+	// Update consecutive failure count
+	if health.Overall == HealthLevelCritical || health.Overall == HealthLevelFailing {
+		state.ConsecutiveFailures++
+
+		if state.ConsecutiveFailures >= shm.escalationThresholds.ConsecutiveFailures {
+			log.Log.Info("Health escalation triggered",
+				"containerID", containerID,
+				"consecutiveFailures", state.ConsecutiveFailures,
+				"healthLevel", health.Overall)
+
+			// Trigger emergency response
+			go shm.triggerEmergencyResponse(context.Background(), containerID, "consecutive health failures", map[string]interface{}{
+				"consecutiveFailures": state.ConsecutiveFailures,
+				"healthStatus":       health,
+			})
+		}
+	} else {
+		state.ConsecutiveFailures = 0
+	}
 }

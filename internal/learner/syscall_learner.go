@@ -3,6 +3,7 @@ package learner
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -702,9 +703,52 @@ func (sl *SyscallLearner) calculateSyscallConfidence(obs *SyscallObservation) fl
 		countFactor = 1.0
 	}
 
-	frequencyStability := 0.5 // Placeholder for frequency stability calculation
+	// Calculate frequency stability based on time distribution
+	frequencyStability := sl.calculateSyscallFrequencyStability(obs)
 
 	return (countFactor + frequencyStability) / 2.0
+}
+
+// calculateSyscallFrequencyStability analyzes the stability of syscall frequency
+// based on call count, frequency, and temporal consistency
+func (sl *SyscallLearner) calculateSyscallFrequencyStability(obs *SyscallObservation) float64 {
+	if obs.Count < 2 {
+		return 0.1 // Low stability for insufficient data
+	}
+
+	// Calculate time span
+	timeSpan := obs.LastSeen.Sub(obs.FirstSeen)
+	if timeSpan <= 0 {
+		return 0.3 // Single point in time, moderate stability
+	}
+
+	// Calculate expected frequency based on call count and time span
+	expectedFrequency := float64(obs.Count) / timeSpan.Minutes()
+
+	// Compare with recorded frequency
+	frequencyDifference := obs.Frequency - expectedFrequency
+	if expectedFrequency > 0 {
+		frequencyDifference = frequencyDifference / expectedFrequency
+	}
+
+	// Convert frequency difference to stability score
+	// Lower difference means higher stability
+	frequencyStability := 1.0 / (1.0 + math.Abs(frequencyDifference))
+
+	// Factor in call count - more calls generally means more stable pattern
+	countFactor := float64(obs.Count) / 100.0
+	if countFactor > 1.0 {
+		countFactor = 1.0
+	}
+
+	// Combine factors with weighted average
+	stability := (frequencyStability*0.7 + countFactor*0.3)
+
+	if stability > 1.0 {
+		stability = 1.0
+	}
+
+	return stability
 }
 
 func (sl *SyscallLearner) calculateNetworkFlowConfidence(flow *NetworkFlowObservation) float64 {
@@ -767,13 +811,110 @@ func (sl *SyscallLearner) calculateProfileQuality(state *ContainerLearningState,
 }
 
 func (sl *SyscallLearner) calculateCoverage(state *ContainerLearningState) float64 {
-	// Placeholder implementation
-	return 0.8
+	if len(state.SyscallObservations) == 0 {
+		return 0.0
+	}
+
+	// Calculate coverage based on observation diversity and completeness
+	uniqueSyscalls := len(state.SyscallObservations)
+	totalObservations := int64(0)
+
+	// Count total observations and unique contexts
+	uniqueContexts := make(map[string]bool)
+	for _, obs := range state.SyscallObservations {
+		totalObservations += obs.Count
+		for context := range obs.Contexts {
+			uniqueContexts[context] = true
+		}
+	}
+
+	// Coverage factors:
+	// 1. Syscall diversity (number of different syscalls observed)
+	syscallDiversity := float64(uniqueSyscalls) / 100.0 // Normalize assuming 100 common syscalls
+	if syscallDiversity > 1.0 {
+		syscallDiversity = 1.0
+	}
+
+	// 2. Context diversity (different execution contexts)
+	contextDiversity := float64(len(uniqueContexts)) / 10.0 // Normalize assuming 10 common contexts
+	if contextDiversity > 1.0 {
+		contextDiversity = 1.0
+	}
+
+	// 3. Observation depth (total number of observations)
+	observationDepth := float64(totalObservations) / 1000.0 // Normalize assuming 1000 observations for good coverage
+	if observationDepth > 1.0 {
+		observationDepth = 1.0
+	}
+
+	// Weighted average of coverage factors
+	coverage := (syscallDiversity*0.4 + contextDiversity*0.3 + observationDepth*0.3)
+
+	return coverage
 }
 
 func (sl *SyscallLearner) calculateAccuracy(state *ContainerLearningState) float64 {
-	// Placeholder implementation
-	return 0.9
+	if len(state.SyscallObservations) == 0 {
+		return 0.0
+	}
+
+	totalAccuracy := 0.0
+	observationCount := 0
+
+	for _, obs := range state.SyscallObservations {
+		// Accuracy factors:
+		// 1. Confidence level of the observation
+		confidenceScore := obs.Confidence
+
+		// 2. Consistency of return codes (fewer different return codes = more predictable)
+		returnCodeConsistency := 1.0
+		if len(obs.ReturnCodes) > 0 {
+			// Calculate entropy of return codes
+			totalCalls := int64(0)
+			for _, count := range obs.ReturnCodes {
+				totalCalls += count
+			}
+
+			entropy := 0.0
+			for _, count := range obs.ReturnCodes {
+				if count > 0 {
+					probability := float64(count) / float64(totalCalls)
+					entropy -= probability * math.Log2(probability)
+				}
+			}
+
+			// Lower entropy = higher consistency
+			// Normalize entropy (max entropy for return codes is typically ~3-4 bits)
+			maxExpectedEntropy := 3.0
+			normalizedEntropy := entropy / maxExpectedEntropy
+			if normalizedEntropy > 1.0 {
+				normalizedEntropy = 1.0
+			}
+			returnCodeConsistency = 1.0 - normalizedEntropy
+		}
+
+		// 3. Argument pattern consistency
+		argumentConsistency := 1.0
+		if len(obs.Arguments) > 1 {
+			// More diverse argument patterns may indicate less predictable behavior
+			argumentDiversity := float64(len(obs.Arguments)) / 10.0 // Normalize assuming 10 common patterns
+			if argumentDiversity > 1.0 {
+				argumentDiversity = 1.0
+			}
+			argumentConsistency = 1.0 - (argumentDiversity * 0.5) // Moderate penalty for diversity
+		}
+
+		// Combine accuracy factors
+		observationAccuracy := (confidenceScore*0.5 + returnCodeConsistency*0.3 + argumentConsistency*0.2)
+		totalAccuracy += observationAccuracy
+		observationCount++
+	}
+
+	if observationCount == 0 {
+		return 0.0
+	}
+
+	return totalAccuracy / float64(observationCount)
 }
 
 func (sl *SyscallLearner) generateRecommendations(state *ContainerLearningState, profile *LearningProfile) []string {

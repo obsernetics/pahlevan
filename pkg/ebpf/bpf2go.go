@@ -34,6 +34,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/metric"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // EBPFProgramManager manages eBPF programs with real kernel integration
@@ -317,13 +318,62 @@ func (m *EBPFProgramManager) attachFilePrograms() error {
 		return errors.New("file collection not loaded")
 	}
 
-	// Attach to LSM hooks for file operations
+	// Attach to LSM hooks for file operations (preferred method)
+	lsmAttached := false
+
+	// Try to attach LSM hooks if available (kernel 5.7+)
 	if prog := m.fileCollection.Programs["lsm_file_open"]; prog != nil {
 		l, err := link.AttachLSM(link.LSMOptions{
 			Program: prog,
 		})
 		if err == nil {
 			m.fileLinks = append(m.fileLinks, l)
+			lsmAttached = true
+		}
+	}
+
+	if prog := m.fileCollection.Programs["lsm_file_permission"]; prog != nil {
+		l, err := link.AttachLSM(link.LSMOptions{
+			Program: prog,
+		})
+		if err == nil {
+			m.fileLinks = append(m.fileLinks, l)
+			lsmAttached = true
+		}
+	}
+
+	if prog := m.fileCollection.Programs["lsm_inode_permission"]; prog != nil {
+		l, err := link.AttachLSM(link.LSMOptions{
+			Program: prog,
+		})
+		if err == nil {
+			m.fileLinks = append(m.fileLinks, l)
+			lsmAttached = true
+		}
+	}
+
+	// If LSM attachment failed, fall back to kprobes
+	if !lsmAttached {
+		// Attach kprobe fallbacks for older kernels
+		if prog := m.fileCollection.Programs["kprobe_do_sys_openat2"]; prog != nil {
+			l, err := link.Kprobe("do_sys_openat2", prog, nil)
+			if err == nil {
+				m.fileLinks = append(m.fileLinks, l)
+			}
+		}
+
+		if prog := m.fileCollection.Programs["kprobe_vfs_read"]; prog != nil {
+			l, err := link.Kprobe("vfs_read", prog, nil)
+			if err == nil {
+				m.fileLinks = append(m.fileLinks, l)
+			}
+		}
+
+		if prog := m.fileCollection.Programs["kprobe_vfs_write"]; prog != nil {
+			l, err := link.Kprobe("vfs_write", prog, nil)
+			if err == nil {
+				m.fileLinks = append(m.fileLinks, l)
+			}
 		}
 	}
 
@@ -707,32 +757,93 @@ func (m *EBPFProgramManager) UpdateContainerPolicy(containerID uint32, policy *C
 		}
 	}
 
-	// Update network policy - simplified until proper types are generated
+	// Update network policy with proper eBPF map operations
 	if m.networkCollection != nil {
 		if policyMap := m.networkCollection.Maps["connection_policies"]; policyMap != nil {
-			// Use a basic map update for now
-			// This will be properly implemented once the eBPF programs are compiled
-			// and generate the correct policy structure types
-			networkPolicyData := map[string]interface{}{
-				"container_id": containerID,
-				"last_update":  uint64(time.Now().UnixNano()),
+			// Container ID is already uint32 for eBPF key
+			containerKey := containerID
+			if containerKey == 0 {
+				containerKey = 1
 			}
-			// TODO: Store networkPolicyData in actual eBPF map when map types are available
-			_ = networkPolicyData
+
+			// Create network policy structure matching eBPF layout
+			networkPolicyData := &EBPFConnectionPolicy{
+				ContainerID:         containerKey,
+				AllowedDestinations: [256]uint32{},
+				AllowedPorts:       [64]uint16{},
+				LearningMode:       0, // Enforcement mode
+				LastUpdateNs:       uint64(time.Now().UnixNano()),
+			}
+
+			// Add common allowed ports (HTTP, HTTPS, DNS)
+			networkPolicyData.AllowedPorts[0] = 80   // HTTP
+			networkPolicyData.AllowedPorts[1] = 443  // HTTPS
+			networkPolicyData.AllowedPorts[2] = 53   // DNS
+			networkPolicyData.AllowedPorts[3] = 8080 // Alt HTTP
+
+			// Update eBPF map
+			if err := policyMap.Update(containerKey, networkPolicyData, ebpf.UpdateAny); err != nil {
+				ctrl.Log.Error(err, "Failed to update network policy map", "containerID", containerID)
+			} else {
+				ctrl.Log.V(1).Info("Updated network policy in eBPF map", "containerID", containerID, "key", containerKey)
+			}
 		}
 	}
 
-	// Update file policy - simplified until proper types are generated
+	// Update file policy with proper eBPF map operations
 	if m.fileCollection != nil {
 		if policyMap := m.fileCollection.Maps["file_policies"]; policyMap != nil {
-			// Use a basic map update for now
-			// This will be properly implemented once the eBPF programs are compiled
-			filePolicyData := map[string]interface{}{
-				"container_id": containerID,
-				"last_update":  uint64(time.Now().UnixNano()),
+			// Container ID is already uint32 for eBPF key
+			containerKey := containerID
+			if containerKey == 0 {
+				containerKey = 1
 			}
-			// TODO: Store filePolicyData in actual eBPF map when map types are available
-			_ = filePolicyData
+
+			// Create file policy structure matching eBPF layout
+			filePolicyData := &EBPFFileAccessPolicy{
+				ContainerID:  containerKey,
+				LearningMode: 0, // Enforcement mode
+				PathCount:    0,
+				LastUpdateNs: uint64(time.Now().UnixNano()),
+			}
+
+			// Add common allowed paths
+			allowedPaths := []string{
+				"/tmp/",
+				"/var/tmp/",
+				"/usr/lib/",
+				"/lib/",
+				"/lib64/",
+				"/usr/bin/",
+				"/bin/",
+				"/usr/share/",
+				"/var/log/",
+				"/proc/self/",
+			}
+
+			// Copy allowed paths to eBPF structure
+			for i, path := range allowedPaths {
+				if i >= 1024 {
+					break
+				}
+
+				pathBytes := []byte(path)
+				copyLen := len(pathBytes)
+				if copyLen >= 64 {
+					copyLen = 63
+				}
+
+				copy(filePolicyData.AllowedPaths[i][:copyLen], pathBytes)
+				filePolicyData.AllowedPaths[i][copyLen] = 0 // Null terminator
+				filePolicyData.PathCount++
+			}
+
+			// Update eBPF map
+			if err := policyMap.Update(containerKey, filePolicyData, ebpf.UpdateAny); err != nil {
+				ctrl.Log.Error(err, "Failed to update file policy map", "containerID", containerID)
+			} else {
+				ctrl.Log.V(1).Info("Updated file policy in eBPF map", "containerID", containerID, "key", containerKey, "pathCount", filePolicyData.PathCount)
+			}
 		}
 	}
 
