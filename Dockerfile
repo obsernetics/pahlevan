@@ -6,7 +6,11 @@
 FROM golang:1.24-alpine AS builder
 
 # Install build dependencies (including eBPF tools)
-RUN apk add --no-cache gcc musl-dev clang llvm linux-headers
+RUN apk add --no-cache gcc musl-dev clang llvm linux-headers git && \
+    # Install libbpf headers for eBPF compilation
+    git clone --depth 1 --branch v1.4.3 https://github.com/libbpf/libbpf.git /tmp/libbpf && \
+    make -C /tmp/libbpf/src install_headers && \
+    rm -rf /tmp/libbpf
 
 WORKDIR /src
 
