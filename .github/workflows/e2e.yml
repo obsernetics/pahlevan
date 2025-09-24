@@ -1,10 +1,6 @@
 name: E2E Tests
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
   repository_dispatch:
     types: [run-e2e]
@@ -63,10 +59,13 @@ jobs:
         kubectl get nodes
         kubectl get pods -A
 
-    - name: Build Docker image for E2E
+    - name: Pull Docker image from GHCR
       run: |
-        # Build the Docker image for testing
-        docker build -t pahlevan:e2e .
+        # Pull the pre-built image from GitHub Container Registry
+        docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+        # Tag for local use
+        docker tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest pahlevan:e2e
 
         # Load image into kind cluster
         kind load docker-image pahlevan:e2e --name pahlevan-e2e
