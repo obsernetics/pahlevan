@@ -210,10 +210,7 @@ Create pod annotations
 Validate eBPF configuration
 */}}
 {{- define "pahlevan-operator.validateEBPF" -}}
-{{- /* eBPF now uses specific capabilities (NET_ADMIN, BPF) instead of privileged mode */ -}}
-{{- if and .Values.ebpf.enabled .Values.ebpf.privileged }}
-{{- fail "eBPF monitoring no longer requires privileged mode. Set ebpf.privileged=false and use specific capabilities instead" }}
-{{- end }}
+{{- /* eBPF requires privileged mode for BPF filesystem mount propagation */ -}}
 {{- end }}
 
 {{/*

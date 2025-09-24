@@ -34,16 +34,17 @@ ARG DATE=unknown
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=1 go build \
-    -ldflags="-w -s" \
+    -ldflags="-w -s -linkmode external -extldflags '-static'" \
     -o manager cmd/operator/main.go && \
     CGO_ENABLED=1 go build \
-    -ldflags="-w -s" \
-    -o pahlevan cmd/pahlevan/main.go
+    -ldflags="-w -s -linkmode external -extldflags '-static'" \
+    -o pahlevan cmd/pahlevan/main.go && \
+    ls -la manager pahlevan
 
 ##################################################
 # Runtime Stage: Minimal Image
 ##################################################
-FROM gcr.io/distroless/static:nonroot AS runtime
+FROM gcr.io/distroless/base-debian12:nonroot AS runtime
 
 # Copy binaries
 COPY --from=builder /src/manager /manager

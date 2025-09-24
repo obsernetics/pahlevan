@@ -49,24 +49,14 @@ spec:
         args:
         - --health-probe-bind-address={{ .Values.operator.env.HEALTH_PROBE_BIND_ADDRESS }}
         - --metrics-bind-address={{ .Values.operator.env.METRICS_BIND_ADDRESS }}
-        - --leader-elect={{ .Values.operator.env.ENABLE_LEADER_ELECTION }}
-        {{- if .Values.operator.env.ENABLE_LEADER_ELECTION }}
-        - --leader-election-lease-duration={{ .Values.operator.env.LEADER_ELECTION_LEASE_DURATION }}
-        - --leader-election-renew-deadline={{ .Values.operator.env.LEADER_ELECTION_RENEW_DEADLINE }}
-        - --leader-election-retry-period={{ .Values.operator.env.LEADER_ELECTION_RETRY_PERIOD }}
+        {{- if eq (.Values.operator.env.ENABLE_LEADER_ELECTION | toString) "true" }}
+        - --leader-elect
         {{- end }}
         {{- if .Values.webhooks.enabled }}
-        - --webhook-port={{ .Values.webhooks.port }}
+        - --enable-webhooks
         {{- end }}
         {{- if .Values.development.enabled }}
-        - --development-mode=true
-        {{- if .Values.development.debug }}
-        - --log-level=debug
-        {{- end }}
-        {{- if .Values.development.profiling.enabled }}
-        - --enable-profiling=true
-        - --profiling-port={{ .Values.development.profiling.port }}
-        {{- end }}
+        - --zap-devel
         {{- end }}
         env:
         - name: POD_NAME
@@ -132,10 +122,13 @@ spec:
             port: health
           {{- toYaml .Values.health.readinessProbe | nindent 10 }}
         {{- end }}
-        {{- with .Values.operator.securityContext }}
         securityContext:
+          {{- if .Values.ebpf.enabled }}
+          privileged: {{ .Values.ebpf.privileged }}
+          {{- end }}
+          {{- with .Values.operator.securityContext }}
           {{- toYaml . | nindent 10 }}
-        {{- end }}
+          {{- end }}
         resources:
           {{- toYaml .Values.operator.resources | nindent 10 }}
         volumeMounts:

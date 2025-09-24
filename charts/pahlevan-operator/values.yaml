@@ -63,19 +63,22 @@ operator:
 
   # Security context
   securityContext:
-    allowPrivilegeEscalation: false
-    runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: true  # Required for eBPF
+    runAsNonRoot: false  # eBPF requires root
+    runAsUser: 0  # Run as root for eBPF
+    runAsGroup: 0
+    readOnlyRootFilesystem: false  # eBPF may need to write to certain paths
     capabilities:
       drop:
         - ALL
       add:
         - NET_ADMIN  # Required for network eBPF programs
         - BPF        # Required for BPF syscalls
+        - SYS_ADMIN  # Required for eBPF operations
+        - SYS_RESOURCE  # Required to remove memlock limit
+        - IPC_LOCK   # Required for locking memory
     seccompProfile:
-      type: RuntimeDefault
+      type: Unconfined  # eBPF needs unconfined access
 
   # Pod security context
   podSecurityContext:
@@ -132,8 +135,8 @@ ebpf:
     # Debug filesystem
     debugfs: /sys/kernel/debug
 
-  # Privileged mode - disabled for security (use specific capabilities instead)
-  privileged: false
+  # Privileged mode - required for eBPF mount propagation
+  privileged: true
 
 # Webhook configuration
 webhooks:

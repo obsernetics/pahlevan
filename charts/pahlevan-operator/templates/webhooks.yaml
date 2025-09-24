@@ -14,7 +14,7 @@ data:
 
 ---
 apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionWebhook
+kind: ValidatingAdmissionWebhookConfiguration
 metadata:
   name: {{ include "pahlevan-operator.validatingWebhookName" . }}
   labels:
@@ -57,7 +57,7 @@ webhooks:
 
 ---
 apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingAdmissionWebhook
+kind: MutatingAdmissionWebhookConfiguration
 metadata:
   name: {{ include "pahlevan-operator.mutatingWebhookName" . }}
   labels:
@@ -138,12 +138,12 @@ spec:
             -o jsonpath='{.data.ca\.crt}')
 
           # Patch the validating webhook
-          kubectl patch validatingadmissionwebhook {{ include "pahlevan-operator.validatingWebhookName" . }} \
+          kubectl patch validatingadmissionwebhookconfiguration {{ include "pahlevan-operator.validatingWebhookName" . }} \
             --type='json' \
             -p="[{'op': 'replace', 'path': '/webhooks/0/clientConfig/caBundle', 'value': '${CA_BUNDLE}'}]"
 
           # Patch the mutating webhook
-          kubectl patch mutatingadmissionwebhook {{ include "pahlevan-operator.mutatingWebhookName" . }} \
+          kubectl patch mutatingadmissionwebhookconfiguration {{ include "pahlevan-operator.mutatingWebhookName" . }} \
             --type='json' \
             -p="[{'op': 'replace', 'path': '/webhooks/0/clientConfig/caBundle', 'value': '${CA_BUNDLE}'}]"
 
