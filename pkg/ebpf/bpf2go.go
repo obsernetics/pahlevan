@@ -16,9 +16,9 @@ limitations under the License.
 
 package ebpf
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go SyscallMonitor ../../bpf/syscall_monitor.c -- -I../../bpf/include
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go NetworkMonitor ../../bpf/network_monitor.c -- -I../../bpf/include
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go FileMonitor ../../bpf/file_monitor.c -- -I../../bpf/include
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go SyscallMonitor ../../bpf/syscall_monitor.c -- -I../../bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go NetworkMonitor ../../bpf/network_monitor.c -- -I../../bpf
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go FileMonitor ../../bpf/file_monitor.c -- -I../../bpf
 
 import (
 	"context"

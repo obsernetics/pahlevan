@@ -37,6 +37,9 @@ jobs:
     - name: Download Go modules
       run: go mod download
 
+    - name: Generate eBPF bindings
+      run: go generate ./...
+
     - name: Run tests
       run: go test -v -short ./...
 
@@ -81,6 +84,9 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
+
+    - name: Generate eBPF bindings
+      run: go generate ./...
 
     - name: Build
       run: |
