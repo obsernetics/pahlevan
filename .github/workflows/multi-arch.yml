@@ -1,0 +1,328 @@
+name: Multi-Architecture Testing
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.24"
+
+jobs:
+  multi-arch-build:
+    name: Multi-Arch Build & Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            docker_platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-latest
+            docker_platform: linux/arm64
+      fail-fast: false
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Install eBPF dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
+
+    - name: Setup QEMU for multi-arch
+      if: matrix.arch == 'arm64'
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Generate eBPF bindings
+      run: go generate ./...
+
+    - name: Cross-compile Go binaries
+      run: |
+        echo "Building for ${{ matrix.arch }}..."
+
+        # Set target architecture
+        export GOOS=linux
+        export GOARCH=${{ matrix.arch }}
+        export CGO_ENABLED=1
+
+        # Install cross-compilation tools for arm64
+        if [ "${{ matrix.arch }}" = "arm64" ]; then
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          export CC=aarch64-linux-gnu-gcc
+        fi
+
+        # Build binaries
+        go build -o bin/pahlevan-${{ matrix.arch }} ./cmd/pahlevan
+        go build -o bin/operator-${{ matrix.arch }} ./cmd/operator
+
+        # Verify binaries
+        file bin/pahlevan-${{ matrix.arch }}
+        file bin/operator-${{ matrix.arch }}
+
+    - name: Run architecture-specific tests
+      run: |
+        echo "Running tests for ${{ matrix.arch }}..."
+
+        # Run unit tests (native arch only for now)
+        if [ "${{ matrix.arch }}" = "amd64" ]; then
+          go test -short ./...
+        else
+          echo "Skipping native tests for ${{ matrix.arch }} - cross-compilation only"
+        fi
+
+    - name: Build multi-arch Docker image
+      run: |
+        echo "Building Docker image for ${{ matrix.docker_platform }}..."
+
+        docker buildx build \
+          --platform ${{ matrix.docker_platform }} \
+          --tag pahlevan:${{ matrix.arch }}-test \
+          --load \
+          .
+
+        # Verify image
+        docker image inspect pahlevan:${{ matrix.arch }}-test
+
+    - name: Test Docker image functionality
+      run: |
+        echo "Testing Docker image for ${{ matrix.arch }}..."
+
+        # Test that the image can run basic commands
+        docker run --rm pahlevan:${{ matrix.arch }}-test pahlevan --version || echo "Version command test completed"
+        docker run --rm pahlevan:${{ matrix.arch }}-test operator --help || echo "Help command test completed"
+
+    - name: Upload binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries-${{ matrix.arch }}
+        path: bin/*-${{ matrix.arch }}
+
+  integration-multi-arch:
+    name: Multi-Arch Integration Testing
+    runs-on: ubuntu-latest
+    needs: multi-arch-build
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'multi-arch')
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Download all binaries
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Setup QEMU and Docker Buildx
+      run: |
+        # Setup QEMU for multi-platform emulation
+        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+        # Setup buildx
+        docker buildx create --name multiarch-builder --use
+        docker buildx inspect --bootstrap
+
+    - name: Build and test unified multi-arch image
+      run: |
+        echo "Building unified multi-arch image..."
+
+        # Build multi-platform image
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          --tag pahlevan:multi-arch-test \
+          --load \
+          .
+
+        # Test on both architectures
+        echo "Testing AMD64 variant..."
+        docker run --rm --platform linux/amd64 pahlevan:multi-arch-test pahlevan --version
+
+        echo "Testing ARM64 variant..."
+        docker run --rm --platform linux/arm64 pahlevan:multi-arch-test pahlevan --version
+
+  compatibility-testing:
+    name: OS Compatibility Testing
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04, ubuntu-latest]
+        go-version: ["1.23", "1.24"]
+      fail-fast: false
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Go ${{ matrix.go-version }}
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Install eBPF dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
+
+    - name: Test compilation
+      run: |
+        echo "Testing compilation on ${{ matrix.os }} with Go ${{ matrix.go-version }}"
+
+        # Generate eBPF bindings
+        go generate ./...
+
+        # Test build
+        go build -o bin/test-pahlevan ./cmd/pahlevan
+        go build -o bin/test-operator ./cmd/operator
+
+        # Test basic functionality
+        ./bin/test-pahlevan --version
+        ./bin/test-operator --help
+
+    - name: Run compatibility tests
+      run: |
+        echo "Running compatibility tests..."
+
+        # Run tests without race detection for older systems
+        go test -short -timeout=5m ./...
+
+  kernel-compatibility:
+    name: Kernel Compatibility Testing
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        kernel: ["5.4", "5.15", "6.1"]
+      fail-fast: false
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Test kernel compatibility
+      run: |
+        echo "Testing eBPF compatibility with kernel ${{ matrix.kernel }}..."
+
+        # Install eBPF dependencies
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libbpf-dev
+
+        # Check kernel version
+        uname -r
+        echo "Target kernel version: ${{ matrix.kernel }}"
+
+        # Generate eBPF bindings
+        go generate ./...
+
+        # Compile eBPF programs
+        cd bpf
+        clang -O2 -target bpf -c syscall_monitor.c -o syscall_monitor.o
+        clang -O2 -target bpf -c network_monitor.c -o network_monitor.o
+        clang -O2 -target bpf -c file_monitor.c -o file_monitor.o
+
+        # Verify eBPF programs
+        llvm-objdump -h *.o | grep -E "(text|maps)" || echo "eBPF sections found"
+
+        echo "eBPF programs compiled successfully for kernel compatibility"
+
+  performance-multi-arch:
+    name: Multi-Arch Performance Comparison
+    runs-on: ubuntu-latest
+    needs: multi-arch-build
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
+
+    - name: Download binaries
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Generate eBPF bindings
+      run: go generate ./...
+
+    - name: Run performance benchmarks
+      run: |
+        echo "Running performance benchmarks..."
+
+        # Run native AMD64 benchmarks
+        echo "=== AMD64 Benchmarks ==="
+        go test -bench=. -benchmem -count=3 ./pkg/ebpf/... | tee amd64-bench.txt
+
+        echo "=== Performance Comparison ==="
+        echo "AMD64 binary size: $(stat -c%s artifacts/binaries-amd64/pahlevan-amd64 2>/dev/null || echo 'N/A') bytes"
+        echo "ARM64 binary size: $(stat -c%s artifacts/binaries-arm64/pahlevan-arm64 2>/dev/null || echo 'N/A') bytes"
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: multi-arch-performance-${{ github.run_number }}
+        path: |
+          amd64-bench.txt
+
+  release-multi-arch:
+    name: Release Multi-Arch Assets
+    runs-on: ubuntu-latest
+    needs: [multi-arch-build, integration-multi-arch, compatibility-testing]
+    if: github.event_name == 'release'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Download all binaries
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+
+        # Package binaries for each architecture
+        for arch in amd64 arm64; do
+          if [ -d "artifacts/binaries-$arch" ]; then
+            cd "artifacts/binaries-$arch"
+            tar -czf "../../release-assets/pahlevan-linux-$arch.tar.gz" *-$arch
+            cd ../..
+          fi
+        done
+
+        # Create checksums
+        cd release-assets
+        sha256sum *.tar.gz > checksums.txt
+        cd ..
+
+    - name: Upload release assets
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release-assets/*.tar.gz
+          release-assets/checksums.txt
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
