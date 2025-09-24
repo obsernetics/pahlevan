@@ -83,7 +83,7 @@ jobs:
     name: Trigger E2E Tests
     runs-on: ubuntu-latest
     needs: [test, build]
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     steps:
     - name: Trigger E2E workflow
       uses: peter-evans/repository-dispatch@v3
