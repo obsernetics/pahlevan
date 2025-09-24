@@ -136,15 +136,6 @@ spec:
         securityContext:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-        {{- if .Values.ebpf.privileged }}
-        securityContext:
-          privileged: true
-          capabilities:
-            add:
-            - SYS_ADMIN
-            - SYS_RESOURCE
-            - NET_ADMIN
-        {{- end }}
         resources:
           {{- toYaml .Values.operator.resources | nindent 10 }}
         volumeMounts:

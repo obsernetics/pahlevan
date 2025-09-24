@@ -210,8 +210,9 @@ Create pod annotations
 Validate eBPF configuration
 */}}
 {{- define "pahlevan-operator.validateEBPF" -}}
-{{- if and .Values.ebpf.enabled (not .Values.ebpf.privileged) }}
-{{- fail "eBPF monitoring requires privileged mode. Set ebpf.privileged=true or disable eBPF with ebpf.enabled=false" }}
+{{- /* eBPF now uses specific capabilities (NET_ADMIN, BPF) instead of privileged mode */ -}}
+{{- if and .Values.ebpf.enabled .Values.ebpf.privileged }}
+{{- fail "eBPF monitoring no longer requires privileged mode. Set ebpf.privileged=false and use specific capabilities instead" }}
 {{- end }}
 {{- end }}
 
@@ -259,19 +260,10 @@ ca.crt: {{ .Values.webhooks.certificate.ca | b64enc }}
 {{- end }}
 
 {{/*
-Common security context
+Common security context - now always uses specific capabilities instead of privileged mode
 */}}
 {{- define "pahlevan-operator.securityContext" -}}
-{{- if .Values.ebpf.privileged }}
-privileged: true
-capabilities:
-  add:
-    - SYS_ADMIN
-    - SYS_RESOURCE
-    - NET_ADMIN
-{{- else }}
 {{- toYaml .Values.operator.securityContext }}
-{{- end }}
 {{- end }}
 
 {{/*
