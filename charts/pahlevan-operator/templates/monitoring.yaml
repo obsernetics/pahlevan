@@ -72,7 +72,7 @@ spec:
         component: pahlevan-operator
       annotations:
         summary: "Pahlevan Operator restarting too often"
-        description: "Pahlevan Operator has restarted {{ $value }} times in the last hour."
+        description: "Pahlevan Operator has restarted {{ "{{ $value }}" }} times in the last hour."
 
     # Policy enforcement alerts
     - alert: HighPolicyViolationRate
@@ -83,7 +83,7 @@ spec:
         component: policy-enforcement
       annotations:
         summary: "High policy violation rate"
-        description: "Policy violation rate is {{ $value }} violations per second."
+        description: "Policy violation rate is {{ "{{ $value }}" }} violations per second."
 
     - alert: PolicyEnforcementFailed
       expr: increase(pahlevan_enforcement_failures_total[5m]) > 0
@@ -93,7 +93,7 @@ spec:
         component: policy-enforcement
       annotations:
         summary: "Policy enforcement failures detected"
-        description: "{{ $value }} policy enforcement failures in the last 5 minutes."
+        description: "{{ "{{ $value }}" }} policy enforcement failures in the last 5 minutes."
 
     # Self-healing alerts
     - alert: SelfHealingActionTriggered
@@ -104,7 +104,7 @@ spec:
         component: self-healing
       annotations:
         summary: "Self-healing action triggered"
-        description: "Self-healing action triggered: {{ $labels.action }}. Container: {{ $labels.container_id }}"
+        description: "Self-healing action triggered: {{ "{{ $labels.action }}" }}. Container: {{ "{{ $labels.container_id }}" }}"
 
     - alert: FrequentSelfHealingActions
       expr: rate(pahlevan_self_healing_actions_total[1h]) > 5
@@ -114,7 +114,7 @@ spec:
         component: self-healing
       annotations:
         summary: "Frequent self-healing actions"
-        description: "Self-healing rate is {{ $value }} actions per second over the last hour."
+        description: "Self-healing rate is {{ "{{ $value }}" }} actions per second over the last hour."
 
     # Learning progress alerts
     - alert: LearningStuck
@@ -130,7 +130,7 @@ spec:
         component: learning
       annotations:
         summary: "Learning progress appears stuck"
-        description: "Learning progress for policy {{ $labels.policy_name }} is only {{ $value }}% after more than 1 hour."
+        description: "Learning progress for policy {{ "{{ $labels.policy_name }}" }} is only {{ "{{ $value }}" }}% after more than 1 hour."
 
     - alert: LowLearningQuality
       expr: pahlevan_baseline_quality_score < 0.7
@@ -140,7 +140,7 @@ spec:
         component: learning
       annotations:
         summary: "Low learning quality detected"
-        description: "Baseline quality score for policy {{ $labels.policy_name }} is {{ $value }}, which is below the recommended threshold."
+        description: "Baseline quality score for policy {{ "{{ $labels.policy_name }}" }} is {{ "{{ $value }}" }}, which is below the recommended threshold."
 
     # Attack surface alerts
     - alert: HighAttackSurfaceRiskScore
@@ -151,7 +151,7 @@ spec:
         component: attack-surface
       annotations:
         summary: "High attack surface risk score"
-        description: "Attack surface risk score for {{ $labels.namespace }}/{{ $labels.workload }} is {{ $value }}."
+        description: "Attack surface risk score for {{ "{{ $labels.namespace }}" }}/{{ "{{ $labels.workload }}" }} is {{ "{{ $value }}" }}."
 
     - alert: UnusualSyscallActivity
       expr: |
@@ -168,7 +168,7 @@ spec:
         component: syscall-monitoring
       annotations:
         summary: "Unusual syscall activity detected"
-        description: "Container {{ $labels.container_id }} has {{ $value }} syscalls in 5 minutes, which is 3x higher than normal."
+        description: "Container {{ "{{ $labels.container_id }}" }} has {{ "{{ $value }}" }} syscalls in 5 minutes, which is 3x higher than normal."
 
     # eBPF monitoring alerts
     - alert: EBPFProgramLoadFailed
@@ -179,7 +179,7 @@ spec:
         component: ebpf
       annotations:
         summary: "eBPF program load failure"
-        description: "Failed to load eBPF program: {{ $labels.program_name }}. Error: {{ $labels.error }}"
+        description: "Failed to load eBPF program: {{ "{{ $labels.program_name }}" }}. Error: {{ "{{ $labels.error }}" }}"
 
     - alert: EBPFEventBufferFull
       expr: pahlevan_ebpf_event_buffer_usage > 0.9
@@ -189,7 +189,7 @@ spec:
         component: ebpf
       annotations:
         summary: "eBPF event buffer near capacity"
-        description: "eBPF event buffer usage is {{ $value }}% for program {{ $labels.program_name }}."
+        description: "eBPF event buffer usage is {{ "{{ $value }}" }}% for program {{ "{{ $labels.program_name }}" }}."
 
     # Custom rules from values
     {{- with .Values.metrics.prometheusRule.rules }}
