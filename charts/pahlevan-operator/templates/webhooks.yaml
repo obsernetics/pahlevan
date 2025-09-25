@@ -13,7 +13,7 @@ data:
   {{- include "pahlevan-operator.webhookCerts" . | nindent 2 }}
 
 ---
-apiVersion: admissionregistration.k8s.io/v1
+apiVersion: admissionregistration.k8s.io/v1beta1
 kind: ValidatingAdmissionWebhookConfiguration
 metadata:
   name: {{ include "pahlevan-operator.validatingWebhookName" . }}
@@ -56,7 +56,7 @@ webhooks:
   {{- end }}
 
 ---
-apiVersion: admissionregistration.k8s.io/v1
+apiVersion: admissionregistration.k8s.io/v1beta1
 kind: MutatingAdmissionWebhookConfiguration
 metadata:
   name: {{ include "pahlevan-operator.mutatingWebhookName" . }}
