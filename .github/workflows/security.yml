@@ -44,6 +44,42 @@ jobs:
       with:
         go-version: "1.24"
 
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-mod-
+
+    - name: Cache Go tools
+      uses: actions/cache@v4
+      with:
+        path: ~/go/bin
+        key: ${{ runner.os }}-go-tools-${{ hashFiles('pkg/ebpf/bpf2go.go') }}
+        restore-keys: |
+          ${{ runner.os }}-go-tools-
+
+    - name: Cache eBPF generated files
+      uses: actions/cache@v4
+      with:
+        path: |
+          pkg/ebpf/*monitor_bpf*.go
+          pkg/ebpf/*monitor_bpf*.o
+        key: ${{ runner.os }}-ebpf-${{ hashFiles('bpf/*.c', 'bpf/*.h') }}
+        restore-keys: |
+          ${{ runner.os }}-ebpf-
+
+    - name: Cache APT packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          /var/cache/apt/archives
+          /var/lib/apt/lists
+        key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/security.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-apt-
+
     - name: Install eBPF dependencies
       run: |
         sudo apt-get update
@@ -79,6 +115,50 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: "1.24"
+
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-mod-
+
+    - name: Cache Go build
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/go-build
+        key: ${{ runner.os }}-go-build-${{ hashFiles('**/*.go') }}
+        restore-keys: |
+          ${{ runner.os }}-go-build-
+
+    - name: Cache Go tools
+      uses: actions/cache@v4
+      with:
+        path: ~/go/bin
+        key: ${{ runner.os }}-go-tools-${{ hashFiles('pkg/ebpf/bpf2go.go') }}
+        restore-keys: |
+          ${{ runner.os }}-go-tools-
+
+    - name: Cache eBPF generated files
+      uses: actions/cache@v4
+      with:
+        path: |
+          pkg/ebpf/*monitor_bpf*.go
+          pkg/ebpf/*monitor_bpf*.o
+        key: ${{ runner.os }}-ebpf-${{ hashFiles('bpf/*.c', 'bpf/*.h') }}
+        restore-keys: |
+          ${{ runner.os }}-ebpf-
+
+    - name: Cache APT packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          /var/cache/apt/archives
+          /var/lib/apt/lists
+        key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/security.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-apt-
 
     - name: Install eBPF dependencies
       run: |
