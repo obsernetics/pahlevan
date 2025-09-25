@@ -129,6 +129,7 @@ jobs:
         helm upgrade --install operator ./charts/pahlevan-operator \
           --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
           --set image.tag=sha-${{ github.sha }} \
+          --set webhooks.enabled=false \
           --wait --timeout=300s
 
     - name: Wait for operator
