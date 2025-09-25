@@ -1,0 +1,140 @@
+name: Workflow Status
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+      - "Security"
+      - "Build and Publish"
+      - "E2E Tests"
+      - "Documentation"
+    types:
+      - completed
+
+jobs:
+  status:
+    name: Update Status
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion != 'cancelled'
+    permissions:
+      statuses: write
+      issues: write
+      pull-requests: write
+    steps:
+    - name: Update commit status
+      uses: actions/github-script@v8
+      with:
+        script: |
+          const { workflow_run } = context.payload;
+          const conclusion = workflow_run.conclusion;
+          const workflowName = workflow_run.name;
+
+          // Map conclusion to state
+          const state = conclusion === 'success' ? 'success' :
+                       conclusion === 'failure' ? 'failure' :
+                       conclusion === 'cancelled' ? 'error' : 'pending';
+
+          // Create status check
+          await github.rest.repos.createCommitStatus({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            sha: workflow_run.head_sha,
+            state: state,
+            target_url: workflow_run.html_url,
+            description: `${workflowName} ${conclusion}`,
+            context: `ci/${workflowName.toLowerCase().replace(/\s+/g, '-')}`
+          });
+
+          console.log(`Updated status for ${workflowName}: ${state}`);
+
+  notify:
+    name: Notify on Failure
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'push'
+    permissions:
+      issues: write
+    steps:
+    - name: Create Issue on Failure
+      uses: actions/github-script@v8
+      with:
+        script: |
+          const { workflow_run } = context.payload;
+
+          // Check if there's already an open issue for this workflow failure
+          const issues = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            labels: 'workflow-failure,automated'
+          });
+
+          const existingIssue = issues.data.find(issue =>
+            issue.title.includes(workflow_run.name) &&
+            issue.body.includes(workflow_run.head_sha)
+          );
+
+          if (!existingIssue && workflow_run.head_branch === 'main') {
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Workflow Failure: ${workflow_run.name} on main branch`,
+              body: `
+          ## Workflow Failure Report
+
+          **Workflow:** ${workflow_run.name}
+          **Branch:** ${workflow_run.head_branch}
+          **Commit:** ${workflow_run.head_sha}
+          **Run:** ${workflow_run.html_url}
+          **Conclusion:** ${workflow_run.conclusion}
+
+          The workflow failed on the main branch. Please investigate and fix the issue.
+
+          ### Quick Links
+          - [Workflow Run](${workflow_run.html_url})
+          - [Commit](https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${workflow_run.head_sha})
+
+          ---
+          *This issue was created automatically. It will be closed when the workflow succeeds.*
+              `,
+              labels: ['workflow-failure', 'automated', 'bug']
+            });
+          }
+
+  close-issues:
+    name: Close Success Issues
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    permissions:
+      issues: write
+    steps:
+    - name: Close Issues on Success
+      uses: actions/github-script@v8
+      with:
+        script: |
+          const { workflow_run } = context.payload;
+
+          // Find open workflow failure issues for this workflow
+          const issues = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            labels: 'workflow-failure,automated'
+          });
+
+          for (const issue of issues.data) {
+            if (issue.title.includes(workflow_run.name)) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `✅ Workflow is now passing. Auto-closing this issue.\n\n**Successful run:** ${workflow_run.html_url}`
+              });
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+            }
+          }
