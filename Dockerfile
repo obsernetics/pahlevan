@@ -1,33 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ##################################################
-# Build Stage 1: eBPF Programs
-##################################################
-FROM ubuntu:22.04 AS ebpf-builder
-
-# Install eBPF build dependencies
-RUN apt-get update && apt-get install -y \
-    clang \
-    llvm \
-    libbpf-dev \
-    linux-headers-generic \
-    linux-libc-dev \
-    build-essential \
-    make \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-
-# Copy eBPF source files
-COPY bpf/ ./bpf/
-COPY pkg/ebpf/ ./pkg/ebpf/
-COPY Makefile ./
-
-# Build eBPF programs
-RUN make ebpf-build
-
-##################################################
-# Build Stage 2: Go Application
+# Build Stage: Go Application with eBPF
 ##################################################
 FROM golang:1.24-alpine AS go-builder
 
@@ -38,7 +12,9 @@ RUN apk add --no-cache \
     gcc \
     musl-dev \
     libbpf-dev \
-    linux-headers
+    linux-headers \
+    clang \
+    llvm
 
 WORKDIR /src
 
@@ -49,8 +25,11 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Copy eBPF programs from previous stage
-COPY --from=ebpf-builder /src/pkg/ebpf/*.o ./pkg/ebpf/
+# Copy eBPF source files for code generation
+
+# Generate Go bindings for eBPF programs
+RUN go install github.com/cilium/ebpf/cmd/bpf2go@latest
+RUN cd pkg/ebpf && go generate ./...
 
 # Build Go binaries with optimizations
 ARG VERSION=dev
@@ -68,7 +47,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build \
     -o pahlevan cmd/pahlevan/main.go
 
 ##################################################
-# Build Stage 3: Distroless Runtime
+# Runtime Stage: Distroless Runtime
 ##################################################
 FROM gcr.io/distroless/base-debian12:nonroot AS runtime
 
@@ -77,7 +56,7 @@ COPY --from=go-builder /src/manager /usr/local/bin/manager
 COPY --from=go-builder /src/pahlevan /usr/local/bin/pahlevan
 
 # Copy eBPF programs
-COPY --from=ebpf-builder /src/pkg/ebpf/*.o /opt/pahlevan/ebpf/
+COPY --from=go-builder /src/pkg/ebpf/*.o /opt/pahlevan/ebpf/
 
 # Set up non-root user (already set by distroless nonroot)
 USER 65532:65532
@@ -114,7 +93,7 @@ RUN apt-get update && apt-get install -y \
 # Copy binaries and eBPF programs
 COPY --from=go-builder /src/manager /usr/local/bin/manager
 COPY --from=go-builder /src/pahlevan /usr/local/bin/pahlevan
-COPY --from=ebpf-builder /src/pkg/ebpf/*.o /opt/pahlevan/ebpf/
+COPY --from=go-builder /src/pkg/ebpf/*.o /opt/pahlevan/ebpf/
 
 # Create non-root user
 RUN groupadd -r pahlevan && useradd -r -g pahlevan pahlevan
