@@ -6,7 +6,7 @@ toolchain go1.24.6
 
 require (
 	github.com/cilium/ebpf v0.12.3
-	github.com/go-logr/logr v1.4.2
+	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.21.0
 	github.com/onsi/gomega v1.35.1
 	github.com/prometheus/client_golang v1.19.1
