@@ -108,7 +108,7 @@ jobs:
           DATE=${{ github.event.head_commit.timestamp }}
 
   test:
-    name: Test with KinD + Helm
+    name: Test with Kind + Helm
     runs-on: ubuntu-latest
     needs: push-image
     steps:
@@ -129,8 +129,11 @@ jobs:
         helm upgrade --install operator ./charts/pahlevan-operator \
           --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
           --set image.tag=sha-${{ github.sha }} \
+          --set image.pullPolicy=Always \
           --set webhooks.enabled=false \
-          --wait --timeout=300s
+          --set operator.resources.requests.cpu=50m \
+          --set operator.resources.requests.memory=64Mi \
+          --wait --timeout=600s
 
     - name: Wait for operator
       run: kubectl rollout status deployment/pahlevan-operator --timeout=120s
