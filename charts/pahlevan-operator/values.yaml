@@ -212,7 +212,7 @@ health:
 
   # Readiness probe
   readinessProbe:
-    initialDelaySeconds: 5
+    initialDelaySeconds: 30
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 3
