@@ -13,8 +13,6 @@
 
 <p align="center"><b>eBPF-powered Kubernetes Security Operator</b><br/>Adaptive runtime protection & policy enforcement</p>
 
----
-
 ## Why Pahlevan?
 
 Kubernetes workloads face **runtime attacks** that bypass perimeter defenses.  
@@ -72,7 +70,6 @@ Pahlevan delivers **adaptive, kernel-level protection** by learning normal workl
 - **Self-Healing** – Auto rollback if policies disrupt workloads
 - **Kubernetes Native** – Operator pattern & CRD integration  
 
----
 
 ## Quick Start
 
@@ -115,7 +112,6 @@ kubectl get pahlevanpolicy nginx-security -w
   <li>Minimum: <b>256MB memory</b>, <b>100m CPU</b></li>
 </ul>
 
----
 
 <h2 id="installation">Installation</h2>
 
@@ -125,7 +121,6 @@ kubectl get pahlevanpolicy nginx-security -w
 helm install pahlevan pahlevan/pahlevan-operator -n pahlevan-system --create-namespace
 </code></pre>
 
----
 
 <h2 id="license">License</h2>
 
