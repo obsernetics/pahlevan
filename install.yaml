@@ -126,7 +126,7 @@ spec:
         fsGroup: 65532
       containers:
       - name: operator
-        image: ghcr.io/obsernetics/pahlevan:v1.0.0
+        image: ghcr.io/obsernetics/pahlevan:latest
         imagePullPolicy: Always
         command:
         - /manager
