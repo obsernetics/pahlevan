@@ -15,7 +15,7 @@
 
 ---
 
-## 🎯 Why Pahlevan?
+## Why Pahlevan?
 
 Kubernetes workloads face **runtime attacks** that bypass perimeter defenses.  
 Pahlevan delivers **adaptive, kernel-level protection** by learning normal workload behavior and enforcing policies proactively.
@@ -34,29 +34,29 @@ Pahlevan delivers **adaptive, kernel-level protection** by learning normal workl
 <tr>
 <td><b>Pahlevan</b></td>
 <td>Adaptive policy operator</td>
-<td>✅ Auto-learning</td>
-<td>✅ Proactive blocking</td>
+<td>Auto-learning</td>
+<td>Proactive blocking</td>
 <td>Syscalls • Files • Network • Processes</td>
 </tr>
 <tr>
 <td>Falco</td>
 <td>Threat detection</td>
-<td>❌ Manual rules</td>
-<td>❌ Alerts only</td>
+<td>Manual rules</td>
+<td>Alerts only</td>
 <td>Runtime monitoring</td>
 </tr>
 <tr>
 <td>Tetragon</td>
 <td>Observability</td>
-<td>❌ Manual rules</td>
-<td>⚠️ Partial</td>
+<td>Manual rules</td>
+<td>Partial</td>
 <td>Kernel tracing</td>
 </tr>
 <tr>
 <td>Cilium</td>
 <td>Network security</td>
-<td>❌ Static rules</td>
-<td>✅ Network only</td>
+<td>Static rules</td>
+<td>Network only</td>
 <td>L3–L7 traffic</td>
 </tr>
 </tbody>
@@ -64,17 +64,17 @@ Pahlevan delivers **adaptive, kernel-level protection** by learning normal workl
 
 ---
 
-## ✨ Features
+## Features
 
-- 🔍 **Runtime Monitoring** – Syscalls, file I/O, network, processes (via eBPF)  
-- 🤖 **Adaptive Learning** – Automatic workload profiling & policy generation  
-- 🛡️ **Policy Enforcement** – CRD-based, monitor or block mode  
-- 🔧 **Self-Healing** – Auto rollback if policies disrupt workloads  
-- ☸️ **Kubernetes Native** – Operator pattern & CRD integration  
+- **Runtime Monitoring** – Syscalls, file I/O, network, processes (via eBPF)
+- **Adaptive Learning** – Automatic workload profiling & policy generation
+- **Policy Enforcement** – CRD-based, monitor or block mode
+- **Self-Healing** – Auto rollback if policies disrupt workloads
+- **Kubernetes Native** – Operator pattern & CRD integration  
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # Install
@@ -107,7 +107,7 @@ kubectl label deployment nginx app=nginx
 kubectl get pahlevanpolicy nginx-security -w
 ```
 
-<h2 id="requirements">📋 Requirements</h2>
+<h2 id="requirements">Requirements</h2>
 
 <ul>
   <li>Kubernetes <b>v1.24+</b></li>
@@ -117,7 +117,7 @@ kubectl get pahlevanpolicy nginx-security -w
 
 ---
 
-<h2 id="installation">📦 Installation</h2>
+<h2 id="installation">Installation</h2>
 
 <p><b>Helm (recommended):</b></p>
 
@@ -127,7 +127,7 @@ helm install pahlevan pahlevan/pahlevan-operator -n pahlevan-system --create-nam
 
 ---
 
-<h2 id="license">📜 License</h2>
+<h2 id="license">License</h2>
 
 <p>
   Licensed under the 
