@@ -45,7 +45,7 @@ jobs:
         go-version: "1.24"
 
     - name: Cache Go modules
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
@@ -53,7 +53,7 @@ jobs:
           ${{ runner.os }}-go-mod-
 
     - name: Cache Go tools
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/go/bin
         key: ${{ runner.os }}-go-tools-${{ hashFiles('pkg/ebpf/bpf2go.go') }}
@@ -61,7 +61,7 @@ jobs:
           ${{ runner.os }}-go-tools-
 
     - name: Cache eBPF generated files
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           pkg/ebpf/*monitor_bpf*.go
@@ -71,7 +71,7 @@ jobs:
           ${{ runner.os }}-ebpf-
 
     - name: Cache APT packages
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           /var/cache/apt/archives
@@ -117,7 +117,7 @@ jobs:
         go-version: "1.24"
 
     - name: Cache Go modules
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/go/pkg/mod
         key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
@@ -125,7 +125,7 @@ jobs:
           ${{ runner.os }}-go-mod-
 
     - name: Cache Go build
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cache/go-build
         key: ${{ runner.os }}-go-build-${{ hashFiles('**/*.go') }}
@@ -133,7 +133,7 @@ jobs:
           ${{ runner.os }}-go-build-
 
     - name: Cache Go tools
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/go/bin
         key: ${{ runner.os }}-go-tools-${{ hashFiles('pkg/ebpf/bpf2go.go') }}
@@ -141,7 +141,7 @@ jobs:
           ${{ runner.os }}-go-tools-
 
     - name: Cache eBPF generated files
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           pkg/ebpf/*monitor_bpf*.go
@@ -151,7 +151,7 @@ jobs:
           ${{ runner.os }}-ebpf-
 
     - name: Cache APT packages
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: |
           /var/cache/apt/archives
