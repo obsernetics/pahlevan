@@ -3,7 +3,7 @@
 ##################################################
 # Build Stage: Go Application with eBPF
 ##################################################
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.26-alpine AS go-builder
 
 # Install build dependencies
 RUN apk add --no-cache \
@@ -107,7 +107,7 @@ ENTRYPOINT ["/usr/local/bin/manager"]
 ##################################################
 # Test Stage (for running tests in CI)
 ##################################################
-FROM golang:1.24-alpine AS test
+FROM golang:1.26-alpine AS test
 
 # Install test dependencies
 RUN apk add --no-cache \
