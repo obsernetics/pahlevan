@@ -77,7 +77,7 @@ ENTRYPOINT ["/usr/local/bin/manager"]
 ##################################################
 # Development Stage (for debugging)
 ##################################################
-FROM ubuntu:22.04 AS debug
+FROM ubuntu:26.04 AS debug
 
 # Install runtime dependencies and debugging tools
 RUN apt-get update && apt-get install -y \
