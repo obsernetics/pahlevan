@@ -1,7 +1,7 @@
 // Command pahlevan-operator is the cluster control-plane component of Pahlevan.
 //
 // It runs as a leader-elected Deployment (not per-node) and, unlike the agent,
-// requires no host privileges or eBPF access — so it can run inside a user
+// requires no host privileges or eBPF access - so it can run inside a user
 // namespace (hostUsers: false). Its responsibilities are control-plane only:
 //
 //   - CRD defaulting/validation lifecycle

@@ -35,10 +35,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o pahlevan ./cmd/pahlevan
 
 ##################################################
-# Runtime Stage — distroless (the default build target)
+# Runtime Stage - distroless (the default build target)
 ##################################################
 # Plain distroless base (not :nonroot): the agent DaemonSet must run privileged
-# for eBPF, while the operator Deployment sets runAsNonRoot itself — the effective
+# for eBPF, while the operator Deployment sets runAsNonRoot itself - the effective
 # user is chosen per-workload via securityContext.
 FROM gcr.io/distroless/base-debian12 AS runtime
 

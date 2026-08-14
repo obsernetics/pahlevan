@@ -107,7 +107,7 @@ jobs:
     needs: [build, push-image]
     # Only on version tags (e.g. v0.1.0). Previously this ran on every push to
     # main and used the commit SHA as the tag, which GitHub rejects (40/64-hex
-    # names are forbidden) — failing CI on every merge.
+    # names are forbidden) - failing CI on every merge.
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write

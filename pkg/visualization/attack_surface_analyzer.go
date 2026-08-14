@@ -1414,7 +1414,7 @@ func (asa *AttackSurfaceAnalyzer) resolveServiceAccountBindings(namespace, servi
 }
 
 // roleRefIsPrivileged reports whether the referenced (cluster)role grants
-// effectively unrestricted access — the well-known "cluster-admin" role, or any
+// effectively unrestricted access - the well-known "cluster-admin" role, or any
 // rule with a wildcard verb and a wildcard resource/API group.
 func (asa *AttackSurfaceAnalyzer) roleRefIsPrivileged(ctx context.Context, namespace string, ref rbacv1.RoleRef) bool {
 	if ref.Name == "cluster-admin" {
@@ -2897,7 +2897,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeFilesystemExposure(pod *v1.Pod, contain
 }
 
 // analyzeContainerSecurityContext scores the container's security context. A
-// missing security context is not "medium risk by default" — it means the
+// missing security context is not "medium risk by default" - it means the
 // container runs with every insecure default (privilege escalation permitted,
 // writable root filesystem, non-root not enforced), so it is scored exactly as
 // an empty context would be rather than with a magic constant.
@@ -3445,7 +3445,7 @@ func (asa *AttackSurfaceAnalyzer) calculatePolicyCoverage(policy *netv1.NetworkP
 }
 
 // observedWorkloadPorts returns the distinct container ports declared by the
-// pods that belong to the given workload — the workload's observed network
+// pods that belong to the given workload - the workload's observed network
 // attack surface.
 func (asa *AttackSurfaceAnalyzer) observedWorkloadPorts(workloadRef learner.WorkloadReference) map[int32]bool {
 	ports := make(map[int32]bool)
