@@ -35,10 +35,27 @@ const (
 	afInet6 = 10
 )
 
-// FileAllowKey derives the file allow-set key for a (cgroup, path) pair.
-// Mirrors: __u64 key = cgroup_id ^ hash_path(e->path, sizeof(e->path));
+// FileAllowKey derives the file allow-set key for a (cgroup, path) read.
+// Most callers want this; use FileAllowKeyMode to address a write.
 func FileAllowKey(cgroupID uint64, path string) uint64 {
-	return cgroupID ^ FnvPathHash(path)
+	return FileAllowKeyMode(cgroupID, path, false)
+}
+
+// FileAllowKeyMode derives the file allow-set key for a (cgroup, path, write)
+// triple. Mirrors:
+//
+//	__u64 key = cgroup_id ^ hash_path(e->path, sizeof(e->path)) ^
+//	            ((__u64)write * 0x9E3779B97F4A7C15ULL);
+//
+// Write intent is part of the identity because keying on the path alone meant
+// that learning a workload's startup read of /etc/passwd also permitted an
+// attacker to write it.
+func FileAllowKeyMode(cgroupID uint64, path string, write bool) uint64 {
+	key := cgroupID ^ FnvPathHash(path)
+	if write {
+		key ^= protocolMix
+	}
+	return key
 }
 
 // ExecAllowKey derives the exec allow-set key for a (cgroup, binary) pair.
@@ -61,10 +78,13 @@ const (
 	ProtocolUDP uint8 = 17
 )
 
-// protocolMix is the 64-bit golden ratio. The protocol is mixed
-// multiplicatively rather than shifted into the port's bits, because a plain
-// (protocol << 8) would alias port 1536 over protocol 0 with port 0 over
-// protocol 6, and a raw socket really does report protocol 0.
+// protocolMix is the 64-bit golden ratio, used to fold a small extra dimension
+// into an allow-set key without aliasing against the bits already in use.
+//
+// The network key needs it because a plain (protocol << 8) would alias port
+// 1536 over protocol 0 with port 0 over protocol 6, and a raw socket really
+// does report protocol 0. The file key uses the same constant for its write
+// bit. Both mirror the identical expression in bpf/*.c.
 const protocolMix uint64 = 0x9E3779B97F4A7C15
 
 // NetworkAllowKey derives the egress allow-set key for a TCP destination. Most
@@ -143,6 +163,12 @@ func setAllowEntry(mp *ebpf.Map, key uint64, allowed bool) error {
 // /usr/lib/os-release - the entry is written and simply never matches.
 // TestVMSeededSymlinkPathDoesNotMatch pins both halves of that behaviour.
 func (m *Manager) AllowFilePath(cgroupID uint64, path string, allowed bool) error {
+	return m.AllowFilePathMode(cgroupID, path, false, allowed)
+}
+
+// AllowFilePathMode seeds or revokes one (path, access mode) entry. Reads and
+// writes are separate entries, so granting a read does not grant a write.
+func (m *Manager) AllowFilePathMode(cgroupID uint64, path string, write, allowed bool) error {
 	if path == "" {
 		return fmt.Errorf("empty path")
 	}
@@ -152,7 +178,7 @@ func (m *Manager) AllowFilePath(cgroupID uint64, path string, allowed bool) erro
 	if err != nil {
 		return err
 	}
-	return setAllowEntry(mp, FileAllowKey(cgroupID, path), allowed)
+	return setAllowEntry(mp, FileAllowKeyMode(cgroupID, path, write), allowed)
 }
 
 // AllowExecPath seeds the exec allow-set for a binary path.

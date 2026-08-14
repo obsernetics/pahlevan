@@ -20,13 +20,25 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define PATH_MAX_LEN 128
 
+/* Bits userspace reads off file_event.flags, above the O_* range that
+ * f_flags occupies. */
+#define EV_DENIED 0x80000000u
+/* EV_WRITE marks an open that requested write access. It is derived from
+ * f_mode, the same source the allow-set key uses, so what userspace sees and
+ * what the kernel keyed on can never disagree. */
+#define EV_WRITE  0x40000000u
+
+/* FMODE_WRITE from include/linux/fs.h. Not in vmlinux.h, which carries types
+ * rather than macros. */
+#define FMODE_WRITE 0x2
+
 struct file_event {
 	__u64 cgroup_id;
 	__u64 timestamp_ns;
 	__u32 pid; /* tgid */
 	__u32 uid;
 	__u32 gid;
-	__u32 flags; /* file->f_flags */
+	__u32 flags; /* file->f_flags, plus EV_DENIED and EV_WRITE below */
 	__u8  comm[16];
 	__u8  path[PATH_MAX_LEN];
 };
@@ -36,7 +48,7 @@ struct {
 	__uint(max_entries, 1 << 18); /* 256 KiB; events are deduped in-kernel */
 } file_events SEC(".maps");
 
-/* The learned allow-set: key = cgroup_id ^ FNV(path). During learning this is
+/* The learned allow-set: key = cgroup_id ^ FNV(path) ^ write_mix. During learning this is
  * auto-populated by the kernel; during enforcement, an open whose (cgroup, path)
  * is absent is denied. This IS the adaptive policy - no hand-written rules. */
 struct {
@@ -113,6 +125,17 @@ int BPF_PROG(file_open, struct file *file)
 	e->uid = (__u32)uid_gid;
 	e->gid = (__u32)(uid_gid >> 32);
 	e->flags = BPF_CORE_READ(file, f_flags);
+
+	/* Write intent is part of the allow-set identity, not just a detail of the
+	 * event. Keying on the path alone meant that learning nginx's startup READ
+	 * of /etc/passwd also permitted an attacker to WRITE it later and append a
+	 * root-equivalent account, which is exactly the escalation enforcement is
+	 * supposed to stop. */
+	__u32 fmode = (__u32)BPF_CORE_READ(file, f_mode);
+	__u8 write = (fmode & FMODE_WRITE) ? 1 : 0;
+	if (write)
+		e->flags |= EV_WRITE;
+
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
 	/* Resolve the path. bpf_d_path is permitted on security_file_open. */
@@ -121,7 +144,10 @@ int BPF_PROG(file_open, struct file *file)
 		e->path[0] = 0;
 
 	__u64 phash = hash_path(e->path, sizeof(e->path));
-	__u64 key = cgroup_id ^ phash;
+	/* Mixed multiplicatively by the 64-bit golden ratio rather than set as a
+	 * bit, so the write dimension cannot alias with a path hash that happens
+	 * to have that bit set. */
+	__u64 key = cgroup_id ^ phash ^ ((__u64)write * 0x9E3779B97F4A7C15ULL);
 
 	/* Enforcement mode for this cgroup (default: learning). */
 	__u8 *modep = bpf_map_lookup_elem(&file_mode, &cgroup_id);
@@ -136,7 +162,7 @@ int BPF_PROG(file_open, struct file *file)
 			return 0;
 		}
 		/* Not learned -> DENY in-kernel and report the violation. */
-		e->flags |= 0x80000000; /* denied marker for userspace */
+		e->flags |= EV_DENIED; /* denied marker for userspace */
 		bpf_ringbuf_submit(e, 0);
 		return -1; /* -EPERM: the open fails */
 	}

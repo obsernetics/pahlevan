@@ -1012,3 +1012,90 @@ func TestVMNetworkProtocolIsGoverned(t *testing.T) {
 		t.Logf("UDP to a TCP-learned destination denied as expected: %v", err)
 	}
 }
+
+// TestVMWriteIsNotGrantedByALearnedRead is the regression test for a real
+// escalation the benchmark run found.
+//
+// The file allow-set keyed on the path alone. nginx reads /etc/passwd at
+// startup, so that read entered the baseline, and an attacker could then WRITE
+// /etc/passwd under full enforcement and append a root-equivalent account. The
+// scenario succeeded with rc=0 against every hook enforcing.
+//
+// The key now folds write intent, so a learned read grants only reads.
+//
+// Everything below runs through shell builtins - redirection, no exec - so the
+// only open in play is the target file itself. Spawning a helper would open its
+// binary and its libraries too, and an exec denial (rc 126) would be
+// indistinguishable from the write denial this is actually testing. VM-only.
+func TestVMWriteIsNotGrantedByALearnedRead(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	coll, cgID, _ := seedTestFixture(t, "rw")
+
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("original\n"), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-rw-%d", os.Getpid())
+	// join the cgroup, then act with builtins only.
+	run := func(builtin string) error {
+		full := fmt.Sprintf("echo $$ > %s/cgroup.procs || exit 9; %s", cg, builtin)
+		return exec.Command("/bin/sh", "-c", full).Run()
+	}
+	readIt := "read line < " + target
+	writeIt := "echo pwned >> " + target
+
+	// LEARN a read of the target, and nothing else about it.
+	if err := run(readIt); err != nil {
+		t.Fatalf("learning read failed: %v", err)
+	}
+
+	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce mode: %v", err)
+	}
+
+	// The learned read must still work. If this fails the test proves nothing
+	// about writes, because the cgroup would simply be denying everything.
+	if err := run(readIt); err != nil {
+		t.Fatalf("the learned READ must still be allowed under enforcement, "+
+			"otherwise the write result below is meaningless: %v", err)
+	}
+	t.Log("learned read allowed under enforcement")
+
+	// The write was never learned, and must now be refused. Before the key
+	// folded the access mode this appended to the file.
+	if err := run(writeIt); err == nil {
+		t.Error("WRITE to a path learned only for READING should be DENIED, but it succeeded")
+	} else {
+		t.Logf("write to a read-only-learned path denied as expected: %v", err)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read back target: %v", err)
+	}
+	if string(data) != "original\n" {
+		t.Errorf("the file was modified under enforcement: %q", string(data))
+	}
+
+	// Seeding the write explicitly, as writeAllowedPaths does, must permit it.
+	m := &Manager{fileCollection: coll}
+	if err := m.AllowFilePathMode(cgID, target, true, true); err != nil {
+		t.Fatalf("AllowFilePathMode: %v", err)
+	}
+	if err := run(writeIt); err != nil {
+		t.Errorf("an explicitly seeded WRITE should be allowed: %v", err)
+	} else {
+		t.Log("explicitly seeded write allowed, as writeAllowedPaths intends")
+	}
+
+	// And revoking it closes the door again.
+	if err := m.AllowFilePathMode(cgID, target, true, false); err != nil {
+		t.Fatalf("AllowFilePathMode revoke: %v", err)
+	}
+	if err := run(writeIt); err == nil {
+		t.Error("a revoked WRITE should be DENIED, but it succeeded")
+	}
+}

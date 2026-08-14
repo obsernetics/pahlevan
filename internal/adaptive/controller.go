@@ -52,6 +52,7 @@ type Enforcer interface {
 	// is how an operator's policy overrides reach the data plane. They are
 	// applied just before a container flips to enforcing.
 	AllowFilePath(cgroupID uint64, path string, allowed bool) error
+	AllowFilePathMode(cgroupID uint64, path string, write, allowed bool) error
 	AllowExecPath(cgroupID uint64, path string, allowed bool) error
 	AllowCapability(cgroupID uint64, capability uint32, allowed bool) error
 	AllowNetworkDestination(cgroupID uint64, ip net.IP, port uint16, allowed bool) error
@@ -188,10 +189,14 @@ type cgState struct {
 	phase         Phase
 	ref           attribution.ContainerRef
 	syscalls      map[uint64]struct{}
-	files         map[string]struct{}
-	dests         map[string]struct{}
-	execs         map[string]struct{}
-	caps          map[uint32]struct{}
+	// files and writeFiles are separate: learning a read of a path must not
+	// permit writing it. nginx reads /etc/passwd at startup, and keying on the
+	// path alone let an attacker append a root-equivalent account afterwards.
+	files      map[string]struct{}
+	writeFiles map[string]struct{}
+	dests      map[string]struct{}
+	execs      map[string]struct{}
+	caps       map[uint32]struct{}
 
 	// Enforcement health tracking.
 	enforcingSince time.Time
@@ -302,6 +307,7 @@ func (c *Controller) track(cgroupID uint64) *cgState {
 			ref:           ref,
 			syscalls:      make(map[uint64]struct{}),
 			files:         make(map[string]struct{}),
+			writeFiles:    make(map[string]struct{}),
 			dests:         make(map[string]struct{}),
 			execs:         make(map[string]struct{}),
 			caps:          make(map[uint32]struct{}),
@@ -338,7 +344,11 @@ func (c *Controller) HandleFileEvent(e *ebpf.FileEvent) error {
 		return nil
 	}
 	if st.phase == PhaseLearning && e.Path != "" {
-		st.files[e.Path] = struct{}{}
+		if e.IsWrite() {
+			st.writeFiles[e.Path] = struct{}{}
+		} else {
+			st.files[e.Path] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -659,10 +669,16 @@ func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
 	}
 
 	for _, p := range o.AllowedFiles {
-		note(c.enforcer.AllowFilePath(id, p, true), "file", p)
+		note(c.enforcer.AllowFilePathMode(id, p, false, true), "file:read", p)
 	}
 	for _, p := range o.DeniedFiles {
-		note(c.enforcer.AllowFilePath(id, p, false), "file", p)
+		note(c.enforcer.AllowFilePathMode(id, p, false, false), "file:read", p)
+	}
+	for _, p := range o.AllowedWriteFiles {
+		note(c.enforcer.AllowFilePathMode(id, p, true, true), "file:write", p)
+	}
+	for _, p := range o.DeniedWriteFiles {
+		note(c.enforcer.AllowFilePathMode(id, p, true, false), "file:write", p)
 	}
 	for _, p := range o.AllowedExecs {
 		note(c.enforcer.AllowExecPath(id, p, true), "exec", p)
@@ -686,6 +702,7 @@ func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
 	c.log.Info("applied policy overrides to the kernel allow-sets",
 		"cgroup", id, "pod", st.ref.PodUID, "policy", st.policyName,
 		"allowedFiles", len(o.AllowedFiles), "deniedFiles", len(o.DeniedFiles),
+		"allowedWriteFiles", len(o.AllowedWriteFiles), "deniedWriteFiles", len(o.DeniedWriteFiles),
 		"allowedExecs", len(o.AllowedExecs), "deniedExecs", len(o.DeniedExecs),
 		"allowedCapabilities", len(o.AllowedCapabilities),
 		"allowedDestinations", len(o.AllowedDestinations),

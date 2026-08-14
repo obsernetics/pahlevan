@@ -38,8 +38,14 @@ type Destination struct {
 // This is what keeps "no rules to write" from meaning "no say in the outcome":
 // the baseline is learned, and the operator corrects it at the edges.
 type Overrides struct {
+	// AllowedFiles and DeniedFiles govern reads. Writes are separate entries in
+	// the kernel allow-set, so permitting a read does not permit a write.
 	AllowedFiles []string
 	DeniedFiles  []string
+
+	// AllowedWriteFiles and DeniedWriteFiles govern writes to a path.
+	AllowedWriteFiles []string
+	DeniedWriteFiles  []string
 
 	AllowedExecs []string
 	DeniedExecs  []string
@@ -60,6 +66,7 @@ type Overrides struct {
 // Empty reports whether there is nothing to apply.
 func (o Overrides) Empty() bool {
 	return len(o.AllowedFiles) == 0 && len(o.DeniedFiles) == 0 &&
+		len(o.AllowedWriteFiles) == 0 && len(o.DeniedWriteFiles) == 0 &&
 		len(o.AllowedExecs) == 0 && len(o.DeniedExecs) == 0 &&
 		len(o.AllowedCapabilities) == 0 && len(o.DeniedCapabilities) == 0 &&
 		len(o.AllowedDestinations) == 0 && len(o.DeniedDestinations) == 0 &&
