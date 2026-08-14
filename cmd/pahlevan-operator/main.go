@@ -13,9 +13,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"os"
 
+	"github.com/obsernetics/pahlevan/internal/admission"
 	"github.com/obsernetics/pahlevan/pkg/observability"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -24,6 +27,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
@@ -80,9 +84,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Control-plane reconcilers (status aggregation, CEL admission lifecycle) are
-	// wired in P2/P4. The operator intentionally owns no eBPF manager.
-	setupLog.Info("control-plane reconcilers (aggregation, admission) pending P2/P4 wiring")
+	// Control plane: ensure the CEL ValidatingAdmissionPolicy hardening baseline
+	// exists (in-process admission, no webhook/certs). Runs after cache sync.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		if err := admission.Ensure(ctx, mgr.GetClient()); err != nil {
+			if errors.Is(err, admission.ErrUnsupported) {
+				setupLog.Info("CEL admission policy skipped", "reason", err.Error())
+				return nil
+			}
+			setupLog.Error(err, "failed to ensure CEL admission policy")
+			return nil // don't crash the operator over admission
+		}
+		setupLog.Info("CEL ValidatingAdmissionPolicy ensured (pahlevan-pod-hardening)")
+		return nil
+	})); err != nil {
+		setupLog.Error(err, "unable to add admission runnable")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
