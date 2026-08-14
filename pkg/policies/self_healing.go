@@ -1088,7 +1088,71 @@ func (shm *SelfHealingManager) initializeComponents() error {
 	return nil
 }
 
+// defaultHealthChecker is the concrete HealthChecker wired up for every
+// registered container. It derives health from the observations the
+// SelfHealingManager already tracks via assessHealth, so PerformHealthCheck
+// reflects real crashloop/readiness/violation signals rather than failing with
+// "health checker not found".
+type defaultHealthChecker struct {
+	shm         *SelfHealingManager
+	customMu    sync.Mutex
+	customCheck map[string]CustomHealthCheck
+}
+
+func (c *defaultHealthChecker) CheckHealth(containerID string) (*HealthStatus, error) {
+	c.shm.mu.RLock()
+	state := c.shm.healingStates[containerID]
+	c.shm.mu.RUnlock()
+	if state == nil {
+		return nil, fmt.Errorf("container not registered: %s", containerID)
+	}
+	return c.shm.assessHealth(state), nil
+}
+
+func (c *defaultHealthChecker) GetHealthIndicators(containerID string) ([]*HealthIndicator, error) {
+	c.shm.mu.RLock()
+	state := c.shm.healingStates[containerID]
+	c.shm.mu.RUnlock()
+	if state == nil {
+		return nil, fmt.Errorf("container not registered: %s", containerID)
+	}
+	indicators := make([]*HealthIndicator, 0)
+	if state.HealthStatus != nil {
+		for _, comp := range state.HealthStatus.ComponentHealth {
+			indicators = append(indicators, comp.Indicators...)
+		}
+	}
+	return indicators, nil
+}
+
+func (c *defaultHealthChecker) RegisterCustomCheck(name string, check CustomHealthCheck) error {
+	if name == "" || check == nil {
+		return fmt.Errorf("custom check name and implementation are required")
+	}
+	c.customMu.Lock()
+	defer c.customMu.Unlock()
+	if c.customCheck == nil {
+		c.customCheck = make(map[string]CustomHealthCheck)
+	}
+	c.customCheck[name] = check
+	return nil
+}
+
+func (c *defaultHealthChecker) ValidateConfiguration(config map[string]interface{}) error {
+	return nil
+}
+
+// initializeHealthChecker wires a concrete HealthChecker and seeds the initial
+// health status for a container. It MUST be called with shm.mu already held for
+// writing (as RegisterContainer does); it does not lock, since the manager's
+// RWMutex is not reentrant and re-locking here would deadlock.
 func (shm *SelfHealingManager) initializeHealthChecker(containerID string) error {
+	// Register a concrete health checker so PerformHealthCheck can actually run.
+	if shm.healthCheckers == nil {
+		shm.healthCheckers = make(map[string]HealthChecker)
+	}
+	shm.healthCheckers[containerID] = &defaultHealthChecker{shm: shm}
+
 	// Initialize health status for the container
 	healthStatus := &HealthStatus{
 		Overall:            HealthLevelHealthy,
@@ -1117,12 +1181,10 @@ func (shm *SelfHealingManager) initializeHealthChecker(containerID string) error
 		RecoveryActions: make([]*RecoveryAction, 0),
 	}
 
-	// Store initial health status
-	shm.mu.Lock()
+	// Store initial health status (caller holds shm.mu).
 	if state := shm.healingStates[containerID]; state != nil {
 		state.HealthStatus = healthStatus
 	}
-	shm.mu.Unlock()
 
 	log.Log.V(1).Info("Initialized health checker for container", "containerID", containerID)
 	return nil

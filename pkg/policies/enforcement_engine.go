@@ -464,10 +464,16 @@ func (ee *EnforcementEngine) RegisterContainer(
 
 	// Initialize self-healing if enabled
 	if policy.Spec.SelfHealing.Enabled {
+		// RollbackWindow is an optional pointer; guard against a nil deref when
+		// self-healing is enabled without an explicit window.
+		var rollbackWindow time.Duration
+		if policy.Spec.SelfHealing.RollbackWindow != nil {
+			rollbackWindow = policy.Spec.SelfHealing.RollbackWindow.Duration
+		}
 		state.SelfHealingState = &SelfHealingState{
 			Enabled:           true,
 			RollbackThreshold: policy.Spec.SelfHealing.RollbackThreshold,
-			RollbackWindow:    policy.Spec.SelfHealing.RollbackWindow.Duration,
+			RollbackWindow:    rollbackWindow,
 			RecoveryStrategy:  RecoveryStrategy(policy.Spec.SelfHealing.RecoveryStrategy),
 		}
 	}
@@ -995,8 +1001,12 @@ func (ee *EnforcementEngine) calculatePolicyQuality(policy *GeneratedPolicy, pro
 	quality := PolicyQuality{}
 
 	if profile != nil {
-		// Calculate completeness based on learning profile coverage
-		syscallCoverage := float64(len(policy.SyscallPolicy.AllowedSyscalls)) / float64(len(profile.AllowedSyscalls))
+		// Calculate completeness based on learning profile coverage. Guard
+		// against divide-by-zero (NaN) when the profile observed no syscalls.
+		syscallCoverage := 1.0
+		if len(profile.AllowedSyscalls) > 0 {
+			syscallCoverage = float64(len(policy.SyscallPolicy.AllowedSyscalls)) / float64(len(profile.AllowedSyscalls))
+		}
 		if syscallCoverage > 1.0 {
 			syscallCoverage = 1.0
 		}
