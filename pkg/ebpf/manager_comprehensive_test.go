@@ -667,10 +667,12 @@ func TestManager_NewManager(t *testing.T) {
 	require.NotNil(t, manager)
 	assert.NotNil(t, manager.stopCh)
 	assert.False(t, manager.running)
-	assert.NotNil(t, manager.syscallEventCounter)
-	assert.NotNil(t, manager.networkEventCounter)
-	assert.NotNil(t, manager.fileEventCounter)
-	assert.NotNil(t, manager.enforcementCounter)
+	assert.Len(t, manager.counters, len(eventKinds))
+	for _, k := range eventKinds {
+		assert.NotNil(t, manager.counters[k].events, k)
+		assert.NotNil(t, manager.counters[k].denials, k)
+		assert.NotNil(t, manager.counters[k].decodeErrors, k)
+	}
 }
 
 func TestManager_EventHandlers(t *testing.T) {
