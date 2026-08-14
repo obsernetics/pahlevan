@@ -253,8 +253,11 @@ func TestPolicyCreate_FromFlags(t *testing.T) {
 	if got.Spec.EnforcementConfig.Mode != policyv1alpha1.EnforcementModeBlocking {
 		t.Errorf("created mode = %q, want Blocking", got.Spec.EnforcementConfig.Mode)
 	}
-	if !got.Spec.EnforcementConfig.BlockUnknown {
-		t.Error("blocking mode should set BlockUnknown")
+	// BlockUnknown is left nil so the mode's default applies. Pinning it here
+	// would freeze the created policy against a later change of that default,
+	// and nil already means "block" under Blocking.
+	if got.Spec.EnforcementConfig.BlockUnknown != nil {
+		t.Errorf("BlockUnknown should be left unset, got %v", *got.Spec.EnforcementConfig.BlockUnknown)
 	}
 	if got.Spec.Selector.MatchLabels["app"] != "demo" {
 		t.Errorf("selector = %v", got.Spec.Selector.MatchLabels)

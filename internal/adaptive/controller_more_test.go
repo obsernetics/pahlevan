@@ -26,8 +26,12 @@ type fakePoliciesMeta struct {
 	metaOK   bool
 }
 
-func (p fakePoliciesMeta) Resolve(uint64, attribution.ContainerRef) (time.Duration, bool, bool) {
-	return p.window, p.blocking, p.ok
+func (p fakePoliciesMeta) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
+	mode := ModeMonitoring
+	if p.blocking {
+		mode = ModeBlocking
+	}
+	return Decision{PolicyName: "test", Mode: mode, Window: p.window}, p.ok
 }
 
 func (p fakePoliciesMeta) PodMeta(string) (string, string, bool) {

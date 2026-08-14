@@ -11,6 +11,7 @@ package adaptive
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,15 +47,23 @@ type Enforcer interface {
 	SetNetworkEnforcement(cgroupID uint64, enforce bool) error
 	SetExecEnforcement(cgroupID uint64, enforce bool) error
 	SetCapabilityEnforcement(cgroupID uint64, enforce bool) error
+
+	// The Allow* methods seed or revoke a single kernel allow-set entry, which
+	// is how an operator's policy overrides reach the data plane. They are
+	// applied just before a container flips to enforcing.
+	AllowFilePath(cgroupID uint64, path string, allowed bool) error
+	AllowExecPath(cgroupID uint64, path string, allowed bool) error
+	AllowCapability(cgroupID uint64, capability uint32, allowed bool) error
+	AllowNetworkDestination(cgroupID uint64, ip net.IP, port uint16, allowed bool) error
 }
 
 // PolicyResolver decides, for a given cgroup, whether a policy applies and how
 // long its learning window is. The agent supplies a real implementation backed by
 // pod labels + PahlevanPolicy selectors; tests supply a fake.
 type PolicyResolver interface {
-	// Resolve returns (learningWindow, blocking, ok). ok=false means no policy
-	// governs this cgroup yet (keep observing, don't enforce).
-	Resolve(cgroupID uint64, ref attribution.ContainerRef) (window time.Duration, blocking bool, ok bool)
+	// Resolve returns the governing decision. ok=false means no policy governs
+	// this cgroup yet, so keep observing and do not enforce.
+	Resolve(cgroupID uint64, ref attribution.ContainerRef) (d Decision, ok bool)
 	// PodMeta resolves a pod UID to its namespace and name (ok=false if unknown).
 	PodMeta(podUID string) (namespace, name string, ok bool)
 }
@@ -198,6 +207,12 @@ type cgState struct {
 	baseline ContainerBaseline
 	// capLogged keeps the attempt-cap message to one line per container.
 	capLogged bool
+	// overrides are the operator corrections applied at the last enforce
+	// transition, retained so the generated seccomp profile matches what the
+	// kernel was actually told.
+	overrides Overrides
+	// policyName is the governing policy at that transition.
+	policyName string
 }
 
 // noteDenial records an in-kernel denial. Only denials observed while the
@@ -454,6 +469,24 @@ func (c *Controller) Snapshot() []Profile {
 func (c *Controller) Reconcile() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// An Off policy is the operator saying "ignore this workload", so it must
+	// cost nothing: no learned set held in memory, no ContainerProfile, and any
+	// enforcement from a previous mode lifted. Dropping the state here is also
+	// what makes flipping a policy to Off take effect without restarting the
+	// agent.
+	for id, st := range c.state {
+		d, ok := c.policies.Resolve(id, st.ref)
+		if !ok || d.Tracked() {
+			continue
+		}
+		if st.phase == PhaseEnforcing {
+			c.clearEnforcement(id)
+		}
+		delete(c.state, id)
+		c.log.V(1).Info("dropped container governed by an Off policy",
+			"cgroup", id, "pod", st.ref.PodUID, "policy", d.PolicyName)
+	}
+
 	for id, st := range c.state {
 		switch st.phase {
 		case PhaseLearning:
@@ -525,12 +558,15 @@ func (c *Controller) recordFleetMetrics() {
 // elapsed, its policy is blocking, it is not in a post-rollback cooldown, and it
 // has attempts left. Callers must hold c.mu.
 func (c *Controller) maybeEnforce(id uint64, st *cgState) {
-	window, blocking, ok := c.policies.Resolve(id, st.ref)
-	if !ok || !blocking {
+	d, ok := c.policies.Resolve(id, st.ref)
+	if !ok || !d.Blocking() {
 		return
 	}
 	now := c.now()
-	if now.Sub(st.learningSince) < window {
+	// The grace period is held after the learning window so a workload whose
+	// startup differs from its steady state is observed in both before anything
+	// is denied. Before this it was parsed from the CRD and dropped.
+	if now.Sub(st.learningSince) < d.EnforceAfter() {
 		return
 	}
 	if now.Before(st.holdUntil) {
@@ -546,6 +582,11 @@ func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 		}
 		return
 	}
+	// Seed the operator's overrides first. Flipping enforcement on before the
+	// exceptions are installed would leave a window in which a legitimately
+	// excepted path is denied - brief, but long enough to kill a pod.
+	c.applyOverrides(id, st, d.Overrides)
+
 	if err := c.enforcer.SetFileEnforcement(id, true); err != nil {
 		c.log.Error(err, "failed to enable file enforcement", "cgroup", id)
 		return
@@ -564,12 +605,71 @@ func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 	st.enforcingSince = now
 	st.attempts++
 	st.denials = 0
+	st.overrides = d.Overrides
+	st.policyName = d.PolicyName
 	st.baseline = CaptureBaseline(c.fetchPod(st))
 	c.writeSeccompProfile(st)
 	c.recordEnforceTransition(st, now.Sub(st.learningSince))
 	c.log.Info("container transitioned to enforcing",
 		"cgroup", id, "pod", st.ref.PodUID, "attempt", st.attempts,
 		"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs), "caps", len(st.caps))
+}
+
+// applyOverrides writes the operator's corrections into the kernel allow-sets.
+//
+// Errors are logged and counted, never fatal: a node whose kernel lacks the BPF
+// LSM runs the agent in observation-only mode, and one unseeded exception must
+// not stop the other signals from being enforced. Callers must hold c.mu.
+func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
+	if o.Empty() {
+		return
+	}
+	failed := 0
+	note := func(err error, kind, what string) {
+		if err == nil {
+			return
+		}
+		failed++
+		c.log.V(1).Info("could not seed allow-set entry",
+			"cgroup", id, "kind", kind, "entry", what, "error", err.Error())
+	}
+
+	for _, p := range o.AllowedFiles {
+		note(c.enforcer.AllowFilePath(id, p, true), "file", p)
+	}
+	for _, p := range o.DeniedFiles {
+		note(c.enforcer.AllowFilePath(id, p, false), "file", p)
+	}
+	for _, p := range o.AllowedExecs {
+		note(c.enforcer.AllowExecPath(id, p, true), "exec", p)
+	}
+	for _, p := range o.DeniedExecs {
+		note(c.enforcer.AllowExecPath(id, p, false), "exec", p)
+	}
+	for _, cap := range o.AllowedCapabilities {
+		note(c.enforcer.AllowCapability(id, cap, true), "capability", fmt.Sprint(cap))
+	}
+	for _, cap := range o.DeniedCapabilities {
+		note(c.enforcer.AllowCapability(id, cap, false), "capability", fmt.Sprint(cap))
+	}
+	for _, d := range o.AllowedDestinations {
+		note(c.enforcer.AllowNetworkDestination(id, d.IP, d.Port, true), "destination", destString(d))
+	}
+	for _, d := range o.DeniedDestinations {
+		note(c.enforcer.AllowNetworkDestination(id, d.IP, d.Port, false), "destination", destString(d))
+	}
+
+	c.log.Info("applied policy overrides to the kernel allow-sets",
+		"cgroup", id, "pod", st.ref.PodUID, "policy", st.policyName,
+		"allowedFiles", len(o.AllowedFiles), "deniedFiles", len(o.DeniedFiles),
+		"allowedExecs", len(o.AllowedExecs), "deniedExecs", len(o.DeniedExecs),
+		"allowedCapabilities", len(o.AllowedCapabilities),
+		"allowedDestinations", len(o.AllowedDestinations),
+		"failed", failed)
+}
+
+func destString(d Destination) string {
+	return net.JoinHostPort(d.IP.String(), fmt.Sprint(d.Port))
 }
 
 // maybeRollback checks a recently-enforcing container for signs that the learned
@@ -608,20 +708,7 @@ func (c *Controller) maybeRollback(id uint64, st *cgState) {
 // the eBPF maps, restarts the learning window behind a cooldown, and records why
 // on both the log and a Kubernetes Event. Callers must hold c.mu.
 func (c *Controller) rollback(id uint64, st *cgState, reason string) {
-	// Every setter is attempted even if an earlier one fails: leaving a
-	// container half-enforcing is strictly worse than a noisy log.
-	if err := c.enforcer.SetFileEnforcement(id, false); err != nil {
-		c.log.Error(err, "failed to disable file enforcement during rollback", "cgroup", id)
-	}
-	if err := c.enforcer.SetNetworkEnforcement(id, false); err != nil {
-		c.log.Error(err, "failed to disable network enforcement during rollback", "cgroup", id)
-	}
-	if err := c.enforcer.SetExecEnforcement(id, false); err != nil {
-		c.log.Error(err, "failed to disable exec enforcement during rollback", "cgroup", id)
-	}
-	if err := c.enforcer.SetCapabilityEnforcement(id, false); err != nil {
-		c.log.Error(err, "failed to disable capability enforcement during rollback", "cgroup", id)
-	}
+	c.clearEnforcement(id)
 
 	now := c.now()
 	st.phase = PhaseLearning
@@ -652,6 +739,24 @@ func (c *Controller) rollback(id uint64, st *cgState, reason string) {
 		"cgroup", id, "pod", st.ref.PodUID, "reason", reason,
 		"rollbacks", st.rollbacks, "attempts", st.attempts, "holdUntil", st.holdUntil)
 	c.emitRollbackEvent(st, reason)
+}
+
+// clearEnforcement turns every enforcement bit off for a cgroup. Every setter is
+// attempted even if an earlier one fails: leaving a container half-enforcing is
+// strictly worse than a noisy log. Callers must hold c.mu.
+func (c *Controller) clearEnforcement(id uint64) {
+	if err := c.enforcer.SetFileEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable file enforcement", "cgroup", id)
+	}
+	if err := c.enforcer.SetNetworkEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable network enforcement", "cgroup", id)
+	}
+	if err := c.enforcer.SetExecEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable exec enforcement", "cgroup", id)
+	}
+	if err := c.enforcer.SetCapabilityEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable capability enforcement", "cgroup", id)
+	}
 }
 
 // fetchPod reads the pod backing a tracked cgroup. Returns nil when there is no
@@ -734,7 +839,12 @@ func (c *Controller) writeSeccompProfile(st *cgState) {
 	for s := range st.syscalls {
 		syscalls = append(syscalls, s)
 	}
-	prof, skipped := seccomp.Generate(syscalls)
+	// The operator's syscall lists are part of the enforced artifact, so the
+	// generated profile has to reflect them. Denies win over the safety
+	// baseline: an explicit denial that was quietly kept would make the profile
+	// misrepresent what the workload can call.
+	prof, skipped := seccomp.GenerateWithOverrides(
+		syscalls, st.overrides.AllowedSyscalls, st.overrides.DeniedSyscalls)
 	data, err := prof.JSON()
 	if err != nil {
 		c.log.Error(err, "failed to render seccomp profile")
@@ -753,7 +863,10 @@ func (c *Controller) writeSeccompProfile(st *cgState) {
 		c.log.Error(err, "failed to write seccomp profile", "path", path)
 		return
 	}
-	c.log.Info("wrote learned seccomp profile", "path", path, "allowed", len(prof.Syscalls[0].Names), "skippedUnknown", skipped)
+	c.log.Info("wrote learned seccomp profile", "path", path,
+		"allowed", len(prof.Syscalls[0].Names), "skippedUnknown", skipped,
+		"policyAllowed", len(st.overrides.AllowedSyscalls),
+		"policyDenied", len(st.overrides.DeniedSyscalls))
 }
 
 // persistProfile upserts a ContainerProfile CR reflecting the container's learned
