@@ -1,0 +1,86 @@
+# Prometheus alerting rules for Pahlevan.
+#
+# Every rule fires on a series that running code records; see the tests in
+# pkg/metrics/dashboard_test.go, which assert the same for the dashboard.
+#
+# The rules are deliberately few. An alert per metric produces noise that gets
+# muted, and a muted alert is worse than no alert. These four cover the
+# failure modes an operator cannot see any other way.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pahlevan
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan
+    app.kubernetes.io/part-of: pahlevan
+spec:
+  groups:
+  - name: pahlevan.enforcement
+    rules:
+    - alert: PahlevanDecodeErrors
+      # Anything above zero means the kernel and userspace halves of the wire
+      # format have skewed and events are being dropped silently. That is
+      # indistinguishable from a quiet node unless it is alerted on.
+      expr: sum by (node, kind) (rate(pahlevan_ebpf_decode_errors_total[5m])) > 0
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: Pahlevan is dropping undecodable {{ $labels.kind }} events on {{ $labels.node }}
+        description: >-
+          The agent could not decode records from the {{ $labels.kind }} ring
+          buffer. The kernel programs and the userspace decoder have almost
+          certainly skewed, which means events are being lost without any other
+          symptom. Check that the agent image and its embedded eBPF objects
+          match.
+
+    - alert: PahlevanDenialSpike
+      # A sharp denial rate right after a transition is the signature of a bad
+      # baseline. Self-healing rolls individual containers back; this says the
+      # problem is broad enough to look at.
+      expr: |
+        sum(rate(pahlevan_ebpf_denials_total[5m]))
+          / clamp_min(sum(rate(pahlevan_ebpf_events_total[5m])), 1) > 0.05
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: More than 5% of observed operations are being denied in-kernel
+        description: >-
+          Sustained at this level it is more likely a learned baseline that is
+          too narrow than an attack. Check whether learning windows are long
+          enough to cover the workload's startup as well as its steady state,
+          and consider raising enforcementConfig.gracePeriod.
+
+    - alert: PahlevanRepeatedRollbacks
+      expr: sum(increase(pahlevan_rollback_actions_total[1h])) > 5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Pahlevan has rolled enforcement back more than five times in an hour
+        description: >-
+          Containers are reaching enforcement and being returned to learning.
+          The learning window is probably too short for these workloads. After
+          the attempt cap is reached a container stays in learning as monitor
+          only, so enforcement silently stops happening.
+
+    - alert: PahlevanNoContainersEnforcing
+      # A fleet that never reaches enforcement is the quietest possible
+      # failure: everything looks healthy and nothing is being protected.
+      expr: |
+        sum(pahlevan_containers_tracked) > 0
+          and sum(pahlevan_containers_enforced) == 0
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: Pahlevan is tracking containers but enforcing none of them
+        description: >-
+          Containers are being observed and none has reached enforcement for an
+          hour. Either no PahlevanPolicy is set to Blocking, learning windows
+          are not elapsing, or the kernel lacks the BPF LSM (check for
+          "lsm/... attach failed" in the agent log and confirm lsm=bpf is on the
+          kernel command line). Pahlevan is currently an observability tool
+          only.
