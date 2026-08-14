@@ -54,6 +54,7 @@ func init() {
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" NetworkMonitor ../../bpf/network_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" FileMonitor ../../bpf/file_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" ExecMonitor ../../bpf/exec_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" CapabilityMonitor ../../bpf/capability_monitor.c
 
 type Manager struct {
 	mu                  sync.RWMutex
@@ -64,14 +65,17 @@ type Manager struct {
 	networkCollection   *ebpf.Collection
 	fileCollection      *ebpf.Collection
 	execCollection      *ebpf.Collection
+	capCollection       *ebpf.Collection
 	syscallLinks        []link.Link
 	networkLinks        []link.Link
 	fileLinks           []link.Link
 	execLinks           []link.Link
+	capLinks            []link.Link
 	eventReader         *ringbuf.Reader
 	networkEventReader  *ringbuf.Reader
 	fileEventReader     *ringbuf.Reader
 	execEventReader     *ringbuf.Reader
+	capEventReader      *ringbuf.Reader
 	eventHandlers       []EventHandler
 	running             bool
 	stopCh              chan struct{}
@@ -92,17 +96,31 @@ type EventHandler interface {
 	HandleNetworkEvent(event *NetworkEvent) error
 	HandleFileEvent(event *FileEvent) error
 	HandleProcessEvent(event *ProcessEvent) error
+	HandleCapabilityEvent(event *CapabilityEvent) error
 }
 
 // ProcessEvent is an execve observed by the LSM bprm_check_security hook.
 type ProcessEvent struct {
 	PID         uint32
+	PPID        uint32 // parent tgid (process ancestry)
 	UID         uint32
+	Flags       uint32 // 0x80000000 => denied in-kernel, 0x40000000 => killed
+	Timestamp   uint64
+	CgroupID    uint64
+	Comm        string
+	ParentComm  string
+	Filename    string
+	ContainerID string
+}
+
+// CapabilityEvent is a capability check observed by the LSM capable hook.
+type CapabilityEvent struct {
+	PID         uint32
+	Capability  uint32 // capability number, e.g. 21 = CAP_SYS_ADMIN
 	Flags       uint32 // bit 0x80000000 => denied in-kernel
 	Timestamp   uint64
 	CgroupID    uint64
 	Comm        string
-	Filename    string
 	ContainerID string
 }
 
@@ -268,6 +286,17 @@ func (m *Manager) LoadPrograms() error {
 		log.Log.V(0).Info("network monitor spec unavailable; continuing without network observation", "error", nerr.Error())
 	}
 
+	if capSpecs, cerr2 := LoadCapabilityMonitor(); cerr2 == nil {
+		applyMapSizing(capSpecs, map[string]uint32{"cap_events": m.mapSizing.RingBufBytes})
+		if capColl, cerr := ebpf.NewCollection(capSpecs); cerr == nil {
+			m.capCollection = capColl
+		} else {
+			log.Log.V(0).Info("capability monitor unavailable; continuing without capability observation", "error", cerr.Error())
+		}
+	} else {
+		log.Log.V(0).Info("capability monitor spec unavailable", "error", cerr2.Error())
+	}
+
 	if execSpecs, eerr := LoadExecMonitor(); eerr == nil {
 		applyMapSizing(execSpecs, map[string]uint32{
 			"exec_allowed": m.mapSizing.ExecAllowed,
@@ -296,7 +325,7 @@ func (m *Manager) AttachPrograms() error {
 	}
 	// Idempotent: if programs are already attached, do nothing. Start() calls this
 	// too, so a caller doing LoadPrograms+AttachPrograms+Start must not double-attach.
-	if len(m.syscallLinks) > 0 || len(m.fileLinks) > 0 || len(m.networkLinks) > 0 || len(m.execLinks) > 0 {
+	if len(m.syscallLinks) > 0 || len(m.fileLinks) > 0 || len(m.networkLinks) > 0 || len(m.execLinks) > 0 || len(m.capLinks) > 0 {
 		return nil
 	}
 
@@ -357,6 +386,18 @@ func (m *Manager) AttachPrograms() error {
 		}
 	}
 
+	// Attach the capability monitor via the LSM capable hook (best-effort).
+	if m.capCollection != nil {
+		if prog := m.capCollection.Programs["capable_check"]; prog != nil {
+			l, err := link.AttachLSM(link.LSMOptions{Program: prog})
+			if err != nil {
+				log.Log.V(0).Info("lsm/capable attach failed; capability observation disabled", "error", err.Error())
+			} else {
+				m.capLinks = append(m.capLinks, l)
+			}
+		}
+	}
+
 	// Setup event readers
 	if err := m.setupEventReaders(); err != nil {
 		return fmt.Errorf("failed to setup event readers: %v", err)
@@ -399,6 +440,18 @@ func (m *Manager) setupEventReaders() error {
 		}
 	}
 
+	// Capability events (best-effort; nil in degraded mode).
+	if m.capCollection != nil {
+		if capEventsMap := m.capCollection.Maps["cap_events"]; capEventsMap != nil {
+			reader, err := ringbuf.NewReader(capEventsMap)
+			if err != nil {
+				log.Log.V(0).Info("capability event reader unavailable", "error", err.Error())
+			} else {
+				m.capEventReader = reader
+			}
+		}
+	}
+
 	// Exec events (best-effort; nil in degraded mode).
 	if m.execCollection != nil {
 		if execEventsMap := m.execCollection.Maps["exec_events"]; execEventsMap != nil {
@@ -433,6 +486,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	go m.processNetworkEvents(ctx)
 	go m.processFileEvents(ctx)
 	go m.processExecEvents(ctx)
+	go m.processCapabilityEvents(ctx)
 
 	return nil
 }
@@ -619,6 +673,16 @@ func (m *Manager) processEvents(ctx context.Context, eventType string) {
 				}
 				rawSample = record.RawSample
 				err = e
+			case "capability":
+				if m.capEventReader == nil {
+					return
+				}
+				record, e := m.capEventReader.Read()
+				if e != nil {
+					continue
+				}
+				rawSample = record.RawSample
+				err = e
 			case "exec":
 				if m.execEventReader == nil {
 					return
@@ -677,6 +741,13 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 			}
 			m.notifyHandlers(func(h EventHandler) { _ = h.HandleFileEvent(event) })
 		}
+	case "capability":
+		if event := parseCapabilityEvent(rawSample); event != nil {
+			if event.Flags&0x80000000 != 0 {
+				m.enforcementCounter.Inc()
+			}
+			m.notifyHandlers(func(h EventHandler) { _ = h.HandleCapabilityEvent(event) })
+		}
 	case "exec":
 		if event := parseProcessEvent(rawSample); event != nil {
 			// Flag bit 0x80000000 marks an in-kernel denied execve (see exec_monitor.c).
@@ -715,6 +786,10 @@ func (m *Manager) processFileEvents(ctx context.Context) {
 
 func (m *Manager) processExecEvents(ctx context.Context) {
 	m.processEvents(ctx, "exec")
+}
+
+func (m *Manager) processCapabilityEvents(ctx context.Context) {
+	m.processEvents(ctx, "capability")
 }
 
 // Helper functions for converting between Go and eBPF data structures
@@ -1056,10 +1131,10 @@ func (m *Manager) SetNetworkEnforcement(cgroupID uint64, enforce bool) error {
 
 // parseProcessEvent decodes the CO-RE `struct exec_event` from bpf/exec_monitor.c:
 //
-//	__u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 uid; __u32 flags;
-//	__u8 comm[16]; __u8 filename[128];  // 172 bytes
+//	__u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 ppid; __u32 uid;
+//	__u32 flags; __u8 comm[16]; __u8 pcomm[16]; __u8 filename[128];  // 192 bytes
 func parseProcessEvent(data []byte) *ProcessEvent {
-	const size = 8 + 8 + 4 + 4 + 4 + 16 + 128
+	const size = 8 + 8 + 4 + 4 + 4 + 4 + 16 + 16 + 128
 	if len(data) < size {
 		return nil
 	}
@@ -1067,19 +1142,19 @@ func parseProcessEvent(data []byte) *ProcessEvent {
 		CgroupID:  binary.LittleEndian.Uint64(data[0:8]),
 		Timestamp: binary.LittleEndian.Uint64(data[8:16]),
 		PID:       binary.LittleEndian.Uint32(data[16:20]),
-		UID:       binary.LittleEndian.Uint32(data[20:24]),
-		Flags:     binary.LittleEndian.Uint32(data[24:28]),
+		PPID:      binary.LittleEndian.Uint32(data[20:24]),
+		UID:       binary.LittleEndian.Uint32(data[24:28]),
+		Flags:     binary.LittleEndian.Uint32(data[28:32]),
 	}
-	comm := data[28:44]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
+	cut := func(b []byte) string {
+		if i := indexZero(b); i >= 0 {
+			b = b[:i]
+		}
+		return string(b)
 	}
-	ev.Comm = string(comm)
-	fn := data[44:172]
-	if i := indexZero(fn); i >= 0 {
-		fn = fn[:i]
-	}
-	ev.Filename = string(fn)
+	ev.Comm = cut(data[32:48])
+	ev.ParentComm = cut(data[48:64])
+	ev.Filename = cut(data[64:192])
 	ev.ContainerID = fmt.Sprintf("cgroup:%d", ev.CgroupID)
 	return ev
 }
@@ -1140,4 +1215,69 @@ func (m *Manager) SetMapSizing(s MapSizing) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mapSizing = s
+}
+
+// parseCapabilityEvent decodes `struct cap_event` from bpf/capability_monitor.c:
+//
+//	__u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 cap; __u32 flags;
+//	__u8 comm[16];   // 44 bytes
+func parseCapabilityEvent(data []byte) *CapabilityEvent {
+	const size = 8 + 8 + 4 + 4 + 4 + 16
+	if len(data) < size {
+		return nil
+	}
+	ev := &CapabilityEvent{
+		CgroupID:   binary.LittleEndian.Uint64(data[0:8]),
+		Timestamp:  binary.LittleEndian.Uint64(data[8:16]),
+		PID:        binary.LittleEndian.Uint32(data[16:20]),
+		Capability: binary.LittleEndian.Uint32(data[20:24]),
+		Flags:      binary.LittleEndian.Uint32(data[24:28]),
+	}
+	comm := data[28:44]
+	if i := indexZero(comm); i >= 0 {
+		comm = comm[:i]
+	}
+	ev.Comm = string(comm)
+	ev.ContainerID = fmt.Sprintf("cgroup:%d", ev.CgroupID)
+	return ev
+}
+
+// SetCapabilityEnforcement flips a cgroup between learning and enforcing for the
+// capability allow-list. Under enforcement a capability the workload never used
+// during learning is denied with -EPERM.
+func (m *Manager) SetCapabilityEnforcement(cgroupID uint64, enforce bool) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.capCollection == nil {
+		return fmt.Errorf("capability monitor not loaded (bpf LSM unavailable?)")
+	}
+	cm := m.capCollection.Maps["cap_mode"]
+	if cm == nil {
+		return fmt.Errorf("cap_mode map not found")
+	}
+	if enforce {
+		return cm.Put(cgroupID, uint8(1))
+	}
+	_ = cm.Delete(cgroupID)
+	return nil
+}
+
+// CapabilityName renders a Linux capability number as its canonical name.
+func CapabilityName(c uint32) string {
+	if int(c) < len(capabilityNames) {
+		return capabilityNames[c]
+	}
+	return fmt.Sprintf("CAP_%d", c)
+}
+
+var capabilityNames = []string{
+	"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
+	"CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_LINUX_IMMUTABLE",
+	"CAP_NET_BIND_SERVICE", "CAP_NET_BROADCAST", "CAP_NET_ADMIN", "CAP_NET_RAW",
+	"CAP_IPC_LOCK", "CAP_IPC_OWNER", "CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_SYS_CHROOT",
+	"CAP_SYS_PTRACE", "CAP_SYS_PACCT", "CAP_SYS_ADMIN", "CAP_SYS_BOOT", "CAP_SYS_NICE",
+	"CAP_SYS_RESOURCE", "CAP_SYS_TIME", "CAP_SYS_TTY_CONFIG", "CAP_MKNOD", "CAP_LEASE",
+	"CAP_AUDIT_WRITE", "CAP_AUDIT_CONTROL", "CAP_SETFCAP", "CAP_MAC_OVERRIDE",
+	"CAP_MAC_ADMIN", "CAP_SYSLOG", "CAP_WAKE_ALARM", "CAP_BLOCK_SUSPEND", "CAP_AUDIT_READ",
+	"CAP_PERFMON", "CAP_BPF", "CAP_CHECKPOINT_RESTORE",
 }

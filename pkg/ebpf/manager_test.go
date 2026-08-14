@@ -170,6 +170,10 @@ func (m *mockEventHandler) HandleProcessEvent(event *ProcessEvent) error {
 	return nil
 }
 
+func (m *mockEventHandler) HandleCapabilityEvent(event *CapabilityEvent) error {
+	return nil
+}
+
 func TestEventStructures(t *testing.T) {
 	// Test SyscallEvent
 	syscallEvent := &SyscallEvent{

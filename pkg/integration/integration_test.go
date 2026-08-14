@@ -143,6 +143,10 @@ func (m *MockLearningEngine) HandleProcessEvent(event *ebpf.ProcessEvent) error 
 	return nil
 }
 
+func (m *MockLearningEngine) HandleCapabilityEvent(event *ebpf.CapabilityEvent) error {
+	return nil
+}
+
 func (m *MockLearningEngine) GetProfile(containerID string) *learner.LearningProfile {
 	args := m.Called(containerID)
 	if args.Get(0) == nil {
