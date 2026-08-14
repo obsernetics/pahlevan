@@ -1156,9 +1156,10 @@ func (fp *FilePolicy) Validate() error {
 	return nil
 }
 
-// FnvPathHash computes the FNV-1a hash that bpf/file_monitor.c uses to key its
-// in-kernel file block list. Userspace inserts this hash into the file_blocked
-// map to DENY opens of the given path in-kernel.
+// FnvPathHash computes the FNV-1a hash that hash_path/hash_name in bpf/*.c use
+// to key the file and exec allow-sets. The kernel loops over a fixed-size buffer
+// and stops at the first NUL, so hashing a Go string to its length matches.
+// See allowset.go for the userspace writers built on it.
 func FnvPathHash(path string) uint64 {
 	var h uint64 = 1469598103934665603
 	for i := 0; i < len(path); i++ {
