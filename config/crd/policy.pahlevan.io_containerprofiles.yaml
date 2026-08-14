@@ -1,0 +1,162 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: containerprofiles.policy.pahlevan.io
+spec:
+  group: policy.pahlevan.io
+  names:
+    kind: ContainerProfile
+    listKind: ContainerProfileList
+    plural: containerprofiles
+    shortNames:
+    - cprof
+    singular: containerprofile
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.syscallCount
+      name: Syscalls
+      type: integer
+    - jsonPath: .status.fileCount
+      name: Files
+      type: integer
+    - jsonPath: .spec.node
+      name: Node
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ContainerProfile is the learned behavioural baseline for a single
+          container.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ContainerProfileSpec identifies the container a learned profile
+              belongs to.
+            properties:
+              cgroupID:
+                description: CgroupID is the cgroup v2 id the eBPF data plane keys
+                  enforcement on.
+                format: int64
+                type: integer
+              containerID:
+                description: ContainerID is the container runtime ID (if resolved).
+                type: string
+              namespace:
+                type: string
+              node:
+                description: Node is the node whose agent owns this profile.
+                type: string
+              podName:
+                description: PodName / Namespace of the container's pod.
+                type: string
+              policyRef:
+                description: PolicyRef is the name of the PahlevanPolicy that governs
+                  this container.
+                type: string
+              workload:
+                description: Workload identifies the owning Kubernetes workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion of the workload
+                    type: string
+                  kind:
+                    description: Kind of the workload
+                    type: string
+                  name:
+                    description: Name of the workload
+                    type: string
+                  namespace:
+                    description: Namespace of the workload
+                    type: string
+                  uid:
+                    description: UID of the workload
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - namespace
+                type: object
+            type: object
+          status:
+            description: |-
+              ContainerProfileStatus is the learned behavioural baseline reported by the
+              node agent. It is what the kernel enforces once the container is enforcing —
+              a first-class, inspectable, git-backupable record (no equivalent in Falco or
+              Tetragon).
+            properties:
+              enforcingSince:
+                format: date-time
+                type: string
+              fileCount:
+                format: int32
+                type: integer
+              firstSeen:
+                description: FirstSeen / EnforcingSince timestamps.
+                format: date-time
+                type: string
+              lastUpdated:
+                description: LastUpdated is when the agent last refreshed this profile.
+                format: date-time
+                type: string
+              learnedFiles:
+                description: LearnedFiles is the set of file paths the container opened
+                  during learning.
+                items:
+                  type: string
+                type: array
+              learnedNetworkDestinations:
+                description: LearnedNetworkDestinations is the set of egress destinations
+                  (ip:port).
+                items:
+                  type: string
+                type: array
+              learnedSyscalls:
+                description: LearnedSyscalls is the set of syscall numbers observed
+                  during learning.
+                items:
+                  format: int64
+                  type: integer
+                type: array
+              networkCount:
+                format: int32
+                type: integer
+              phase:
+                description: Phase is Learning or Enforcing.
+                type: string
+              syscallCount:
+                description: Counts for quick inspection / printcolumns.
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

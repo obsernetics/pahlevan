@@ -124,3 +124,5 @@ func TestController_WritesSeccompProfileOnEnforce(t *testing.T) {
 		}
 	}
 }
+
+func (p fakePolicies) PodMeta(string) (string, string, bool) { return "", "", false }
