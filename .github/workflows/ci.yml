@@ -49,6 +49,31 @@ jobs:
         go build -o bin/pahlevan-operator ./cmd/pahlevan-operator
         go build -o bin/pahlevan ./cmd/pahlevan
 
+    # The build alone never caught a regression. Vet, test, race, and format are
+    # what actually gate quality, so they run here rather than only locally.
+    - name: Vet
+      run: go vet ./...
+
+    - name: Test
+      run: go test -count=1 -coverprofile=coverage.out ./...
+
+    - name: Test (race)
+      run: go test -count=1 -race ./...
+
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v zz_generated))
+        if [ -n "$unformatted" ]; then
+          echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+        fi
+
+    - name: Coverage summary
+      run: go tool cover -func=coverage.out | tail -1
+
+    # arm64 is a supported target claim, so prove it still compiles.
+    - name: Cross-compile arm64
+      run: GOOS=linux GOARCH=arm64 go build ./...
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v7
       with:

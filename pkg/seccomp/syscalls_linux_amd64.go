@@ -1,9 +1,11 @@
+//go:build linux && amd64
+
 package seccomp
 
-// SyscallName maps a Linux x86_64 syscall number to its name, generated from
-// <asm/unistd_64.h>. Used to render seccomp profiles (which use names) from the
-// numeric syscall set learned by the eBPF data plane. Regenerate with
-// `go generate ./pkg/seccomp` (see gen.go).
+// SyscallName maps a Linux x86_64 syscall number to its name, generated
+// from </usr/include/x86_64-linux-gnu/asm/unistd_64.h>. Used to render seccomp profiles (which use names) from
+// the numeric syscall set learned by the eBPF data plane.
+// Regenerate with `make syscall-tables`.
 var SyscallName = map[uint64]string{
 	0:   "read",
 	1:   "write",

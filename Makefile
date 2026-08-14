@@ -157,6 +157,13 @@ ebpf-compile: ebpf-deps ## Compile eBPF programs
 
 BPFTOOL ?= $(shell command -v bpftool 2>/dev/null || echo /usr/lib/linux-tools-$(shell uname -r)/bpftool)
 
+.PHONY: syscall-tables
+syscall-tables: ## Regenerate the per-arch syscall name tables in pkg/seccomp
+	@echo "Regenerating syscall tables from kernel headers..."
+	@python3 hack/gen-syscall-tables.py
+	@gofmt -w pkg/seccomp/syscalls_linux_*.go
+	@echo "Syscall tables regenerated"
+
 .PHONY: vmlinux
 vmlinux: ## Generate bpf/vmlinux.h from the running kernel BTF (for CO-RE builds)
 	@if [ ! -f $(BPF_DIR)/vmlinux.h ]; then \
