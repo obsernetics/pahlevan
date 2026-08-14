@@ -269,8 +269,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                               podSelector:
                                 description: PodSelector selects pods
@@ -304,8 +338,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                             type: object
                           type: array
@@ -398,8 +466,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                               podSelector:
                                 description: PodSelector selects pods
@@ -433,8 +535,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                             type: object
                           type: array
@@ -616,7 +752,41 @@ spec:
                     description: MatchLabels is a map of {key,value} pairs
                     type: object
                   namespaceSelector:
-                    description: NamespaceSelector specifies target namespaces
+                    description: |-
+                      NamespaceSelector specifies target namespaces, matched against the
+                      namespace's own labels.
+                    properties:
+                      matchExpressions:
+                        description: MatchExpressions is a list of namespace label
+                          selector requirements.
+                        items:
+                          description: LabelSelectorRequirement contains a key, operator,
+                            and values for label selection
+                          properties:
+                            key:
+                              type: string
+                            operator:
+                              description: LabelSelectorOperator represents a label
+                                selector operator
+                              type: string
+                            values:
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                          selecting a namespace by name works through this field.
+                        type: object
+                    type: object
                 type: object
               selfHealing:
                 description: SelfHealing enables automatic policy rollback on failures
@@ -1282,6 +1452,25 @@ rules:
 - apiGroups: [""]
   resources: ["pods", "nodes"]
   verbs: ["get", "list", "watch"]
+# namespaces back PahlevanPolicy's selector.namespaceSelector, which matches on
+# the namespace's own labels.
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+# The agent runs AttackSurfaceAnalyzerReconciler, which Owns() these and lists
+# them. Without the grant its informers never sync and the manager exits after
+# the cache timeout: measured as four restarts in ten minutes, each one wiping
+# the learned baseline, with the agent observed enforcing a baseline of a
+# single file. Read-only, because the agent never writes them.
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
@@ -1320,7 +1509,13 @@ rules:
   resources: ["pahlevanpolicies/status", "containerprofiles/status", "attacksurfaces/status"]
   verbs: ["get", "update", "patch"]
 - apiGroups: [""]
-  resources: ["pods", "nodes", "namespaces"]
+  resources: ["pods", "nodes", "namespaces", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["events"]
