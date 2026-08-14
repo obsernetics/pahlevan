@@ -13,11 +13,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/obsernetics/pahlevan/pkg/seccomp"
@@ -45,9 +49,12 @@ type PolicyResolver interface {
 	// Resolve returns (learningWindow, blocking, ok). ok=false means no policy
 	// governs this cgroup yet (keep observing, don't enforce).
 	Resolve(cgroupID uint64, ref attribution.ContainerRef) (window time.Duration, blocking bool, ok bool)
+	// PodMeta resolves a pod UID to its namespace and name (ok=false if unknown).
+	PodMeta(podUID string) (namespace, name string, ok bool)
 }
 
 type cgState struct {
+	cgroupID  uint64
 	firstSeen time.Time
 	phase     Phase
 	ref       attribution.ContainerRef
@@ -69,6 +76,11 @@ type Controller struct {
 	// the learned syscall set are written on the enforce transition (for use as a
 	// pod localhostProfile). Empty disables seccomp profile emission.
 	SeccompDir string
+
+	// Client, when set, is used to persist a ContainerProfile CR per learned
+	// container (the inspectable baseline). Node labels the profile's origin.
+	Client client.Client
+	Node   string
 
 	mu    sync.Mutex
 	state map[uint64]*cgState
@@ -96,6 +108,7 @@ func (c *Controller) track(cgroupID uint64) *cgState {
 			}
 		}
 		st = &cgState{
+			cgroupID:  cgroupID,
 			firstSeen: c.now(),
 			phase:     PhaseLearning,
 			ref:       ref,
@@ -213,6 +226,10 @@ func (c *Controller) Reconcile() {
 			"cgroup", id, "pod", st.ref.PodUID,
 			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests))
 	}
+	// Persist/refresh the inspectable ContainerProfile for every tracked container.
+	for _, st := range c.state {
+		c.persistProfile(st)
+	}
 }
 
 // writeSeccompProfile generates a seccomp profile from the container's learned
@@ -246,6 +263,86 @@ func (c *Controller) writeSeccompProfile(st *cgState) {
 		return
 	}
 	c.log.Info("wrote learned seccomp profile", "path", path, "allowed", len(prof.Syscalls[0].Names), "skippedUnknown", skipped)
+}
+
+// persistProfile upserts a ContainerProfile CR reflecting the container's learned
+// baseline and phase. Best-effort: skips when no client is set or the pod isn't
+// resolved yet. Uses server-side apply so it creates or converges.
+func (c *Controller) persistProfile(st *cgState) {
+	if c.Client == nil || st.ref.PodUID == "" {
+		return
+	}
+	ns, podName, ok := c.policies.PodMeta(st.ref.PodUID)
+	if !ok || ns == "" {
+		return
+	}
+	syscalls := make([]int64, 0, len(st.syscalls))
+	for s := range st.syscalls {
+		syscalls = append(syscalls, int64(s))
+	}
+	sort.Slice(syscalls, func(i, j int) bool { return syscalls[i] < syscalls[j] })
+	files := make([]string, 0, len(st.files))
+	for f := range st.files {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	dests := make([]string, 0, len(st.dests))
+	for d := range st.dests {
+		dests = append(dests, d)
+	}
+	sort.Strings(dests)
+
+	now := metav1.Now()
+	cp := &policyv1alpha1.ContainerProfile{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: policyv1alpha1.GroupVersion.String(),
+			Kind:       "ContainerProfile",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      profileName(st.ref),
+			Namespace: ns,
+			Labels: map[string]string{
+				"app.kubernetes.io/part-of": "pahlevan",
+				"pahlevan.io/pod-uid":       st.ref.PodUID,
+			},
+		},
+		Spec: policyv1alpha1.ContainerProfileSpec{
+			PodName:     podName,
+			Namespace:   ns,
+			ContainerID: st.ref.ContainerID,
+			CgroupID:    st.cgroupID,
+			Node:        c.Node,
+		},
+		Status: policyv1alpha1.ContainerProfileStatus{
+			Phase:                      string(st.phase),
+			LearnedSyscalls:            syscalls,
+			LearnedFiles:               files,
+			LearnedNetworkDestinations: dests,
+			SyscallCount:               int32(len(syscalls)),
+			FileCount:                  int32(len(files)),
+			NetworkCount:               int32(len(dests)),
+			FirstSeen:                  &metav1.Time{Time: st.firstSeen},
+			LastUpdated:                &now,
+		},
+	}
+	if st.phase == PhaseEnforcing {
+		cp.Status.EnforcingSince = &now
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Client.Patch(ctx, cp, client.Apply,
+		client.FieldOwner("pahlevan-agent"), client.ForceOwnership); err != nil {
+		c.log.V(1).Info("failed to persist ContainerProfile", "pod", podName, "error", err.Error())
+	}
+}
+
+func profileName(ref attribution.ContainerRef) string {
+	// Stable, DNS-safe name per pod (+container when known).
+	name := "pod-" + ref.PodUID
+	if len(ref.ContainerID) >= 12 {
+		name += "-" + ref.ContainerID[:12]
+	}
+	return name
 }
 
 // Run drives Reconcile on an interval until ctx is cancelled.

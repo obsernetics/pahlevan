@@ -141,6 +141,8 @@ func main() {
 	polResolver := newPolicyResolver(mgr.GetClient(), nodeName)
 	adaptiveCtl := adaptive.NewController(ctrl.Log.WithName("adaptive"), ebpfManager, attrResolver, polResolver)
 	adaptiveCtl.SeccompDir = seccompDir
+	adaptiveCtl.Client = mgr.GetClient()
+	adaptiveCtl.Node = nodeName
 
 	// Register event handlers BEFORE starting readers so no events are missed.
 	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})

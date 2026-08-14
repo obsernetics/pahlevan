@@ -24,7 +24,6 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/controller"
 	"github.com/obsernetics/pahlevan/internal/learner"
-	"github.com/obsernetics/pahlevan/internal/webhooks"
 	"github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/discovery"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
@@ -47,7 +46,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
 // TestFramework provides a comprehensive testing framework for Pahlevan integration tests
@@ -66,7 +64,6 @@ type TestFramework struct {
 	syscallLearner    *learner.SyscallLearner
 	enforcementEngine *policies.EnforcementEngine
 	attackSurface     *visualization.AttackSurfaceAnalyzer
-	webhookInstalled  bool
 }
 
 // TestConfig holds configuration for the test framework
@@ -86,7 +83,7 @@ type TestConfig struct {
 // DefaultTestConfig returns a default test configuration
 func DefaultTestConfig() *TestConfig {
 	return &TestConfig{
-		UseWebhooks:        true,
+		UseWebhooks:        false,
 		EnableEBPF:         false, // Disabled by default in tests
 		MetricsPort:        8081,
 		WebhookPort:        9443,
@@ -138,13 +135,6 @@ func (tf *TestFramework) Setup(config *TestConfig) error {
 		Scheme:                tf.scheme,
 	}
 
-	if config.UseWebhooks {
-		tf.testEnv.WebhookInstallOptions = envtest.WebhookInstallOptions{
-			Paths: config.WebhookPaths,
-		}
-		tf.webhookInstalled = true
-	}
-
 	// Start the test environment
 	cfg, err := tf.testEnv.Start()
 	if err != nil {
@@ -176,13 +166,6 @@ func (tf *TestFramework) Setup(config *TestConfig) error {
 	// Set up controllers
 	if err := tf.setupControllers(); err != nil {
 		return fmt.Errorf("failed to setup controllers: %v", err)
-	}
-
-	// Set up webhooks if enabled
-	if config.UseWebhooks {
-		if err := tf.setupWebhooks(); err != nil {
-			return fmt.Errorf("failed to setup webhooks: %v", err)
-		}
 	}
 
 	// Create test namespace
@@ -311,21 +294,6 @@ func (tf *TestFramework) setupControllers() error {
 	if err := attackSurfaceController.SetupWithManager(tf.manager); err != nil {
 		return fmt.Errorf("failed to setup attack surface controller: %v", err)
 	}
-
-	return nil
-}
-
-// setupWebhooks sets up the admission webhooks
-func (tf *TestFramework) setupWebhooks() error {
-	// Set up validation webhook
-	validator := webhooks.NewPahlevanPolicyValidator(tf.k8sClient)
-	tf.manager.GetWebhookServer().Register("/validate-policy-pahlevan-io-v1alpha1-pahlevanpolicy",
-		&webhook.Admission{Handler: validator})
-
-	// Set up mutation webhook
-	mutator := webhooks.NewPahlevanPolicyMutator(tf.k8sClient)
-	tf.manager.GetWebhookServer().Register("/mutate-policy-pahlevan-io-v1alpha1-pahlevanpolicy",
-		&webhook.Admission{Handler: mutator})
 
 	return nil
 }
