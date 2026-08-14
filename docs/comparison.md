@@ -137,13 +137,14 @@ This deserves its own row because it is the clearest capability gap.
 
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
-| Immediate parent | Yes, on exec events only: parent tgid and parent comm | Yes | Yes |
-| Full ancestor chain | **No.** There is no walk up `real_parent`, no process cache, and no reconstruction in userspace | Yes. `proc.aname[n]` and `proc.apid[n]` address ancestors by depth, backed by a maintained process tree | **Yes, and this is Tetragon's signature strength.** Stable execution ids, a process cache, and a full ancestor chain on every event |
-| Ancestry usable in policy | **No** | Yes, directly in rule conditions | Yes, in selectors |
+| Immediate parent | Yes, on exec events: parent tgid and parent comm | Yes | Yes |
+| Full ancestor chain | **Yes, up to four levels.** `bprm_check` walks `real_parent` in-kernel and the chain ships with the event, structured and rendered (`nginx -> sh -> curl`). Bounded by the verifier's need for an unrolled loop; there is no process cache, so the depth is fixed rather than unlimited | Yes. `proc.aname[n]` and `proc.apid[n]` address ancestors by depth, backed by a maintained process tree | **Yes, and this is Tetragon's signature strength.** Stable execution ids, a process cache, and an unbounded ancestor chain on every event |
+| Ancestry usable in policy | **No.** The chain is reported, not matched on. Enforcement keys on the cgroup and the binary path | Yes, directly in rule conditions | Yes, in selectors |
 | Ancestry on non-exec events | **No.** File, network, and syscall events carry pid, comm, and cgroup, but no parent | Yes | Yes |
 
-Richer ancestry is on the [roadmap](../ROADMAP.md). Today, if you need to answer
-"what chain of processes led to this", Tetragon is the tool for that job and
+Pahlevan now answers "what chain of processes led to this exec" to a depth of
+four. Tetragon still wins on unlimited depth, ancestry on every event type, and
+matching on ancestry inside a policy; if you need those, Tetragon is the tool
 Pahlevan is not close.
 
 ## Capability monitoring
@@ -160,17 +161,25 @@ Pahlevan is not close.
 |---|---|---|---|
 | Enforcement point | BPF LSM hooks, in-kernel | n/a | kprobes with `bpf_override_return`, and BPF LSM hooks |
 | Available actions | **One: deny with `EPERM`.** Plus an unexposed in-kernel `SIGKILL` mode for exec | n/a. Falco emits alerts and other tools act on them | `Sigkill`, `Override` with a chosen errno, `Signal`, `Post`, `NotifyEnforcer`, rate limiting, and more |
-| Enforcement modes | `Off`, `Monitoring`, `Blocking`. **The agent currently collapses these to a single boolean**, `Blocking` and not `alertOnly`. `Off` and `Monitoring` behave identically at the data plane, which is to say the maps are simply not switched to enforce | n/a | Per-policy, per-selector |
+| Enforcement modes | `Off`, `Monitoring`, `Blocking`, each distinct. `Off` drops the container entirely and lifts any enforcement a previous mode installed; `Monitoring` learns and reports without ever switching the maps to enforce; `Blocking` denies in-kernel after the learning window and grace period | n/a | Per-policy, per-selector |
 | Audit or dry-run of a would-be denial | **Partially.** Learning mode observes but does not deny, so it functions as a dry run. There is no first-class "this would have been blocked" event yet, beyond a denial bit on the exported envelope | Everything is effectively audit | Yes, observe-only policies are the default |
-| Granularity | Per cgroup, which means per container | Per rule | Per policy, with pod and namespace selectors |
+| Granularity | Per cgroup, which means per container. Policies select workloads by pod labels and by `namespaceSelector` | Per rule | Per policy, with pod and namespace selectors |
 | Failure mode when the agent dies | Existing kernel state persists briefly, but BPF links are released when the agent's descriptors go away, so enforcement stops. Learning and status reporting stop immediately | Alerts stop | Depends on the policy and the attach mechanism |
 
-Several `PahlevanPolicy` spec blocks are **schema only** today: `syscallPolicy`,
+Every `PahlevanPolicy` spec block is now consulted. `syscallPolicy`,
 `networkPolicy`, `filePolicy`, `enforcementConfig.exceptions`,
-`enforcementConfig.blockUnknown`, and `enforcementConfig.gracePeriod` are
-accepted by the API server and are not consulted by the agent. That is a real
-correctness problem, it is on the [roadmap](../ROADMAP.md), and it is listed
-here rather than left for a reviewer to discover.
+`enforcementConfig.blockUnknown` and `enforcementConfig.gracePeriod` were
+schema-only until recently; the allow and deny lists are seeded straight into
+the kernel allow-sets before enforcement begins, and the syscall lists reach
+the generated seccomp profile.
+
+What a rule cannot express, it says so rather than being dropped. A CIDR wider
+than a single host, a port range past 1024 entries, a label-selected peer, a
+DNS name, an ingress rule, a glob, `readOnlyPaths` (the `file_open` hook does
+not separate read from write) and `processFilter` each produce a warning
+naming the field and the reason. A path must also be fully resolved: the
+kernel hashes what `bpf_d_path` returns, so an exception for a symlink grants
+nothing.
 
 ## Seccomp
 
@@ -178,7 +187,7 @@ here rather than left for a reviewer to discover.
 |---|---|---|---|
 | Generates a seccomp profile from observed behavior | **Yes**, from the learned syscall set (`pkg/seccomp`), written to a node directory when `--seccomp-dir` is set | No | No |
 | Applies the generated profile | **No.** The profile is written and nothing reads it back. Nothing sets `securityContext.seccompProfile.localhostProfile`. The loop is not closed | n/a | n/a |
-| Architectures in the generated profile | x86-64 only, hardcoded | n/a | n/a |
+| Architectures in the generated profile | Matches the build architecture: `SCMP_ARCH_X86_64`/`X86`/`X32` on amd64, `SCMP_ARCH_AARCH64` on arm64. It was hardcoded to x86-64 regardless of target, which produced a profile naming the wrong ABI on arm64 | n/a | n/a |
 
 Automatic seccomp profile generation is genuinely something neither Falco nor
 Tetragon does. It is also incomplete here, and the prior art worth comparing
@@ -249,18 +258,18 @@ which is not a story.
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | CLI binary | `pahlevan` | `falco`, plus `falcoctl` for rule and plugin management | `tetra` |
-| What works | `policy` (list, get, describe, create, delete, update, status), `status`, `version`, `completion` | Running the engine, validating rules, listing fields, plus full artifact management in `falcoctl` | `getevents` streaming, `status`, `tracingpolicy` management, `bugtool` |
-| What is a stub | **`attack-surface`, `logs`, `metrics`, and `debug` print "to be implemented" and exit successfully.** Four of eight top-level subcommands | n/a | n/a |
+| What works | All eight top-level subcommands: `policy` (list, get, describe, create, delete, update, status), `status`, `events`, `attack-surface` (analyze, report), `logs`, `metrics`, `debug`, `version`, `completion` | Running the engine, validating rules, listing fields, plus full artifact management in `falcoctl` | `getevents` streaming, `status`, `tracingpolicy` management, `bugtool` |
+| What is a stub | **None.** `attack-surface`, `logs`, `metrics` and `debug` used to print "to be implemented" and exit 0; they are implemented | n/a | n/a |
 | Live event streaming | Yes, `pahlevan events` with `--follow`, `--type`, `--denials-only`, `--pod`, and `--tail`. It tails the JSON-lines log rather than a gRPC stream, so it handles rotation and partial lines | Yes | Yes, `tetra getevents` is the standard workflow |
-| Troubleshooting bundle | **No** | Yes, through supportability tooling | Yes, `tetra bugtool` |
+| Troubleshooting bundle | Yes, `pahlevan debug`: component pods, node kernels and BPF LSM verdict, CRD presence and object counts, recent events, metric highlights. It never reads Secrets, tokens or env vars, and the LSM verdict is labelled with how it was inferred | Yes, through supportability tooling | Yes, `tetra bugtool` |
 
 ## Metrics and observability
 
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | Prometheus endpoint | Yes, `:8080`, served by controller-runtime | Yes, native | Yes, native and extensive |
-| Metrics that actually work | **Six**: syscall, network, file, and capability event totals, enforcement actions (in-kernel denials), plus export sent and dropped counters. All served on the endpoint the agent exposes | A broad set, including rule hit counts, drops, and engine internals | A broad set: per-policy, per-sensor, event counts, map pressure, and overhead |
-| Metrics that exist but read zero | `pkg/metrics` defines more than thirty metric names. They now register with the served registry, but **39 record methods are still called from nowhere**, so those series read zero. A dashboard of zeros is worse than an absent metric, so wiring the recording calls is tracked as an open gap | n/a | n/a |
+| Metrics that actually work | Data plane: events, denials and decode errors per event kind, all five kinds pre-created so an idle kind reports 0 rather than being absent. Policy plane: policy violations, enforcement actions, rollbacks, self-healing actions, learning duration, privilege reduction, learned attack surface, and per-node phase gauges. Plus export sent and dropped | A broad set, including rule hit counts, drops, and engine internals | A broad set: per-policy, per-sensor, event counts, map pressure, and overhead |
+| Metrics that exist but read zero | **None registered by default.** `pkg/metrics` previously built roughly fifty collectors, registered none of them, and had 39 recorders called from nowhere. Registration happens now and the controller feeds the series. The per-container ones are keyed by container id crossed with a syscall or path, so they are behind `--metrics-detail=high` rather than left on to melt a Prometheus | n/a | n/a |
 | Policy status counters | `status.enforcementStatus.blocked*` fields exist and **are not incremented** | n/a | n/a |
 | Health probes | Yes, `:8081` | Yes | Yes |
 | OpenTelemetry tracing | Real OTLP/gRPC and console span exporters, plus a `StartSpan` API proven by tests to record spans and nest them. Instrumentation coverage of the codebase is still thin | Not a tracing tool, but the ecosystem covers it | Metrics focused |
@@ -271,13 +280,13 @@ which is not a story.
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | amd64 | Yes, built, tested, and benchmarked | Yes | Yes |
-| arm64 | **Partial.** The Go side now cross-compiles: `pkg/seccomp` ships per-arch syscall tables behind build tags and CI runs a `GOOS=linux GOARCH=arm64` build on every PR. Still outstanding: the eBPF objects are compiled `-D__TARGET_ARCH_x86` against an x86_64 `vmlinux.h`, and the published image is single-arch, so arm64 is not yet a shippable target | Yes, officially supported and released | Yes, officially supported and released |
+| arm64 | **Yes, built and published.** Per-arch syscall tables and seccomp architectures behind build tags, per-arch BPF objects from `bpf2go -target amd64,arm64`, a `GOOS=linux GOARCH=arm64` build on every PR, and a `linux/amd64,linux/arm64` image. Not yet *tested* on arm64 hardware: the VM harness is amd64, so the arm64 objects are compiled and shipped but their kernel behaviour is unverified | Yes, officially supported and released | Yes, officially supported and released |
 | s390x, ppc64le | No | Falco publishes additional architectures | No |
-| Endianness bindings | Both little and big endian bpf2go bindings are committed, which is necessary but nowhere near sufficient | n/a | n/a |
+| Endianness bindings | Per-architecture little-endian bindings are committed and build-tagged, so each architecture loads objects compiled for it. Big-endian targets are not built | n/a | n/a |
 
-Fixing arm64 is a tractable, well-scoped piece of work and it is on the
-[roadmap](../ROADMAP.md). Until it is done, Pahlevan is an amd64-only project and
-should be described that way.
+arm64 is now built and published, but every measurement in this document was
+taken on amd64. Until the VM harness runs on arm64 hardware, treat arm64 as
+supported-but-unverified rather than proven.
 
 ## Kernel and platform requirements
 
@@ -322,7 +331,7 @@ rounding error, and it is called out in the roadmap as a priority.
 | Release cadence | Ad hoc | Regular, scheduled | Regular |
 | Documentation | Reasonable for the size, and this comparison is part of an effort to keep it honest | Extensive, with a dedicated site | Extensive, with a dedicated site |
 | Third-party integrations | **None** | Very many | Many, especially in the Cilium ecosystem |
-| CI depth | Build, image push, CodeQL, Trivy, govulncheck, docs lint. **The unit test suite is not currently run in CI**, and neither eBPF load tests nor the benchmark are automated. All of that is manual today | Extensive, including kernel test matrices | Extensive, including a kernel and architecture matrix |
+| CI depth | Build, vet, the unit test suite, `-race`, gofmt, coverage, an arm64 cross-build, multi-arch image push, CodeQL, Trivy, govulncheck, DCO, docs lint. Still manual: the eBPF load tests (they need a VM with `lsm=bpf`) and the competitor benchmark | Extensive, including kernel test matrices | Extensive, including a kernel and architecture matrix |
 | Support | Community, best effort, one person | Community plus multiple commercial vendors | Community plus commercial support from Isovalent and Cisco |
 
 ## Where Pahlevan is behind
@@ -341,47 +350,54 @@ Listed plainly, worst first. Every item here is real and current.
 3. **No rule or content ecosystem.** By design there are no rules to share, but
    the consequence is real: there is no community content, no detection
    coverage you can adopt, and nothing to compare against MITRE ATT&CK coverage.
-4. **Process ancestry is one hop, on exec only.** No ancestor chain, no process
-   cache, no lineage on file or network events. Tetragon is far ahead here and
-   this is not close.
-5. **arm64 is not shippable yet.** The Go binaries cross-compile and CI proves
-   it on every PR, but the eBPF objects are still built for x86_64 and the
-   published image is single-arch. Falco and Tetragon both ship arm64.
+4. **Process ancestry is bounded and exec-only.** Four levels, walked in-kernel
+   and shipped with the event, but there is no process cache, so the depth is
+   fixed and file, network and syscall events still carry no lineage. Ancestry
+   cannot be matched on in a policy. Tetragon is still ahead here.
+5. **arm64 is built but unverified.** Per-arch BPF objects and a multi-arch
+   image ship, and CI cross-compiles on every PR, but the VM harness is amd64
+   so no arm64 kernel has ever loaded these programs. Falco and Tetragon test
+   on arm64.
 6. **Memory footprint is unproven since the fix.** BPF map preallocation, which
-   dominated the old 327 MiB figure, is down to 17 to 19 MiB measured. The
-   end-to-end agent RSS has not been re-measured against Falco and Tetragon, so
-   no comparative claim is made here until the benchmark is re-run.
+   dominated the old 327 MiB figure, is 37.7 MiB measured across all five
+   programs on Linux 6.8. The end-to-end agent RSS has not been re-measured
+   against Falco and Tetragon, so no comparative claim is made here until the
+   benchmark is re-run.
 7. **Enforcement requires `lsm=bpf` on the kernel command line**, which most
    distributions do not set. Without it Pahlevan degrades to a weaker
    observability tool than either comparator.
-8. **Only one enforcement action.** `EPERM`. No kill, no signal, no audit
-   action, no per-rule response. Tetragon offers a genuine action set.
-9. **Much of the `PahlevanPolicy` spec is not implemented.** `syscallPolicy`,
-   `networkPolicy`, `filePolicy`, `exceptions`, `blockUnknown`, and
-   `gracePeriod` are accepted and ignored, and `Off` and `Monitoring` are not
-   distinguished at the data plane.
-10. **Self-healing does not heal.** The rollback path sets a phase and a
-    condition and does not restore anything, and its trigger depends on status
-    counters that are never incremented. The elaborate implementation in
-    `pkg/policies` is not wired into any binary.
-11. **Metrics are thin and partly fictional.** Four counters work. More than
-    thirty defined metrics live on a registry that is never served and are never
-    recorded. Policy status block counters stay at zero.
-12. **The seccomp loop is open.** Profiles are generated and written and never
-    applied to anything.
-13. **IPv6 egress is not governed at all**, even in blocking mode, and the
-    network allow-set ignores protocol.
-14. **No syscall arguments, no command-line arguments, no image, no pod labels,
+8. **Only two enforcement actions.** `EPERM`, and `SIGKILL` on exec under
+   enforcement mode 2. No audit action, no per-rule response. Tetragon offers a
+   genuine action set.
+9. **The seccomp loop is open.** Profiles are generated from the learned
+   syscall set, honour the policy's syscall lists, and are written to disk, but
+   nothing applies them to a pod. A pod's `seccompProfile` cannot be changed
+   after admission, and the operator deliberately runs without a mutating
+   webhook, so today an operator has to reference the generated profile
+   themselves.
+10. **Policy status counters stay at zero.** `status.enforcementStatus.blocked*`
+    exists and is not incremented, even though the underlying denials are now
+    counted on the metrics endpoint and on `ContainerProfile`.
+11. **Grafana dashboards are not published.** The metrics are real now; nothing
+    ships to visualise them.
+12. **The network allow-set ignores protocol.** A destination learned over TCP
+    is also permitted over UDP on the same port. IPv6 itself is governed, and
+    the family is folded into the key, but the protocol is not.
+13. **No syscall arguments, no command-line arguments, no image, no pod labels,
     no workload owner** on events. Both comparators have all of this.
-15. **CLI gaps.** Four of eight subcommands are stubs, and there is no live
-    event streaming and no troubleshooting bundle.
-16. **CI does not run the tests.** Unit tests, eBPF load tests, and the
-    benchmark are all manual.
-17. **OpenTelemetry is wired but dead.** No span is ever started and no exporter
-    is ever attached.
-18. **Learning is trust on first use.** A workload that is already compromised
-    when learning starts has its malicious behavior baselined, and there is no
-    review or approval step before a learned profile takes effect.
+14. **eBPF load tests and the benchmark are not automated.** The unit suite,
+    `-race`, gofmt, coverage and an arm64 cross-build all run in CI now, but
+    the kernel tests need a VM with `lsm=bpf` and the competitor benchmark
+    needs three tools installed, so both are still run by hand.
+15. **OpenTelemetry instrumentation is thin.** Real OTLP and stdout exporters
+    and a working `StartSpan` exist, but very little of the codebase is
+    actually instrumented, so a trace shows almost nothing.
+16. **Learning is trust on first use.** A workload that is already compromised
+    when learning starts has its malicious behaviour baselined. Policy deny
+    lists and exceptions let an operator correct the edges, but there is no
+    review or approval step before a learned profile takes effect. This is the
+    deepest conceptual limitation of the whole approach and no amount of
+    engineering removes it.
 
 ## Where Pahlevan is different
 
