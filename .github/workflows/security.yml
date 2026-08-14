@@ -80,16 +80,6 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-apt-
 
-    - name: Install eBPF dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
-
-    - name: Generate eBPF bindings
-      run: |
-        go install github.com/cilium/ebpf/cmd/bpf2go@latest
-        go generate ./pkg/ebpf/
-
     - name: Run govulncheck
       run: |
         go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -159,16 +149,6 @@ jobs:
         key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/security.yml') }}
         restore-keys: |
           ${{ runner.os }}-apt-
-
-    - name: Install eBPF dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
-
-    - name: Generate eBPF bindings
-      run: |
-        go install github.com/cilium/ebpf/cmd/bpf2go@latest
-        go generate ./pkg/ebpf/
 
     - name: Build
       run: go build ./...
