@@ -36,14 +36,26 @@ struct {
 	__uint(max_entries, 1 << 24);
 } file_events SEC(".maps");
 
-/* Dedup per (cgroup, path hash) to bound event volume: learning wants the set of
- * files a workload opens, not every open. */
+/* The learned allow-set: key = cgroup_id ^ FNV(path). During learning this is
+ * auto-populated by the kernel; during enforcement, an open whose (cgroup, path)
+ * is absent is denied. This IS the adaptive policy — no hand-written rules. */
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, __u64);
 	__type(value, __u8);
 	__uint(max_entries, 1 << 20);
-} file_seen SEC(".maps");
+} file_allowed SEC(".maps");
+
+/* Per-cgroup enforcement mode: absent/0 = learning, 1 = enforcing. Userspace
+ * flips a cgroup to enforcing when its learning window closes. */
+#define MODE_LEARN   0
+#define MODE_ENFORCE 1
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 1 << 16);
+} file_mode SEC(".maps");
 
 struct fconfig {
 	__u8 disabled;
@@ -54,16 +66,6 @@ struct {
 	__type(value, struct fconfig);
 	__uint(max_entries, 1);
 } file_config SEC(".maps");
-
-/* Enforcement: userspace inserts the FNV-1a hash of a path to DENY. When a
- * file_open resolves to a blocked path, the LSM hook returns -EPERM and the open
- * fails in-kernel. This is the capability Falco (alert-only) cannot provide. */
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __u64);
-	__type(value, __u8);
-	__uint(max_entries, 1 << 16);
-} file_blocked SEC(".maps");
 
 static __always_inline int enabled(void)
 {
@@ -117,23 +119,34 @@ int BPF_PROG(file_open, struct file *file)
 		e->path[0] = 0;
 
 	__u64 phash = hash_path(e->path, sizeof(e->path));
+	__u64 key = cgroup_id ^ phash;
 
-	/* Enforcement: if this path is on the block list, DENY the open in-kernel. */
-	if (bpf_map_lookup_elem(&file_blocked, &phash)) {
-		e->flags |= 0x80000000; /* mark as a denied event for userspace */
+	/* Enforcement mode for this cgroup (default: learning). */
+	__u8 *modep = bpf_map_lookup_elem(&file_mode, &cgroup_id);
+	__u8 mode = modep ? *modep : MODE_LEARN;
+
+	__u8 *known = bpf_map_lookup_elem(&file_allowed, &key);
+
+	if (mode == MODE_ENFORCE) {
+		if (known) {
+			/* In the learned allow-set: permit silently. */
+			bpf_ringbuf_discard(e, 0);
+			return 0;
+		}
+		/* Not learned -> DENY in-kernel and report the violation. */
+		e->flags |= 0x80000000; /* denied marker for userspace */
 		bpf_ringbuf_submit(e, 0);
-		return -1; /* -EPERM: the open fails; the process never gets the fd */
+		return -1; /* -EPERM: the open fails */
 	}
 
-	/* Observation: emit the first open of each (cgroup, path). */
-	__u64 key = cgroup_id ^ phash;
-	if (bpf_map_lookup_elem(&file_seen, &key)) {
+	/* Learning mode: record the path in the allow-set; emit only the first time
+	 * each (cgroup, path) is seen so userspace learns the file set cheaply. */
+	if (known) {
 		bpf_ringbuf_discard(e, 0);
 		return 0;
 	}
 	__u8 one = 1;
-	bpf_map_update_elem(&file_seen, &key, &one, BPF_ANY);
-
+	bpf_map_update_elem(&file_allowed, &key, &one, BPF_ANY);
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }

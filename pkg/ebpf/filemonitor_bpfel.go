@@ -67,10 +67,10 @@ type FileMonitorProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type FileMonitorMapSpecs struct {
-	FileBlocked *ebpf.MapSpec `ebpf:"file_blocked"`
+	FileAllowed *ebpf.MapSpec `ebpf:"file_allowed"`
 	FileConfig  *ebpf.MapSpec `ebpf:"file_config"`
 	FileEvents  *ebpf.MapSpec `ebpf:"file_events"`
-	FileSeen    *ebpf.MapSpec `ebpf:"file_seen"`
+	FileMode    *ebpf.MapSpec `ebpf:"file_mode"`
 }
 
 // FileMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -99,18 +99,18 @@ func (o *FileMonitorObjects) Close() error {
 //
 // It can be passed to LoadFileMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type FileMonitorMaps struct {
-	FileBlocked *ebpf.Map `ebpf:"file_blocked"`
+	FileAllowed *ebpf.Map `ebpf:"file_allowed"`
 	FileConfig  *ebpf.Map `ebpf:"file_config"`
 	FileEvents  *ebpf.Map `ebpf:"file_events"`
-	FileSeen    *ebpf.Map `ebpf:"file_seen"`
+	FileMode    *ebpf.Map `ebpf:"file_mode"`
 }
 
 func (m *FileMonitorMaps) Close() error {
 	return _FileMonitorClose(
-		m.FileBlocked,
+		m.FileAllowed,
 		m.FileConfig,
 		m.FileEvents,
-		m.FileSeen,
+		m.FileMode,
 	)
 }
 
