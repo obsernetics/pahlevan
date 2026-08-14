@@ -44,8 +44,10 @@ func TestCreatePolicyFromFlags(t *testing.T) {
 	if policy.Spec.EnforcementConfig.Mode != policyv1alpha1.EnforcementModeBlocking {
 		t.Errorf("mode = %q, want Blocking", policy.Spec.EnforcementConfig.Mode)
 	}
-	if !policy.Spec.EnforcementConfig.BlockUnknown {
-		t.Errorf("BlockUnknown should be true for blocking mode")
+	// Left nil: unset means "the default for the mode", which is block under
+	// Blocking. Pinning it would freeze the policy against a later default.
+	if policy.Spec.EnforcementConfig.BlockUnknown != nil {
+		t.Errorf("BlockUnknown should be unset, got %v", *policy.Spec.EnforcementConfig.BlockUnknown)
 	}
 	if policy.Spec.LearningConfig.Duration == nil || policy.Spec.LearningConfig.Duration.Duration != 30*time.Second {
 		t.Errorf("duration = %v, want 30s", policy.Spec.LearningConfig.Duration)

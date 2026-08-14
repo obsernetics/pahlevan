@@ -286,6 +286,11 @@ func (in *EnforcementConfig) DeepCopyInto(out *EnforcementConfig) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
+	if in.BlockUnknown != nil {
+		in, out := &in.BlockUnknown, &out.BlockUnknown
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Exceptions != nil {
 		in, out := &in.Exceptions, &out.Exceptions
 		*out = make([]EnforcementException, len(*in))

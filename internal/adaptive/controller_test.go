@@ -2,7 +2,10 @@ package adaptive
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +16,51 @@ import (
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
+// allowRecorder gives the enforcer fakes the allow-set surface and records
+// what was seeded, so tests can assert the operator's overrides reached the
+// kernel rather than just that enforcement was switched on.
+type allowRecorder struct {
+	files map[string]bool
+	execs map[string]bool
+	caps  map[uint32]bool
+	dests map[string]bool
+	err   error
+}
+
+func (a *allowRecorder) AllowFilePath(_ uint64, path string, allowed bool) error {
+	if a.files == nil {
+		a.files = map[string]bool{}
+	}
+	a.files[path] = allowed
+	return a.err
+}
+
+func (a *allowRecorder) AllowExecPath(_ uint64, path string, allowed bool) error {
+	if a.execs == nil {
+		a.execs = map[string]bool{}
+	}
+	a.execs[path] = allowed
+	return a.err
+}
+
+func (a *allowRecorder) AllowCapability(_ uint64, capability uint32, allowed bool) error {
+	if a.caps == nil {
+		a.caps = map[uint32]bool{}
+	}
+	a.caps[capability] = allowed
+	return a.err
+}
+
+func (a *allowRecorder) AllowNetworkDestination(_ uint64, ip net.IP, port uint16, allowed bool) error {
+	if a.dests == nil {
+		a.dests = map[string]bool{}
+	}
+	a.dests[net.JoinHostPort(ip.String(), fmt.Sprint(port))] = allowed
+	return a.err
+}
+
 type fakeEnforcer struct {
+	allowRecorder
 	enforced     map[uint64]bool
 	netEnforced  map[uint64]bool
 	execEnforced map[uint64]bool
@@ -55,6 +102,7 @@ func (f *fakeEnforcer) SetCapabilityEnforcement(cgroupID uint64, enforce bool) e
 // failingEnforcer fails every call and counts the attempts, so tests can assert
 // that a rollback still tries every setter and still completes.
 type failingEnforcer struct {
+	allowRecorder
 	file, net, exec, capa int
 }
 
@@ -83,6 +131,7 @@ var errEnforce = errors.New("enforcement map update failed")
 // partialEnforcer models a kernel without BPF LSM: the file (fentry-based) path
 // works, the LSM-backed ones do not.
 type partialEnforcer struct {
+	allowRecorder
 	net, exec, capa int
 }
 
@@ -104,13 +153,25 @@ func (f *partialEnforcer) SetCapabilityEnforcement(uint64, bool) error {
 }
 
 type fakePolicies struct {
-	window   time.Duration
-	blocking bool
-	ok       bool
+	window      time.Duration
+	gracePeriod time.Duration
+	blocking    bool
+	ok          bool
+	overrides   Overrides
 }
 
-func (p fakePolicies) Resolve(uint64, attribution.ContainerRef) (time.Duration, bool, bool) {
-	return p.window, p.blocking, p.ok
+func (p fakePolicies) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
+	mode := ModeMonitoring
+	if p.blocking {
+		mode = ModeBlocking
+	}
+	return Decision{
+		PolicyName:  "test",
+		Mode:        mode,
+		Window:      p.window,
+		GracePeriod: p.gracePeriod,
+		Overrides:   p.overrides,
+	}, p.ok
 }
 
 func TestController_LearnThenEnforce(t *testing.T) {
@@ -196,3 +257,71 @@ func TestController_WritesSeccompProfileOnEnforce(t *testing.T) {
 }
 
 func (p fakePolicies) PodMeta(string) (string, string, bool) { return "", "", false }
+
+// switchablePolicies lets a test change the governing mode between reconciles,
+// which is how an operator editing a PahlevanPolicy actually behaves.
+type switchablePolicies struct {
+	window time.Duration
+	mode   Mode
+	ok     bool
+}
+
+func (p *switchablePolicies) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
+	return Decision{PolicyName: "switchable", Mode: p.mode, Window: p.window}, p.ok
+}
+
+func (p *switchablePolicies) PodMeta(string) (string, string, bool) { return "", "", false }
+
+// orderedEnforcer records the sequence of calls so a test can assert that
+// allow-set seeding happens before enforcement is switched on.
+type orderedEnforcer struct {
+	calls []string
+}
+
+func (o *orderedEnforcer) SetFileEnforcement(_ uint64, enforce bool) error {
+	if enforce {
+		o.calls = append(o.calls, "enforce:file")
+	}
+	return nil
+}
+func (o *orderedEnforcer) SetNetworkEnforcement(uint64, bool) error    { return nil }
+func (o *orderedEnforcer) SetExecEnforcement(uint64, bool) error       { return nil }
+func (o *orderedEnforcer) SetCapabilityEnforcement(uint64, bool) error { return nil }
+
+func (o *orderedEnforcer) AllowFilePath(_ uint64, path string, _ bool) error {
+	o.calls = append(o.calls, "seed:"+path)
+	return nil
+}
+func (o *orderedEnforcer) AllowExecPath(uint64, string, bool) error   { return nil }
+func (o *orderedEnforcer) AllowCapability(uint64, uint32, bool) error { return nil }
+func (o *orderedEnforcer) AllowNetworkDestination(uint64, net.IP, uint16, bool) error {
+	return nil
+}
+
+func indexOf(ss []string, want string) int {
+	for i, s := range ss {
+		if s == want {
+			return i
+		}
+	}
+	return -1
+}
+
+var assertAnError = errors.New("allow-set write failed")
+
+// readOnlyProfile returns the single generated seccomp profile in dir.
+func readOnlyProfile(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read seccomp dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one profile, got %d", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	return string(data)
+}

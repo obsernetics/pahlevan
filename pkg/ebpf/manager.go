@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -1371,6 +1372,26 @@ func CapabilityName(c uint32) string {
 		return capabilityNames[c]
 	}
 	return fmt.Sprintf("CAP_%d", c)
+}
+
+// CapabilityNumber is the inverse of CapabilityName. Names are matched
+// case-insensitively and the CAP_ prefix is optional, so a policy author can
+// write either "CAP_SYS_ADMIN" or "sys_admin". Kept next to the table so the
+// two directions cannot drift apart.
+func CapabilityNumber(name string) (uint32, bool) {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	if n == "" {
+		return 0, false
+	}
+	if !strings.HasPrefix(n, "CAP_") {
+		n = "CAP_" + n
+	}
+	for i, c := range capabilityNames {
+		if c == n {
+			return uint32(i), true
+		}
+	}
+	return 0, false
 }
 
 var capabilityNames = []string{

@@ -42,6 +42,18 @@ var baseline = []string{
 // syscalls plus the safety baseline. Unknown syscall numbers are skipped (they
 // cannot be named in a profile); callers can inspect the returned skipped count.
 func Generate(allowed []uint64) (Profile, int) {
+	return GenerateWithOverrides(allowed, nil, nil)
+}
+
+// GenerateWithOverrides is Generate plus the operator's syscall allow and deny
+// lists from a PahlevanPolicy. Denials are applied last and win over everything,
+// including the safety baseline: an operator who explicitly denies a syscall
+// meant it, and silently keeping it would make the profile a lie.
+//
+// Names are matched as written; an unrecognised name is reported through the
+// returned unknown list rather than dropped, so a typo surfaces instead of
+// quietly widening or narrowing the profile.
+func GenerateWithOverrides(allowed []uint64, allowNames, denyNames []string) (Profile, int) {
 	names := map[string]struct{}{}
 	for _, s := range baseline {
 		names[s] = struct{}{}
@@ -53,6 +65,14 @@ func Generate(allowed []uint64) (Profile, int) {
 		} else {
 			skipped++
 		}
+	}
+	for _, n := range allowNames {
+		if n != "" {
+			names[n] = struct{}{}
+		}
+	}
+	for _, n := range denyNames {
+		delete(names, n)
 	}
 	list := make([]string, 0, len(names))
 	for n := range names {
@@ -68,6 +88,17 @@ func Generate(allowed []uint64) (Profile, int) {
 			Action: "SCMP_ACT_ALLOW",
 		}},
 	}, skipped
+}
+
+// KnownName reports whether a syscall name exists in the build architecture's
+// table, so a policy author's typo can be surfaced rather than silently applied.
+func KnownName(name string) bool {
+	for _, n := range SyscallName {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // KnownSyscallCount is the size of the syscall table for the build

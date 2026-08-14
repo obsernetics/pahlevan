@@ -239,7 +239,8 @@ func NewPolicyDescribeCommand() *cobra.Command {
 			fmt.Fprintf(writer.Writer, "    Lifecycle Aware:\t%t\n", policy.Spec.LearningConfig.LifecycleAware)
 			fmt.Fprintf(writer.Writer, "  Enforcement Config:\n")
 			fmt.Fprintf(writer.Writer, "    Mode:\t\t%s\n", policy.Spec.EnforcementConfig.Mode)
-			fmt.Fprintf(writer.Writer, "    Block Unknown:\t%t\n", policy.Spec.EnforcementConfig.BlockUnknown)
+			fmt.Fprintf(writer.Writer, "    Block Unknown:\t%s\n",
+				describeBlockUnknown(policy.Spec.EnforcementConfig))
 			fmt.Fprintf(writer.Writer, "\n")
 
 			// Status section
@@ -461,7 +462,7 @@ func NewPolicyUpdateCommand() *cobra.Command {
 			}
 
 			if cmd.Flags().Changed("block-unknown") {
-				policy.Spec.EnforcementConfig.BlockUnknown = blockUnknown
+				policy.Spec.EnforcementConfig.BlockUnknown = &blockUnknown
 				updated = true
 			}
 
@@ -686,8 +687,9 @@ func createPolicyFromFlags(learningTime, enforcementMode, selector, namespace st
 				LifecycleAware: true,
 			},
 			EnforcementConfig: policyv1alpha1.EnforcementConfig{
-				Mode:         mode,
-				BlockUnknown: mode == "Blocking",
+				Mode: mode,
+				// Left nil so the mode's default applies; setting it explicitly
+				// would pin the policy against a later change of that default.
 			},
 		},
 	}
@@ -881,4 +883,16 @@ func parseSelector(selectorStr string) (map[string]string, error) {
 	}
 
 	return matchLabels, nil
+}
+
+// describeBlockUnknown renders the tri-state field. Unset is not the same as
+// false: it means the mode's default applies, which is block under Blocking.
+func describeBlockUnknown(c policyv1alpha1.EnforcementConfig) string {
+	if c.BlockUnknown != nil {
+		return fmt.Sprintf("%t", *c.BlockUnknown)
+	}
+	if c.Mode == policyv1alpha1.EnforcementModeBlocking {
+		return "true (default for Blocking)"
+	}
+	return "false (default for " + string(c.Mode) + ")"
 }

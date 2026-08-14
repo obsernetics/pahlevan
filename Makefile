@@ -72,13 +72,18 @@ help: ## Display this help.
 
 ##@ Development
 
+# hack/vm/smoke is its own Go module, so "./..." makes controller-gen try to
+# load it against this module's go.sum and fail. Generation only ever needs the
+# API types and the controllers anyway.
+GEN_PATHS ?= paths="./pkg/apis/..." paths="./internal/..."
+
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd output:rbac:artifacts:config=config/rbac
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook $(GEN_PATHS) output:crd:artifacts:config=config/crd output:rbac:artifacts:config=config/rbac
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" $(GEN_PATHS)
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

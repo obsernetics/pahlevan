@@ -92,8 +92,13 @@ type EnforcementConfig struct {
 	// AlertOnly enables alert-only mode for testing
 	AlertOnly bool `json:"alertOnly,omitempty"`
 
-	// BlockUnknown blocks unknown syscalls/access patterns
-	BlockUnknown bool `json:"blockUnknown,omitempty"`
+	// BlockUnknown blocks behaviour outside the learned baseline. Nil means
+	// "the default for the mode", which is true under Blocking: default-deny of
+	// unlearned behaviour is the only enforcement the data plane performs, so a
+	// Blocking policy that did not block it would enforce nothing. Explicitly
+	// false downgrades the policy to Monitoring. A bare bool could not express
+	// the difference between unset and false.
+	BlockUnknown *bool `json:"blockUnknown,omitempty"`
 
 	// Exceptions defines enforcement exceptions
 	Exceptions []EnforcementException `json:"exceptions,omitempty"`
