@@ -80,7 +80,7 @@ Best for: Production deployments with customization
 
 ```bash
 # Add repository
-helm repo add pahlevan https://obsernetics.github.io/pahlevan-charts
+helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
 helm repo update
 
 # Install with custom values
