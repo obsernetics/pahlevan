@@ -1099,3 +1099,53 @@ func TestVMWriteIsNotGrantedByALearnedRead(t *testing.T) {
 		t.Error("a revoked WRITE should be DENIED, but it succeeded")
 	}
 }
+
+// TestVMOomScoreAdjStaysWritableUnderEnforcement pins the one exemption in the
+// file hook.
+//
+// A container runtime writes /proc/<pid>/oom_score_adj to enter an
+// already-running container. Under enforcement that was denied, because
+// bpf_d_path resolves /proc/self to /proc/<pid> and no fixed path can be seeded
+// for a pid that changes every time. The result was that enforcing a policy
+// broke `kubectl exec` and exec liveness probes, which is how a security tool
+// gets switched off.
+//
+// The test also asserts the exemption is narrow: another /proc/<pid> file is
+// still governed. VM-only.
+func TestVMOomScoreAdjStaysWritableUnderEnforcement(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	coll, cgID, _ := seedTestFixture(t, "oom")
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-oom-%d", os.Getpid())
+	run := func(builtin string) error {
+		full := fmt.Sprintf("echo $$ > %s/cgroup.procs || exit 9; %s", cg, builtin)
+		return exec.Command("/bin/sh", "-c", full).Run()
+	}
+
+	// Learn nothing about /proc at all.
+	if err := run("read line < /etc/hostname"); err != nil {
+		t.Fatalf("learning read failed: %v", err)
+	}
+	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce mode: %v", err)
+	}
+
+	// The runtime's write must go through even though it was never learned.
+	if err := run("echo 0 > /proc/self/oom_score_adj"); err != nil {
+		t.Errorf("writing /proc/self/oom_score_adj must be permitted so the "+
+			"container runtime can enter the container: %v", err)
+	} else {
+		t.Log("oom_score_adj writable under enforcement, so kubectl exec works")
+	}
+
+	// The exemption must not extend to the rest of /proc. This one was never
+	// learned either, so it must be refused.
+	if err := run("read line < /proc/self/environ"); err == nil {
+		t.Error("/proc/self/environ should still be DENIED: the exemption is meant " +
+			"to cover oom_score_adj alone, not all of /proc")
+	} else {
+		t.Logf("/proc/self/environ still denied, exemption is narrow: %v", err)
+	}
+}
