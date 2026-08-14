@@ -564,3 +564,21 @@ em { color: var(--text); font-style: normal; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* --- Overflow hardening -----------------------------------------------------
+   Grid/flex children default to min-width:auto (their content size), so a wide
+   <pre> widens its column and pushes the page sideways. Letting these items
+   shrink to zero makes the code block's own overflow-x:auto take over, and
+   images/SVGs never exceed their container. */
+img, svg { max-width: 100%; }
+img { height: auto; }
+.hero .container,
+.qs-grid, .req-grid, .arch-layout,
+.features-grid, .steps, .compare > *, .section .container { min-width: 0; }
+.hero .container > *,
+.qs-grid > *, .qs-col,
+.req-grid > *, .arch-layout > *,
+.feature-card, .step, .step > * { min-width: 0; }
+.code-block, .code-block pre { min-width: 0; max-width: 100%; }
+/* Wrap long tokens in prose (not code) so nothing forces horizontal scroll. */
+p, li, h1, h2, h3, .hero-description, .section-header p { overflow-wrap: anywhere; }
