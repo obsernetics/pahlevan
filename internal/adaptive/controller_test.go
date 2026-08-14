@@ -11,7 +11,8 @@ import (
 )
 
 type fakeEnforcer struct {
-	enforced map[uint64]bool
+	enforced    map[uint64]bool
+	netEnforced map[uint64]bool
 }
 
 func (f *fakeEnforcer) SetFileEnforcement(cgroupID uint64, enforce bool) error {
@@ -19,6 +20,14 @@ func (f *fakeEnforcer) SetFileEnforcement(cgroupID uint64, enforce bool) error {
 		f.enforced = map[uint64]bool{}
 	}
 	f.enforced[cgroupID] = enforce
+	return nil
+}
+
+func (f *fakeEnforcer) SetNetworkEnforcement(cgroupID uint64, enforce bool) error {
+	if f.netEnforced == nil {
+		f.netEnforced = map[uint64]bool{}
+	}
+	f.netEnforced[cgroupID] = enforce
 	return nil
 }
 

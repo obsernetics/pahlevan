@@ -54,15 +54,16 @@ type NetworkMonitorSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetworkMonitorProgramSpecs struct {
-	TcpConnect *ebpf.ProgramSpec `ebpf:"tcp_connect"`
+	SocketConnect *ebpf.ProgramSpec `ebpf:"socket_connect"`
 }
 
 // NetworkMonitorMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetworkMonitorMapSpecs struct {
-	NetworkEvents *ebpf.MapSpec `ebpf:"network_events"`
-	NetworkSeen   *ebpf.MapSpec `ebpf:"network_seen"`
+	NetworkAllowed *ebpf.MapSpec `ebpf:"network_allowed"`
+	NetworkEvents  *ebpf.MapSpec `ebpf:"network_events"`
+	NetworkMode    *ebpf.MapSpec `ebpf:"network_mode"`
 }
 
 // NetworkMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -91,14 +92,16 @@ func (o *NetworkMonitorObjects) Close() error {
 //
 // It can be passed to LoadNetworkMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetworkMonitorMaps struct {
-	NetworkEvents *ebpf.Map `ebpf:"network_events"`
-	NetworkSeen   *ebpf.Map `ebpf:"network_seen"`
+	NetworkAllowed *ebpf.Map `ebpf:"network_allowed"`
+	NetworkEvents  *ebpf.Map `ebpf:"network_events"`
+	NetworkMode    *ebpf.Map `ebpf:"network_mode"`
 }
 
 func (m *NetworkMonitorMaps) Close() error {
 	return _NetworkMonitorClose(
+		m.NetworkAllowed,
 		m.NetworkEvents,
-		m.NetworkSeen,
+		m.NetworkMode,
 	)
 }
 
@@ -112,12 +115,12 @@ type NetworkMonitorVariables struct {
 //
 // It can be passed to LoadNetworkMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetworkMonitorPrograms struct {
-	TcpConnect *ebpf.Program `ebpf:"tcp_connect"`
+	SocketConnect *ebpf.Program `ebpf:"socket_connect"`
 }
 
 func (p *NetworkMonitorPrograms) Close() error {
 	return _NetworkMonitorClose(
-		p.TcpConnect,
+		p.SocketConnect,
 	)
 }
 

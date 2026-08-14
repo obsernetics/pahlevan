@@ -274,12 +274,13 @@ func (m *Manager) AttachPrograms() error {
 		}
 	}
 
-	// Attach the network monitor via a kprobe on tcp_connect (best-effort).
+	// Attach the network monitor via the LSM socket_connect hook (best-effort).
+	// LSM (vs a kprobe) lets us DENY unlearned egress in-kernel, mirroring files.
 	if m.networkCollection != nil {
-		if prog := m.networkCollection.Programs["tcp_connect"]; prog != nil {
-			l, err := link.Kprobe("tcp_connect", prog, nil)
+		if prog := m.networkCollection.Programs["socket_connect"]; prog != nil {
+			l, err := link.AttachLSM(link.LSMOptions{Program: prog})
 			if err != nil {
-				log.Log.V(0).Info("kprobe tcp_connect attach failed; network observation disabled", "error", err.Error())
+				log.Log.V(0).Info("lsm/socket_connect attach failed; network observation/enforcement disabled", "error", err.Error())
 			} else {
 				m.networkLinks = append(m.networkLinks, l)
 			}
@@ -918,4 +919,24 @@ func (m *Manager) LearnedFileCount() int {
 		n++
 	}
 	return n
+}
+
+// SetNetworkEnforcement flips a cgroup between learning and enforcing for the
+// network destination allow-list. In enforcing mode, connect() to a destination
+// not in the learned allow-set is denied in-kernel.
+func (m *Manager) SetNetworkEnforcement(cgroupID uint64, enforce bool) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.networkCollection == nil {
+		return fmt.Errorf("network monitor not loaded (bpf LSM unavailable?)")
+	}
+	nm := m.networkCollection.Maps["network_mode"]
+	if nm == nil {
+		return fmt.Errorf("network_mode map not found")
+	}
+	if enforce {
+		return nm.Put(cgroupID, uint8(1))
+	}
+	_ = nm.Delete(cgroupID)
+	return nil
 }

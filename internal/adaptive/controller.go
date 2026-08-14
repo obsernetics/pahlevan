@@ -10,6 +10,7 @@ package adaptive
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ const (
 // the loop is testable without a live kernel.
 type Enforcer interface {
 	SetFileEnforcement(cgroupID uint64, enforce bool) error
+	SetNetworkEnforcement(cgroupID uint64, enforce bool) error
 }
 
 // PolicyResolver decides, for a given cgroup, whether a policy applies and how
@@ -48,6 +50,7 @@ type cgState struct {
 	ref       attribution.ContainerRef
 	syscalls  map[uint64]struct{}
 	files     map[string]struct{}
+	dests     map[string]struct{}
 }
 
 // Controller tracks per-cgroup learning state and flips cgroups to enforcement
@@ -90,6 +93,7 @@ func (c *Controller) track(cgroupID uint64) *cgState {
 			ref:       ref,
 			syscalls:  make(map[uint64]struct{}),
 			files:     make(map[string]struct{}),
+			dests:     make(map[string]struct{}),
 		}
 		c.state[cgroupID] = st
 	}
@@ -124,8 +128,23 @@ func (c *Controller) HandleFileEvent(e *ebpf.FileEvent) error {
 	return nil
 }
 
-// HandleNetworkEvent is accepted for the EventHandler interface.
-func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error { return nil }
+// HandleNetworkEvent records an observed egress destination for the learning set.
+func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
+	if e.CgroupID == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.track(e.CgroupID)
+	if st.phase == PhaseLearning {
+		st.dests[netKey(e.DstIP, e.DstPort)] = struct{}{}
+	}
+	return nil
+}
+
+func netKey(ip uint32, port uint16) string {
+	return fmt.Sprintf("%d:%d", ip, port)
+}
 
 // Profile is a snapshot of what a container learned.
 type Profile struct {
@@ -173,12 +192,17 @@ func (c *Controller) Reconcile() {
 			continue
 		}
 		if err := c.enforcer.SetFileEnforcement(id, true); err != nil {
-			c.log.Error(err, "failed to enable enforcement", "cgroup", id)
+			c.log.Error(err, "failed to enable file enforcement", "cgroup", id)
 			continue
+		}
+		if err := c.enforcer.SetNetworkEnforcement(id, true); err != nil {
+			// File enforcement is on; network is best-effort (needs bpf LSM too).
+			c.log.V(1).Info("network enforcement unavailable", "cgroup", id, "error", err.Error())
 		}
 		st.phase = PhaseEnforcing
 		c.log.Info("container transitioned to enforcing",
-			"cgroup", id, "pod", st.ref.PodUID, "syscalls", len(st.syscalls), "files", len(st.files))
+			"cgroup", id, "pod", st.ref.PodUID,
+			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests))
 	}
 }
 
