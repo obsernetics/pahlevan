@@ -635,6 +635,11 @@ func (h *PolicyEventHandler) HandleFileEvent(event *ebpf.FileEvent) error {
 	return nil
 }
 
+func (h *PolicyEventHandler) HandleProcessEvent(event *ebpf.ProcessEvent) error {
+	// Handle process (exec) events
+	return nil
+}
+
 // getWorkloadForPolicy finds the workload object that matches the policy selector
 func (r *PahlevanPolicyReconciler) getWorkloadForPolicy(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) (metav1.Object, error) {
 	// Try to find Deployment first

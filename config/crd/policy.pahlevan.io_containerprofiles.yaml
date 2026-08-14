@@ -107,7 +107,7 @@ spec:
           status:
             description: |-
               ContainerProfileStatus is the learned behavioural baseline reported by the
-              node agent. It is what the kernel enforces once the container is enforcing —
+              node agent. It is what the kernel enforces once the container is enforcing -
               a first-class, inspectable, git-backupable record (no equivalent in Falco or
               Tetragon).
             properties:
@@ -125,6 +125,12 @@ spec:
                 description: LastUpdated is when the agent last refreshed this profile.
                 format: date-time
                 type: string
+              learnedExecutables:
+                description: LearnedExecutables is the set of binary paths the container
+                  executed.
+                items:
+                  type: string
+                type: array
               learnedFiles:
                 description: LearnedFiles is the set of file paths the container opened
                   during learning.

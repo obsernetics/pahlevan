@@ -245,6 +245,11 @@ func (in *ContainerProfileStatus) DeepCopyInto(out *ContainerProfileStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.LearnedExecutables != nil {
+		in, out := &in.LearnedExecutables, &out.LearnedExecutables
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.FirstSeen != nil {
 		in, out := &in.FirstSeen, &out.FirstSeen
 		*out = (*in).DeepCopy()
