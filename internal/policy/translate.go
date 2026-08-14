@@ -48,6 +48,28 @@ func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Tim
 	if spec.EnforcementConfig.GracePeriod != nil {
 		d.GracePeriod = spec.EnforcementConfig.GracePeriod.Duration
 	}
+
+	d.SelfHealing = adaptive.SelfHealingDecision{
+		Enabled:   spec.SelfHealing.Enabled,
+		Threshold: int(spec.SelfHealing.RollbackThreshold),
+	}
+	if spec.SelfHealing.RollbackWindow != nil {
+		d.SelfHealing.Window = spec.SelfHealing.RollbackWindow.Duration
+	}
+	if d.SelfHealing.Threshold < 0 {
+		warnings = append(warnings, "selfHealing.rollbackThreshold is negative; the default is used")
+		d.SelfHealing.Threshold = 0
+	}
+	if d.SelfHealing.Window < 0 {
+		warnings = append(warnings, "selfHealing.rollbackWindow is negative; the default is used")
+		d.SelfHealing.Window = 0
+	}
+	if spec.SelfHealing.RecoveryStrategy != "" &&
+		spec.SelfHealing.RecoveryStrategy != policyv1alpha1.RecoveryStrategyRollback {
+		warnings = append(warnings, fmt.Sprintf(
+			"selfHealing.recoveryStrategy %q is not implemented; the only recovery is Rollback, "+
+				"which returns the container to learning", spec.SelfHealing.RecoveryStrategy))
+	}
 	if d.Window < 0 {
 		warnings = append(warnings, "learningConfig.duration is negative; treated as zero")
 		d.Window = 0

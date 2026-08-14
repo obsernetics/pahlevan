@@ -158,6 +158,12 @@ type fakePolicies struct {
 	blocking    bool
 	ok          bool
 	overrides   Overrides
+	// selfHealing mirrors spec.selfHealing. It defaults to enabled because
+	// that is what most tests here are exercising; the disabled case has its
+	// own tests in rollback_test.go.
+	selfHealingDisabled bool
+	rollbackThreshold   int
+	rollbackWindow      time.Duration
 }
 
 func (p fakePolicies) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
@@ -171,6 +177,11 @@ func (p fakePolicies) Resolve(uint64, attribution.ContainerRef) (Decision, bool)
 		Window:      p.window,
 		GracePeriod: p.gracePeriod,
 		Overrides:   p.overrides,
+		SelfHealing: SelfHealingDecision{
+			Enabled:   !p.selfHealingDisabled,
+			Threshold: p.rollbackThreshold,
+			Window:    p.rollbackWindow,
+		},
 	}, p.ok
 }
 
@@ -267,7 +278,12 @@ type switchablePolicies struct {
 }
 
 func (p *switchablePolicies) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
-	return Decision{PolicyName: "switchable", Mode: p.mode, Window: p.window}, p.ok
+	return Decision{
+		PolicyName:  "switchable",
+		Mode:        p.mode,
+		Window:      p.window,
+		SelfHealing: SelfHealingDecision{Enabled: true},
+	}, p.ok
 }
 
 func (p *switchablePolicies) PodMeta(string) (string, string, bool) { return "", "", false }
