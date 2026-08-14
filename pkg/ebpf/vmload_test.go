@@ -588,3 +588,67 @@ func TestVMProcessAncestry(t *testing.T) {
 	}
 	t.Fatal("no exec event with parent ancestry observed")
 }
+
+// TestVMIPv6EgressGoverned proves IPv6 egress is subject to enforcement. The hook
+// previously returned early on any non-AF_INET family, so an attacker could
+// exfiltrate over IPv6 with enforcement enabled. VM-only.
+func TestVMIPv6EgressGoverned(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadNetworkMonitor()
+	if err != nil {
+		t.Fatalf("LoadNetworkMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["socket_connect"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(socket_connect): %v", err)
+	}
+	defer l.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["network_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// Dial an IPv6 loopback destination; connect() reaches socket_connect even
+	// when the port is closed.
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			c, _ := net.DialTimeout("tcp6", "[::1]:59998", 200*time.Millisecond)
+			if c != nil {
+				c.Close()
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseNetworkEvent(rec.RawSample)
+		if ev == nil || ev.Family != 10 {
+			continue // ignore any concurrent IPv4 traffic
+		}
+		t.Logf("observed IPv6 egress event: dst=%s cgroup=%d comm=%q",
+			ev.DestinationString(), ev.CgroupID, ev.Comm)
+		if ev.DstPort == 0 {
+			t.Error("expected a destination port on the IPv6 event")
+		}
+		return
+	}
+	t.Fatal("no IPv6 egress event observed: IPv6 connects are not being governed")
+}

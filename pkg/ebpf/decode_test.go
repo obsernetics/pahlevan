@@ -32,7 +32,12 @@ func buildFileRec(cgroup, ts uint64, pid, uid, gid, flags uint32, comm, path str
 }
 
 func buildNetRec(cgroup, ts uint64, pid, saddr, daddr uint32, sport, dport uint16, proto, dir uint8, comm string) []byte {
-	b := make([]byte, 56)
+	return buildNetRecFamily(cgroup, ts, pid, saddr, daddr, sport, dport, proto, dir, 2, nil, comm)
+}
+
+// buildNetRecFamily builds the 72-byte dual-stack network_event wire record.
+func buildNetRecFamily(cgroup, ts uint64, pid, saddr, daddr uint32, sport, dport uint16, proto, dir, family uint8, daddr6 []byte, comm string) []byte {
+	b := make([]byte, 72)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
 	binary.LittleEndian.PutUint64(b[8:], ts)
 	binary.LittleEndian.PutUint32(b[16:], pid)
@@ -42,7 +47,9 @@ func buildNetRec(cgroup, ts uint64, pid, saddr, daddr uint32, sport, dport uint1
 	binary.LittleEndian.PutUint16(b[30:], dport)
 	b[32] = proto
 	b[33] = dir
-	copy(b[34:50], comm)
+	b[34] = family
+	copy(b[36:52], daddr6)
+	copy(b[52:68], comm)
 	return b
 }
 
@@ -236,5 +243,49 @@ func BenchmarkCapabilityName(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = CapabilityName(uint32(i % 41))
+	}
+}
+
+func TestParseNetworkEventIPv6(t *testing.T) {
+	// 2001:db8::1
+	v6 := []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
+	ev := parseNetworkEvent(buildNetRecFamily(7004, 9, 42, 0, 0, 0, 443, 6, 0x80, 10, v6, "curl"))
+	if ev == nil {
+		t.Fatal("nil event")
+	}
+	if ev.Family != 10 {
+		t.Errorf("family = %d, want 10 (AF_INET6)", ev.Family)
+	}
+	if ev.DstPort != 443 {
+		t.Errorf("dport = %d", ev.DstPort)
+	}
+	if ev.Comm != "curl" {
+		t.Errorf("comm = %q, want curl", ev.Comm)
+	}
+	if got := ev.DestinationString(); got != "[2001:db8::1]:443" {
+		t.Errorf("DestinationString() = %q, want [2001:db8::1]:443", got)
+	}
+	if ev.Direction&0x80 == 0 {
+		t.Error("expected denied marker preserved for IPv6 denials")
+	}
+}
+
+func TestNetworkDestinationStringIPv4(t *testing.T) {
+	// 127.0.0.1 in little-endian host order as the kernel reports it.
+	ev := parseNetworkEvent(buildNetRecFamily(1, 1, 1, 0, 0x0100007f, 0, 8080, 6, 0, 2, nil, "app"))
+	if ev == nil {
+		t.Fatal("nil")
+	}
+	if got := ev.DestinationString(); got != "127.0.0.1:8080" {
+		t.Errorf("DestinationString() = %q, want 127.0.0.1:8080", got)
+	}
+}
+
+func BenchmarkDestinationStringIPv6(b *testing.B) {
+	v6 := []byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01}
+	ev := parseNetworkEvent(buildNetRecFamily(1, 1, 1, 0, 0, 0, 443, 6, 0, 10, v6, "curl"))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = ev.DestinationString()
 	}
 }

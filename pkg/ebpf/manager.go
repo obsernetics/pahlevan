@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -146,8 +147,11 @@ type NetworkEvent struct {
 	SrcPort     uint16
 	DstPort     uint16
 	Protocol    uint8
-	Direction   uint8
+	Direction   uint8 // 0 = egress; bit 0x80 = denied in-kernel
 	Action      uint8
+	Family      uint8    // syscall.AF_INET (2) or AF_INET6 (10)
+	DstIP6      [16]byte // IPv6 destination; zero when Family is AF_INET
+	Comm        string   // process name, as reported by the kernel
 	Timestamp   uint64
 	CgroupID    uint64 // real attribution key from bpf_get_current_cgroup_id()
 	ContainerID string
@@ -974,8 +978,9 @@ func indexZero(b []byte) int {
 func parseNetworkEvent(data []byte) *NetworkEvent {
 	// CO-RE `struct network_event` from bpf/network_monitor.c:
 	//   __u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 saddr; __u32 daddr;
-	//   __u16 sport; __u16 dport; __u8 protocol; __u8 direction; __u8 comm[16];
-	const size = 8 + 8 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 16 // 50
+	//   __u16 sport; __u16 dport; __u8 protocol; __u8 direction; __u8 family;
+	//   __u8 pad; __u8 daddr6[16]; __u8 comm[16];   // 72 bytes
+	const size = 8 + 8 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 + 16 + 16
 	if len(data) < size {
 		return nil
 	}
@@ -989,10 +994,28 @@ func parseNetworkEvent(data []byte) *NetworkEvent {
 		DstPort:   binary.LittleEndian.Uint16(data[30:32]),
 		Protocol:  data[32],
 		Direction: data[33],
+		Family:    data[34],
 	}
+	copy(event.DstIP6[:], data[36:52])
+	comm := data[52:68]
+	if i := indexZero(comm); i >= 0 {
+		comm = comm[:i]
+	}
+	event.Comm = string(comm)
 	event.TGID = event.PID
 	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
 	return event
+}
+
+// DestinationString renders the event destination for either address family.
+func (e *NetworkEvent) DestinationString() string {
+	if e.Family == 10 { // AF_INET6
+		ip := net.IP(e.DstIP6[:])
+		return fmt.Sprintf("[%s]:%d", ip.String(), e.DstPort)
+	}
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], e.DstIP)
+	return fmt.Sprintf("%s:%d", net.IP(b[:]).String(), e.DstPort)
 }
 
 func parseFileEvent(data []byte) *FileEvent {
