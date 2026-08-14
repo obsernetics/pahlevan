@@ -176,6 +176,21 @@ func (n *NetworkInfo) Address() string {
 // ExecInfo describes an execve seen by bprm_check_security.
 type ExecInfo struct {
 	Binary string `json:"binary"`
+
+	// Ancestry is the process lineage, nearest ancestor first. A denied exec is
+	// only actionable if you can see what spawned it, so the chain leaves the
+	// process with the event rather than staying in the agent's logs.
+	Ancestry []AncestorInfo `json:"ancestry,omitempty"`
+
+	// AncestryChain renders the same lineage oldest-first for humans and for
+	// log search, e.g. "nginx -> sh -> curl".
+	AncestryChain string `json:"ancestryChain,omitempty"`
+}
+
+// AncestorInfo is one link in an exec's process lineage.
+type AncestorInfo struct {
+	PID  uint32 `json:"pid"`
+	Comm string `json:"comm"`
 }
 
 // CapabilityInfo describes a capability check seen by the LSM capable hook.

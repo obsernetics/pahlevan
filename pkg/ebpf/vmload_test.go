@@ -580,14 +580,107 @@ func TestVMProcessAncestry(t *testing.T) {
 		if ev == nil || ev.PPID == 0 {
 			continue
 		}
-		t.Logf("observed exec with ancestry: %q (pid=%d) spawned by %q (ppid=%d)",
-			ev.Filename, ev.PID, ev.ParentComm, ev.PPID)
+		t.Logf("observed exec with ancestry: %q (pid=%d) chain=%q",
+			ev.Filename, ev.PID, ev.AncestryChain())
 		if ev.ParentComm == "" {
 			t.Error("expected a parent comm on the exec event")
+		}
+		// The nearest ancestor must agree with the flat PPID/ParentComm fields
+		// that existing consumers read.
+		if len(ev.Ancestry) == 0 {
+			t.Error("expected at least one ancestry entry alongside PPID")
+		} else {
+			if ev.Ancestry[0].PID != ev.PPID {
+				t.Errorf("ancestry[0].PID = %d but PPID = %d", ev.Ancestry[0].PID, ev.PPID)
+			}
+			if ev.Ancestry[0].Comm != ev.ParentComm {
+				t.Errorf("ancestry[0].Comm = %q but ParentComm = %q", ev.Ancestry[0].Comm, ev.ParentComm)
+			}
 		}
 		return
 	}
 	t.Fatal("no exec event with parent ancestry observed")
+}
+
+// TestVMProcessAncestryChain asserts the kernel walks more than one hop. A
+// single parent says "curl ran"; the chain says "nginx spawned a shell which
+// ran curl", which is the difference between an alert and an investigation.
+// VM-only.
+func TestVMProcessAncestryChain(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["exec_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// Three nested shells, each staying alive as a real parent (no exec
+	// replacement), so the innermost binary has a genuinely deep lineage.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = exec.Command("/bin/sh", "-c",
+				"/bin/sh -c '/bin/sh -c /bin/true; :' ; :").Run()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	best := 0
+	var bestChain string
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseProcessEvent(rec.RawSample)
+		if ev == nil {
+			continue
+		}
+		if len(ev.Ancestry) > best {
+			best, bestChain = len(ev.Ancestry), ev.AncestryChain()
+		}
+		// Every recorded ancestor must be a real entry: the decoder stops at
+		// the first zero pid, so a populated slot with an empty comm would mean
+		// the kernel wrote a partial record.
+		for i, a := range ev.Ancestry {
+			if a.PID == 0 {
+				t.Errorf("ancestry[%d] has pid 0 but was not truncated", i)
+			}
+		}
+		if len(ev.Ancestry) >= 3 {
+			t.Logf("observed a %d-deep lineage: %s", len(ev.Ancestry), ev.AncestryChain())
+			return
+		}
+	}
+	t.Fatalf("deepest lineage observed was %d (%q); expected at least 3 from nested shells",
+		best, bestChain)
 }
 
 // TestVMIPv6EgressGoverned proves IPv6 egress is subject to enforcement. The hook
