@@ -53,7 +53,7 @@ func fullPahlevanPolicy() *PahlevanPolicy {
 					Operator: LabelSelectorOpIn,
 					Values:   []string{"frontend"},
 				}},
-				NamespaceSelector: &LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+				NamespaceSelector: &NamespaceSelector{MatchLabels: map[string]string{"env": "prod"}},
 			},
 			LearningConfig: LearningConfig{
 				Duration:       dur(5 * time.Minute),

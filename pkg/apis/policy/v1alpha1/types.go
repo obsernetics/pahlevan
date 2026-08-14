@@ -42,8 +42,28 @@ type LabelSelector struct {
 	// MatchExpressions is a list of label selector requirements
 	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty"`
 
-	// NamespaceSelector specifies target namespaces
-	NamespaceSelector *LabelSelector `json:"namespaceSelector,omitempty"`
+	// NamespaceSelector specifies target namespaces, matched against the
+	// namespace's own labels.
+	NamespaceSelector *NamespaceSelector `json:"namespaceSelector,omitempty"`
+}
+
+// NamespaceSelector selects namespaces by their labels.
+//
+// It is a distinct type from LabelSelector rather than a self-reference, for
+// two reasons. A namespace selector that itself carried a namespace selector
+// is meaningless. And the self-reference made the CRD uninstallable:
+// controller-gen cannot express infinite recursion, so it truncated the chain
+// into a node carrying a description and no type, and the API server rejects
+// that with "must have a type". Applying install.yaml failed partway through
+// and left a half-installed cluster.
+type NamespaceSelector struct {
+	// MatchLabels is a map of {key,value} pairs matched against namespace labels.
+	// Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+	// selecting a namespace by name works through this field.
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+
+	// MatchExpressions is a list of namespace label selector requirements.
+	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty"`
 }
 
 // LabelSelectorRequirement contains a key, operator, and values for label selection
