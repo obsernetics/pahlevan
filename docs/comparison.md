@@ -274,7 +274,7 @@ which is not a story.
 | Policy status counters | Real. The operator rolls the per-container `ContainerProfile` denial counts up onto the policy: `blockedFileAccess`, `blockedNetworkConnections`, `blockedExecs`, `blockedCapabilities`, `blockedTotal`, plus enforcing/total container counts. `blockedSyscalls` stays zero and says why: seccomp denials are not reported back to the agent | n/a | n/a |
 | Health probes | Yes, `:8081` | Yes | Yes |
 | OpenTelemetry tracing | Real OTLP/gRPC and console span exporters, plus a `StartSpan` API proven by tests to record spans and nest them. Instrumentation coverage of the codebase is still thin | Not a tracing tool, but the ecosystem covers it | Metrics focused |
-| Grafana dashboards | Types exist in code, nothing is exported | Community dashboards | Published dashboards |
+| Grafana dashboards | One published dashboard in `deploy/monitoring/`, with ServiceMonitors for the Prometheus Operator. Two tests assert every panel queries a metric the code actually records, and that none of them need `--metrics-detail=high` | Community dashboards | Published dashboards |
 
 ## Multi-architecture support
 
@@ -376,8 +376,10 @@ Listed plainly, worst first. Every item here is real and current.
    after admission, and the operator deliberately runs without a mutating
    webhook, so today an operator has to reference the generated profile
    themselves.
-10. **Grafana dashboards are not published.** The metrics are real now; nothing
-    ships to visualise them.
+10. **No published Prometheus alert rules.** A dashboard and ServiceMonitors
+    ship in `deploy/monitoring/`, but there are no alerting rules, so the
+    denial-rate spike that signals a bad baseline has to be noticed by a human
+    looking at a graph.
 11. **No syscall arguments, no command-line arguments, no image, no pod labels,
     no workload owner** on events. Both comparators have all of this.
 12. **eBPF load tests and the benchmark are not automated.** The unit suite,
