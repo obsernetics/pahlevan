@@ -242,6 +242,11 @@ func (m *Manager) AttachPrograms() error {
 	if m.syscallCollection == nil {
 		return fmt.Errorf("cannot attach: eBPF programs not loaded (call LoadPrograms first)")
 	}
+	// Idempotent: if programs are already attached, do nothing. Start() calls this
+	// too, so a caller doing LoadPrograms+AttachPrograms+Start must not double-attach.
+	if len(m.syscallLinks) > 0 || len(m.fileLinks) > 0 || len(m.networkLinks) > 0 {
+		return nil
+	}
 
 	// Attach the single raw tracepoint on sys_enter. One program observes every
 	// syscall (vs a hand-picked handful of tracepoints), which is what the
