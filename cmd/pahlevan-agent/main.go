@@ -63,6 +63,7 @@ func main() {
 		exportFile           string
 		exportWebhook        string
 		exportDenialsOnly    bool
+		metricsDetail        string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -81,6 +82,9 @@ func main() {
 		"Write JSON-lines security events to this file for `pahlevan events` and log shippers (empty disables).")
 	flag.StringVar(&exportWebhook, "export-webhook", os.Getenv("PAHLEVAN_EXPORT_WEBHOOK"),
 		"POST batched JSON security events to this URL (empty disables).")
+	flag.StringVar(&metricsDetail, "metrics-detail", "basic",
+		"Metrics cardinality: basic (aggregate, default) or high (adds per-container, "+
+			"per-syscall and per-path series - expensive across a fleet).")
 	flag.BoolVar(&exportDenialsOnly, "export-denials-only", true,
 		"Export only in-kernel denials rather than every observation.")
 
@@ -105,7 +109,9 @@ func main() {
 	// Register metrics with the controller-runtime registry, which is the one
 	// actually served on the metrics endpoint. A private registry would mean the
 	// metrics exist but are never scrapeable.
-	metricsManager := metrics.NewManagerWithRegisterer(ctrlmetrics.Registry, ctrlmetrics.Registry)
+	metricsManager := metrics.NewManagerWithDetail(
+		ctrlmetrics.Registry, ctrlmetrics.Registry, metrics.ParseDetailLevel(metricsDetail))
+	setupLog.Info("metrics registered", "detail", metricsManager.Detail())
 
 	// Data plane: initialize the eBPF manager. Program load/attach happens inside
 	// the manager and requires a privileged, eBPF-capable kernel (the DaemonSet
@@ -157,6 +163,7 @@ func main() {
 	adaptiveCtl.SeccompDir = seccompDir
 	adaptiveCtl.Client = mgr.GetClient()
 	adaptiveCtl.Node = nodeName
+	adaptiveCtl.Metrics = metricsManager
 
 	// Event export: JSON-lines file and/or webhook, so events leave the process
 	// for `pahlevan events`, log shippers, and SIEMs.

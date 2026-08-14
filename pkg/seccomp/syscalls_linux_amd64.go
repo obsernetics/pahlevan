@@ -6,6 +6,12 @@ package seccomp
 // from </usr/include/x86_64-linux-gnu/asm/unistd_64.h>. Used to render seccomp profiles (which use names) from
 // the numeric syscall set learned by the eBPF data plane.
 // Regenerate with `make syscall-tables`.
+// seccompArchitectures are the architectures a profile generated from this
+// syscall table is valid for. The numbers in SyscallName are the x86_64 ABI's,
+// so naming any other architecture here would produce a profile that allows
+// the wrong calls.
+var seccompArchitectures = []string{"SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"}
+
 var SyscallName = map[uint64]string{
 	0:   "read",
 	1:   "write",
