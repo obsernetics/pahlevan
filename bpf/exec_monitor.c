@@ -36,7 +36,7 @@ struct exec_event {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 << 24);
+	__uint(max_entries, 1 << 18); /* 256 KiB; events are deduped in-kernel */
 } exec_events SEC(".maps");
 
 /* Learned allow-set: key = cgroup_id ^ FNV(filename). */
@@ -44,7 +44,8 @@ struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, __u64);
 	__type(value, __u8);
-	__uint(max_entries, 1 << 20);
+	/* Containers execute few distinct binaries; LRU evicts the tail. */
+	__uint(max_entries, 1 << 13);
 } exec_allowed SEC(".maps");
 
 /* Per-cgroup mode: absent/0 = learning, 1 = enforcing. */
@@ -52,7 +53,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
 	__type(value, __u8);
-	__uint(max_entries, 1 << 16);
+	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } exec_mode SEC(".maps");
 
 static __always_inline __u64 hash_name(const __u8 *p, int n)
