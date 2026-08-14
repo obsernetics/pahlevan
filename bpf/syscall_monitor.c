@@ -47,9 +47,11 @@ struct {
 	__uint(max_entries, 1 << 20);
 } syscall_seen SEC(".maps");
 
-/* Optional runtime knobs (single element). */
+/* Optional runtime knobs (single element). ARRAY maps are pre-populated with
+ * zeroed entries, so the gate uses a `disabled` flag: zero (the default) means
+ * enabled, and userspace sets it to 1 to turn the program off. */
 struct config {
-	__u8 enabled;
+	__u8 disabled;
 };
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -62,8 +64,7 @@ static __always_inline int enabled(void)
 {
 	__u32 k = 0;
 	struct config *c = bpf_map_lookup_elem(&config_map, &k);
-	/* Default on when unset. */
-	return c ? c->enabled : 1;
+	return !c || c->disabled == 0;
 }
 
 SEC("raw_tracepoint/sys_enter")
