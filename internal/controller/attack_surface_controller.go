@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -162,9 +163,41 @@ func (r *AttackSurfaceAnalyzerReconciler) analyzeWorkloads(ctx context.Context) 
 		if err := r.Status().Update(ctx, &policy); err != nil {
 			logger.Error(err, "Failed to update policy status", "policy", policy.Name)
 		}
+
+		// Promote the computed surface to a first-class, inspectable AttackSurface CR.
+		if err := r.upsertAttackSurface(ctx, &policy); err != nil {
+			logger.V(1).Info("failed to upsert AttackSurface", "policy", policy.Name, "error", err.Error())
+		}
 	}
 
 	return nil
+}
+
+// upsertAttackSurface creates/updates an AttackSurface CR mirroring the policy's
+// computed attack-surface status, so users can inspect it as its own resource.
+func (r *AttackSurfaceAnalyzerReconciler) upsertAttackSurface(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) error {
+	if policy.Status.AttackSurface == nil {
+		return nil
+	}
+	as := &policyv1alpha1.AttackSurface{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name, Namespace: policy.Namespace},
+	}
+	// Create if absent (ignore AlreadyExists), then set status from the policy.
+	if err := r.Create(ctx, &policyv1alpha1.AttackSurface{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      policy.Name,
+			Namespace: policy.Namespace,
+			Labels:    map[string]string{"app.kubernetes.io/part-of": "pahlevan", "pahlevan.io/policy": policy.Name},
+		},
+		Spec: policyv1alpha1.AttackSurfaceSpec{PolicyRef: policy.Name, Namespace: policy.Namespace},
+	}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(as), as); err != nil {
+		return err
+	}
+	as.Status = *policy.Status.AttackSurface
+	return r.Status().Update(ctx, as)
 }
 
 func (r *AttackSurfaceAnalyzerReconciler) getTargetWorkloads(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) ([]client.Object, error) {
