@@ -133,8 +133,8 @@ make ebpf-build     # regenerate CO-RE objects + Go bindings (needs clang)
 hack/vm/up.sh       # bring up the eBPF-capable VM, then: make vm-test
 ```
 
-**eBPF work runs in a VM** - never load or attach programs on your host; [`hack/vm/`](hack/vm)
-provisions a kernel with the BPF LSM enabled. `make help` lists every target.
+[`hack/vm/`](hack/vm) provisions a kernel with the BPF LSM enabled for testing the eBPF
+programs. `make help` lists every target.
 
 ## Contributing
 
