@@ -13,9 +13,15 @@ Welcome to the Pahlevan documentation! This directory contains comprehensive gui
 - **[API Reference](api-reference.md)** - Complete API documentation
 
 ### Configuration & Deployment
+- **[Packages and Releases](packages.md)** - Container image, Helm chart, and manifest artifacts
 - **[Policy Reference](policy-reference.md)** - Complete policy syntax and examples
 - **[Deployment Guide](deployment.md)** - Production deployment patterns
+- **[LSM Support](lsm-support.md)** - Kernel and distribution support for in-kernel enforcement
 - **[Troubleshooting](troubleshooting.md)** - Common issues and solutions
+
+### Benchmarks & Changes
+- **[Benchmarks](benchmarks/)** - Measured results against Falco and Tetragon
+- **[Changelog](../CHANGELOG.md)** - Release history
 
 ## Getting Started
 
