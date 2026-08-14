@@ -652,3 +652,95 @@ func TestVMIPv6EgressGoverned(t *testing.T) {
 	}
 	t.Fatal("no IPv6 egress event observed: IPv6 connects are not being governed")
 }
+
+// TestVMSeededAllowEntryIsHonoured is the proof that the userspace allow-set
+// writers in allowset.go derive the same key the BPF program computes. The host
+// unit tests can only show the Go code agrees with itself; only the kernel can
+// confirm the contract.
+//
+// A path is deliberately NEVER opened during learning, seeded from userspace,
+// and then must still open under enforcement. If the key derivation were off by
+// a byte the open would be denied. VM-only.
+func TestVMSeededAllowEntryIsHonoured(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+
+	spec, err := LoadFileMonitor()
+	if err != nil {
+		t.Fatalf("LoadFileMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(file_open): %v", err)
+	}
+	defer l.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-seed-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup (need cgroup v2, root): %v", err)
+	}
+	defer os.Remove(cg)
+
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	runIn := func(path string) error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec cat %s", cg, path)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// LEARN on one sentinel only. /etc/os-release is never opened here, so it
+	// cannot enter the allow-set by observation.
+	if err := runIn("/etc/hostname"); err != nil {
+		t.Fatalf("learn run failed: %v", err)
+	}
+
+	// Seed the never-observed path through the public writer, exactly as an
+	// operator's PahlevanPolicy exception would.
+	m := &Manager{fileCollection: coll}
+	const seeded = "/etc/os-release"
+	if err := m.AllowFilePath(cgID, seeded, true); err != nil {
+		t.Fatalf("AllowFilePath: %v", err)
+	}
+
+	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce mode: %v", err)
+	}
+
+	// The seeded path must open even though it was never learned.
+	if err := runIn(seeded); err != nil {
+		t.Errorf("seeded %s should be ALLOWED under enforcement, got: %v", seeded, err)
+	} else {
+		t.Logf("seeded %s allowed under enforcement: userspace and kernel keys agree", seeded)
+	}
+
+	// A different unseeded, unlearned path must still be denied, proving the
+	// seed granted exactly one path and did not disable enforcement.
+	if err := runIn("/etc/fstab"); err == nil {
+		t.Error("unseeded /etc/fstab should be DENIED under enforcement, but it succeeded")
+	} else {
+		t.Logf("unseeded /etc/fstab denied as expected: %v", err)
+	}
+
+	// Revoking must take the path back out, even though it is in the map.
+	if err := m.AllowFilePath(cgID, seeded, false); err != nil {
+		t.Fatalf("AllowFilePath revoke: %v", err)
+	}
+	if err := runIn(seeded); err == nil {
+		t.Errorf("revoked %s should be DENIED under enforcement, but it succeeded", seeded)
+	} else {
+		t.Logf("revoked %s denied as expected: %v", seeded, err)
+	}
+}
