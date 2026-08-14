@@ -248,7 +248,7 @@ metadata:
 spec:
   project: security
   source:
-    repoURL: https://obsernetics.github.io/pahlevan-charts
+    repoURL: https://obsernetics.github.io/pahlevan/charts
     chart: pahlevan-operator
     targetRevision: 1.0.0
     helm:
