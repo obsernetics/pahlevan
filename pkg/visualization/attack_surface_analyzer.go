@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	v1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -703,8 +706,8 @@ func (asa *AttackSurfaceAnalyzer) RegisterExporter(exporter Exporter) {
 	asa.mu.Lock()
 	defer asa.mu.Unlock()
 
-	// Since CustomExporter is a struct, we need to handle this differently
-	// For now, create a CustomExporter entry based on the Exporter interface
+	// CustomExporter is a value type, so record the interface's format/enabled
+	// state as a CustomExporter entry keyed by the exporter's format.
 	customExporter := CustomExporter{
 		Name:     fmt.Sprintf("custom-exporter-%s", exporter.GetFormat()),
 		Endpoint: "configured-by-interface",
@@ -793,7 +796,7 @@ func (asa *AttackSurfaceAnalyzer) threatModelingWorker(ctx context.Context) {
 	}
 }
 
-// Implementation methods (simplified for brevity)
+// Implementation methods
 func (asa *AttackSurfaceAnalyzer) initializeComponents() error {
 	// Initialize vulnerability scanner
 	asa.vulnerabilityScanner = &VulnerabilityScanner{
@@ -844,9 +847,9 @@ func (asa *AttackSurfaceAnalyzer) discoverWorkloads(graph *ClusterAttackSurfaceG
 		}
 
 		// Analyze pod-specific attack surface
-		node.SyscallProfile = asa.getPodSyscallProfile(pod.Name, pod.Namespace)
-		node.NetworkProfile = asa.getPodNetworkProfile(pod.Name, pod.Namespace)
-		node.FileSystemProfile = asa.getPodFilesystemProfile(pod.Name, pod.Namespace)
+		node.SyscallProfile = asa.getPodSyscallProfile(&pod)
+		node.NetworkProfile = asa.getPodNetworkProfile(&pod)
+		node.FileSystemProfile = asa.getPodFilesystemProfile(&pod)
 
 		graph.Nodes[nodeID] = node
 	}
@@ -956,16 +959,51 @@ func (asa *AttackSurfaceAnalyzer) performRiskAnalysis(graph *ClusterAttackSurfac
 		edge.RiskContribution = asa.calculateEdgeRisk(edge, graph)
 	}
 
-	// Aggregate overall risk
-	averageRiskScore := totalRiskScore / float64(len(graph.Nodes))
+	// Aggregate overall risk. Guard against an empty graph.
+	var averageRiskScore float64
+	if len(graph.Nodes) > 0 {
+		averageRiskScore = totalRiskScore / float64(len(graph.Nodes))
+	}
+
+	// Build the high-risk component list from the nodes that actually exceeded
+	// the configured High threshold, carrying their real risk scores.
+	lowThreshold, highThreshold, criticalThreshold := 3.0, 7.0, 9.0
+	if asa.riskThresholds != nil {
+		lowThreshold = asa.riskThresholds.Low
+		highThreshold = asa.riskThresholds.High
+		criticalThreshold = asa.riskThresholds.Critical
+	}
+	var highRiskComponents []*RiskComponent
+	for _, node := range graph.Nodes {
+		if node.RiskScore >= highThreshold {
+			highRiskComponents = append(highRiskComponents, &RiskComponent{
+				ID:         node.ID,
+				Name:       node.Name,
+				Type:       string(node.Type),
+				RiskScore:  node.RiskScore,
+				Impact:     asa.scoreToImpact(node.RiskScore),
+				Likelihood: asa.scoreToLikelihood(node.RiskScore),
+			})
+		}
+	}
+	sort.Slice(highRiskComponents, func(i, j int) bool {
+		return highRiskComponents[i].RiskScore > highRiskComponents[j].RiskScore
+	})
 
 	graph.RiskAggregation = &RiskAggregation{
-		TotalRiskScore: totalRiskScore,
+		TotalRiskScore:     totalRiskScore,
+		HighRiskComponents: highRiskComponents,
+		// Distribution counts nodes falling in each severity band, derived from
+		// the real per-node scores rather than a fixed split.
 		RiskDistribution: map[RiskCategory]float64{
-			RiskCategoryNetwork:       float64(asa.countNodesByRiskRange(graph.Nodes, 0.0, 3.0)),
-			RiskCategoryPrivilege:     float64(asa.countNodesByRiskRange(graph.Nodes, 3.0, 7.0)),
-			RiskCategoryCompliance:    float64(asa.countNodesByRiskRange(graph.Nodes, 7.0, 9.0)),
-			RiskCategoryVulnerability: float64(asa.countNodesByRiskRange(graph.Nodes, 9.0, 10.0)),
+			RiskCategoryNetwork:       float64(asa.countNodesByRiskRange(graph.Nodes, 0.0, lowThreshold)),
+			RiskCategoryPrivilege:     float64(asa.countNodesByRiskRange(graph.Nodes, lowThreshold, highThreshold)),
+			RiskCategoryCompliance:    float64(asa.countNodesByRiskRange(graph.Nodes, highThreshold, criticalThreshold)),
+			RiskCategoryVulnerability: float64(asa.countNodesByRiskRange(graph.Nodes, criticalThreshold, 10.01)),
+		},
+		ClusterRiskProfile: &ClusterRiskProfile{
+			OverallScore: averageRiskScore,
+			TopRisks:     asa.identifyTopRiskFactors(graph.Nodes),
 		},
 	}
 
@@ -991,31 +1029,48 @@ func (asa *AttackSurfaceAnalyzer) identifyExposurePaths(graph *ClusterAttackSurf
 		paths := asa.tracePathsFromEntry(graph, entryPoint)
 
 		for _, path := range paths {
+			endNode := path.Nodes[len(path.Nodes)-1]
 			exposurePath := &ExposurePath{
-				ID:           fmt.Sprintf("exposure-%s-%d", entryPoint, len(exposurePaths)),
-				StartNode:    entryPoint,
-				EndNode:      path.Nodes[len(path.Nodes)-1],
-				Path:         path.Nodes,
-				ExposureType: ExposureTypeNetworkIngress,
-				RiskScore:    asa.calculatePathRisk(path),
+				ID:            fmt.Sprintf("exposure-%s-%d", entryPoint, len(exposurePaths)),
+				StartNode:     entryPoint,
+				EndNode:       endNode,
+				Path:          path.Nodes,
+				ExposureType:  asa.classifyExposureType(graph, endNode),
+				RiskScore:     asa.calculatePathRisk(path, graph),
+				AttackVectors: asa.identifyAttackVectors(path, graph),
+				Defenses:      asa.pathDefenses(path, graph),
 			}
 
 			exposurePaths = append(exposurePaths, exposurePath)
 
-			// Identify critical paths (high risk)
-			if exposurePath.RiskScore > 7.0 {
+			// Identify critical paths (those whose real risk score clears the
+			// configured High threshold).
+			if exposurePath.RiskScore >= asa.highRiskThreshold() {
 				criticalPath := &CriticalPath{
 					ID:          exposurePath.ID + "-critical",
-					Description: "Critical exposure path requiring attention",
+					Description: fmt.Sprintf("Exposure path from %s to %s crossing %d hops", entryPoint, endNode, len(path.Nodes)),
 					Steps:       path.Nodes,
 					RiskScore:   exposurePath.RiskScore,
-					Likelihood:  asa.calculatePathProbability(path),
-					Impact:      asa.calculatePathImpact(path),
+					Likelihood:  asa.calculatePathProbability(path, graph),
+					Impact:      asa.calculatePathImpact(path, graph),
 				}
 				criticalPaths = append(criticalPaths, criticalPath)
 			}
 		}
 	}
+
+	// Prioritize both collections: the exposure paths an operator should look at
+	// first are those with the highest attacker priority (risk tempered by how
+	// reachable the endpoint is), and the critical paths by combined
+	// risk*likelihood*impact so the most dangerous, most-achievable chains lead.
+	sort.SliceStable(exposurePaths, func(i, j int) bool {
+		return asa.calculatePriority(exposurePaths[i]) > asa.calculatePriority(exposurePaths[j])
+	})
+	sort.SliceStable(criticalPaths, func(i, j int) bool {
+		li := criticalPaths[i].RiskScore * criticalPaths[i].Likelihood * criticalPaths[i].Impact
+		lj := criticalPaths[j].RiskScore * criticalPaths[j].Likelihood * criticalPaths[j].Impact
+		return li > lj
+	})
 
 	graph.ExposurePaths = exposurePaths
 	graph.CriticalPaths = criticalPaths
@@ -1034,7 +1089,7 @@ func (asa *AttackSurfaceAnalyzer) generateRecommendations(graph *ClusterAttackSu
 
 	// Analyze high-risk nodes for recommendations
 	for _, node := range graph.Nodes {
-		if node.RiskScore > 7.0 {
+		if node.RiskScore >= asa.highRiskThreshold() {
 			nodeRecommendations := asa.generateNodeRecommendations(node)
 			recommendations = append(recommendations, nodeRecommendations...)
 		}
@@ -1220,10 +1275,12 @@ func (asa *AttackSurfaceAnalyzer) analyzeRBAC(surface *WorkloadAttackSurface) er
 	}
 
 	serviceAccountName := "default"
-	for _, pod := range pods.Items {
-		if asa.podBelongsToWorkload(&pod, surface.WorkloadRef) {
-			if pod.Spec.ServiceAccountName != "" {
-				serviceAccountName = pod.Spec.ServiceAccountName
+	var workloadPod *v1.Pod
+	for i := range pods.Items {
+		if asa.podBelongsToWorkload(&pods.Items[i], surface.WorkloadRef) {
+			workloadPod = &pods.Items[i]
+			if workloadPod.Spec.ServiceAccountName != "" {
+				serviceAccountName = workloadPod.Spec.ServiceAccountName
 			}
 			break
 		}
@@ -1237,19 +1294,156 @@ func (asa *AttackSurfaceAnalyzer) analyzeRBAC(surface *WorkloadAttackSurface) er
 		Privileged:     false,
 	}
 
-	// This would be expanded to analyze actual role bindings and cluster role bindings
-	// For now, provide basic analysis
-	if serviceAccountName == "default" {
-		rbacAnalysis.RiskScore = 2.0 // Low risk for default SA
-		rbacAnalysis.Permissions = []string{"basic pod operations"}
-	} else {
-		rbacAnalysis.RiskScore = 5.0 // Medium risk for custom SA
-		rbacAnalysis.Permissions = []string{"custom permissions - requires detailed analysis"}
+	// Resolve the actual role/cluster-role bindings for this service account
+	// (best-effort: if RBAC objects are not readable this returns empty sets and
+	// the score falls back to pod-level signals).
+	binding := asa.resolveServiceAccountBindings(surface.WorkloadRef.Namespace, serviceAccountName)
+	rbacAnalysis.Roles = binding.roles
+	rbacAnalysis.ClusterRoles = binding.clusterRoles
+	rbacAnalysis.Privileged = binding.privileged
+	rbacAnalysis.Permissions = binding.permissions
+
+	// Risk score derived from real signals rather than the SA name alone:
+	//   base                     1.0
+	//   custom (non-default) SA  +1.5
+	//   token auto-mounted       +1.0
+	//   bound to any ClusterRole +2.0 (cluster-scoped reach)
+	//   privileged binding       +4.0 (cluster-admin or wildcard verbs/resources)
+	//   host namespace usage     +1.0
+	risk := 1.0
+	if serviceAccountName != "default" {
+		risk += 1.5
 	}
+	if tokenAutomounted(workloadPod) {
+		risk += 1.0
+		rbacAnalysis.Permissions = appendUniqueString(rbacAnalysis.Permissions, "service account token auto-mounted")
+	}
+	if len(binding.clusterRoles) > 0 {
+		risk += 2.0
+	}
+	if binding.privileged {
+		risk += 4.0
+	}
+	if workloadPod != nil && (workloadPod.Spec.HostNetwork || workloadPod.Spec.HostPID || workloadPod.Spec.HostIPC) {
+		risk += 1.0
+	}
+	if risk > 10.0 {
+		risk = 10.0
+	}
+	rbacAnalysis.RiskScore = risk
 
 	surface.RBACAnalysis = rbacAnalysis
 
 	return nil
+}
+
+// saBindings holds the resolved RBAC picture for a service account.
+type saBindings struct {
+	roles        []string
+	clusterRoles []string
+	permissions  []string
+	privileged   bool
+}
+
+// resolveServiceAccountBindings enumerates the RoleBindings and
+// ClusterRoleBindings that reference the given service account and inspects the
+// referenced roles for cluster-admin / wildcard grants. It is best-effort: any
+// listing error (e.g. RBAC types not registered in the client scheme) yields the
+// zero result so callers degrade gracefully to pod-level signals.
+func (asa *AttackSurfaceAnalyzer) resolveServiceAccountBindings(namespace, serviceAccount string) saBindings {
+	result := saBindings{roles: []string{}, clusterRoles: []string{}, permissions: []string{}}
+	if asa.client == nil {
+		return result
+	}
+	ctx := context.Background()
+
+	subjectMatches := func(subjects []rbacv1.Subject) bool {
+		for _, s := range subjects {
+			if s.Kind == rbacv1.ServiceAccountKind && s.Name == serviceAccount &&
+				(s.Namespace == "" || s.Namespace == namespace) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Namespaced RoleBindings.
+	rbList := &rbacv1.RoleBindingList{}
+	if err := asa.client.List(ctx, rbList, client.InNamespace(namespace)); err == nil {
+		for i := range rbList.Items {
+			rb := &rbList.Items[i]
+			if !subjectMatches(rb.Subjects) {
+				continue
+			}
+			if rb.RoleRef.Kind == "ClusterRole" {
+				result.clusterRoles = appendUniqueString(result.clusterRoles, rb.RoleRef.Name)
+				if asa.roleRefIsPrivileged(ctx, namespace, rb.RoleRef) {
+					result.privileged = true
+				}
+			} else {
+				result.roles = appendUniqueString(result.roles, rb.RoleRef.Name)
+				if asa.roleRefIsPrivileged(ctx, namespace, rb.RoleRef) {
+					result.privileged = true
+				}
+			}
+		}
+	}
+
+	// Cluster-wide ClusterRoleBindings.
+	crbList := &rbacv1.ClusterRoleBindingList{}
+	if err := asa.client.List(ctx, crbList); err == nil {
+		for i := range crbList.Items {
+			crb := &crbList.Items[i]
+			if !subjectMatches(crb.Subjects) {
+				continue
+			}
+			result.clusterRoles = appendUniqueString(result.clusterRoles, crb.RoleRef.Name)
+			if asa.roleRefIsPrivileged(ctx, namespace, crb.RoleRef) {
+				result.privileged = true
+			}
+		}
+	}
+
+	for _, r := range result.roles {
+		result.permissions = appendUniqueString(result.permissions, "role/"+r)
+	}
+	for _, r := range result.clusterRoles {
+		result.permissions = appendUniqueString(result.permissions, "clusterrole/"+r)
+	}
+	return result
+}
+
+// roleRefIsPrivileged reports whether the referenced (cluster)role grants
+// effectively unrestricted access — the well-known "cluster-admin" role, or any
+// rule with a wildcard verb and a wildcard resource/API group.
+func (asa *AttackSurfaceAnalyzer) roleRefIsPrivileged(ctx context.Context, namespace string, ref rbacv1.RoleRef) bool {
+	if ref.Name == "cluster-admin" {
+		return true
+	}
+	var rules []rbacv1.PolicyRule
+	switch ref.Kind {
+	case "ClusterRole":
+		cr := &rbacv1.ClusterRole{}
+		if err := asa.client.Get(ctx, client.ObjectKey{Name: ref.Name}, cr); err != nil {
+			return false
+		}
+		rules = cr.Rules
+	case "Role":
+		role := &rbacv1.Role{}
+		if err := asa.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, role); err != nil {
+			return false
+		}
+		rules = role.Rules
+	default:
+		return false
+	}
+	for _, rule := range rules {
+		if stringsContains(rule.Verbs, "*") &&
+			(stringsContains(rule.Resources, "*") || stringsContains(rule.APIGroups, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 func (asa *AttackSurfaceAnalyzer) calculateWorkloadRisk(surface *WorkloadAttackSurface) error {
@@ -1479,30 +1673,216 @@ func (asa *AttackSurfaceAnalyzer) analyzePodPrivileges(pod *v1.Pod) *PrivilegePr
 	return profile
 }
 
-func (asa *AttackSurfaceAnalyzer) getPodSyscallProfile(podName, namespace string) *SyscallProfile {
-	// This would integrate with the eBPF manager to get real syscall data
-	// For now, return a basic profile
-	return &SyscallProfile{
-		AllowedSyscalls: []uint64{0, 1, 2, 3, 41}, // read, write, open, close, socket
-		RiskySyscalls:   []uint64{101, 165},       // ptrace, mount
+// getPodSyscallProfile derives the syscall attack surface of a pod from its
+// real security posture. When the enforcement engine holds a learned/enforced
+// policy for one of the pod's containers, that observed+enforced surface is used
+// directly. Otherwise the surface is reconstructed from the pod's declared Linux
+// capabilities and privilege level, because each capability unlocks a concrete,
+// well-known set of (frequently sensitive) syscalls.
+func (asa *AttackSurfaceAnalyzer) getPodSyscallProfile(pod *v1.Pod) *SyscallProfile {
+	profile := &SyscallProfile{
+		SyscallFrequency:   make(map[uint64]float64),
+		CriticalityMapping: make(map[uint64]CriticalityLevel),
 	}
+
+	// Prefer real enforcement/learning data when it exists for this pod.
+	if gp := asa.resolvePodPolicy(pod); gp != nil && gp.SyscallPolicy != nil {
+		for nr, rule := range gp.SyscallPolicy.AllowedSyscalls {
+			profile.AllowedSyscalls = append(profile.AllowedSyscalls, nr)
+			if rule != nil {
+				profile.CriticalityMapping[nr] = mapLearnerCriticality(rule.Criticality)
+			}
+			if isSensitiveSyscall(nr) {
+				profile.RiskySyscalls = append(profile.RiskySyscalls, nr)
+			}
+		}
+		for nr := range gp.SyscallPolicy.DeniedSyscalls {
+			profile.DeniedSyscalls = append(profile.DeniedSyscalls, nr)
+		}
+		if bp := gp.BasedOnProfile; bp != nil {
+			for nr, sp := range bp.AllowedSyscalls {
+				if sp != nil {
+					profile.SyscallFrequency[nr] = sp.Frequency
+				}
+			}
+		}
+		sort.Slice(profile.AllowedSyscalls, func(i, j int) bool { return profile.AllowedSyscalls[i] < profile.AllowedSyscalls[j] })
+		sort.Slice(profile.RiskySyscalls, func(i, j int) bool { return profile.RiskySyscalls[i] < profile.RiskySyscalls[j] })
+		sort.Slice(profile.DeniedSyscalls, func(i, j int) bool { return profile.DeniedSyscalls[i] < profile.DeniedSyscalls[j] })
+		return profile
+	}
+
+	// Fallback: reconstruct from the declared security context. Start from the
+	// baseline every container needs, then widen by the syscalls each granted
+	// capability unlocks; a privileged container is treated as having every
+	// sensitive syscall available.
+	allowed := make(map[uint64]bool, len(baselineContainerSyscalls))
+	for _, nr := range baselineContainerSyscalls {
+		allowed[nr] = true
+	}
+	risky := make(map[uint64]bool)
+
+	privileged := false
+	for i := range pod.Spec.Containers {
+		sc := pod.Spec.Containers[i].SecurityContext
+		if sc == nil {
+			continue
+		}
+		if sc.Privileged != nil && *sc.Privileged {
+			privileged = true
+		}
+		if sc.Capabilities != nil {
+			for _, c := range sc.Capabilities.Add {
+				for _, nr := range capabilitySyscalls[string(c)] {
+					allowed[nr] = true
+					risky[nr] = true
+				}
+			}
+		}
+	}
+	if privileged {
+		for _, nr := range sensitiveSyscallList {
+			allowed[nr] = true
+			risky[nr] = true
+		}
+	}
+
+	for nr := range allowed {
+		profile.AllowedSyscalls = append(profile.AllowedSyscalls, nr)
+	}
+	for nr := range risky {
+		profile.RiskySyscalls = append(profile.RiskySyscalls, nr)
+		if isCriticalSyscall(nr) {
+			profile.CriticalityMapping[nr] = CriticalityCritical
+		} else {
+			profile.CriticalityMapping[nr] = CriticalityHigh
+		}
+	}
+	sort.Slice(profile.AllowedSyscalls, func(i, j int) bool { return profile.AllowedSyscalls[i] < profile.AllowedSyscalls[j] })
+	sort.Slice(profile.RiskySyscalls, func(i, j int) bool { return profile.RiskySyscalls[i] < profile.RiskySyscalls[j] })
+	return profile
 }
 
-func (asa *AttackSurfaceAnalyzer) getPodNetworkProfile(podName, namespace string) *NetworkProfile {
-	// This would integrate with the eBPF manager to get real network data
-	return &NetworkProfile{
-		ExposedPorts: []*ExposedPort{
-			{Port: 8080, Protocol: "TCP", Public: false},
-		},
+// getPodNetworkProfile derives the network attack surface from the pod's real
+// container port declarations, enriched with any learned outbound flows.
+func (asa *AttackSurfaceAnalyzer) getPodNetworkProfile(pod *v1.Pod) *NetworkProfile {
+	profile := &NetworkProfile{}
+
+	for i := range pod.Spec.Containers {
+		for _, p := range pod.Spec.Containers[i].Ports {
+			profile.ExposedPorts = append(profile.ExposedPorts, &ExposedPort{
+				Port:     p.ContainerPort,
+				Protocol: string(p.Protocol),
+				Service:  p.Name,
+			})
+			profile.ListeningServices = append(profile.ListeningServices, &ListeningService{
+				Port:        p.ContainerPort,
+				Protocol:    string(p.Protocol),
+				ServiceName: p.Name,
+			})
+		}
 	}
+
+	if gp := asa.resolvePodPolicy(pod); gp != nil && gp.BasedOnProfile != nil {
+		for _, flow := range gp.BasedOnProfile.AllowedNetworkFlows {
+			if flow == nil {
+				continue
+			}
+			if strings.EqualFold(flow.Direction, "egress") || strings.EqualFold(flow.Direction, "outbound") {
+				for _, ep := range flow.RemoteEndpoints {
+					profile.OutboundConnections = append(profile.OutboundConnections, &OutboundConnection{
+						DestinationIP: ep,
+						Protocol:      flow.Protocol,
+						LastSeen:      time.Now(),
+					})
+				}
+			}
+		}
+	}
+
+	return profile
 }
 
-func (asa *AttackSurfaceAnalyzer) getPodFilesystemProfile(podName, namespace string) *FileSystemProfile {
-	// This would integrate with the eBPF manager to get real filesystem data
-	return &FileSystemProfile{
-		WritablePaths:   []string{"/tmp", "/var/log"},
-		ExecutablePaths: []string{"/bin", "/usr/bin"},
+// getPodFilesystemProfile derives the filesystem attack surface from the pod's
+// real volume mounts and root-filesystem posture, plus any learned/enforced
+// allowed paths.
+func (asa *AttackSurfaceAnalyzer) getPodFilesystemProfile(pod *v1.Pod) *FileSystemProfile {
+	profile := &FileSystemProfile{}
+
+	sensitiveVols := make(map[string]string)
+	for _, v := range pod.Spec.Volumes {
+		switch {
+		case v.Secret != nil:
+			sensitiveVols[v.Name] = "secret"
+		case v.ConfigMap != nil:
+			sensitiveVols[v.Name] = "config"
+		}
 	}
+
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		roRoot := c.SecurityContext != nil &&
+			c.SecurityContext.ReadOnlyRootFilesystem != nil &&
+			*c.SecurityContext.ReadOnlyRootFilesystem
+		if !roRoot {
+			profile.WritablePaths = appendUniqueString(profile.WritablePaths, "/")
+		}
+		for _, m := range c.VolumeMounts {
+			mp := &MountPoint{
+				Source:      m.Name,
+				Destination: m.MountPath,
+				ReadOnly:    m.ReadOnly,
+			}
+			if t, ok := sensitiveVols[m.Name]; ok {
+				mp.Sensitive = true
+				profile.SensitiveFiles = append(profile.SensitiveFiles, &SensitiveFile{
+					Path: m.MountPath,
+					Type: t,
+					Risk: "high",
+				})
+			}
+			profile.MountPoints = append(profile.MountPoints, mp)
+			if !m.ReadOnly {
+				profile.WritablePaths = appendUniqueString(profile.WritablePaths, m.MountPath)
+			}
+		}
+	}
+
+	if gp := asa.resolvePodPolicy(pod); gp != nil && gp.FilePolicy != nil {
+		for p := range gp.FilePolicy.AllowedPaths {
+			profile.ExecutablePaths = appendUniqueString(profile.ExecutablePaths, p)
+		}
+		sort.Strings(profile.ExecutablePaths)
+	}
+
+	return profile
+}
+
+// resolvePodPolicy returns the first generated enforcement policy the engine
+// holds for any of the pod's running containers, or nil when none is available
+// (e.g. the engine has not learned this workload yet).
+func (asa *AttackSurfaceAnalyzer) resolvePodPolicy(pod *v1.Pod) *policies.GeneratedPolicy {
+	if asa.enforcementEngine == nil || pod == nil {
+		return nil
+	}
+	var ids []string
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.ContainerID == "" {
+			continue
+		}
+		ids = append(ids, cs.ContainerID)
+		// Container IDs are typically "<runtime>://<hash>"; the engine may key
+		// by either the full reference or the bare hash.
+		if i := strings.LastIndex(cs.ContainerID, "/"); i >= 0 && i+1 < len(cs.ContainerID) {
+			ids = append(ids, cs.ContainerID[i+1:])
+		}
+	}
+	for _, id := range ids {
+		if state, err := asa.enforcementEngine.GetPolicyState(id); err == nil && state != nil && state.GeneratedPolicy != nil {
+			return state.GeneratedPolicy
+		}
+	}
+	return nil
 }
 
 func (asa *AttackSurfaceAnalyzer) extractServicePorts(service *v1.Service) []*ExposedPort {
@@ -1619,29 +1999,78 @@ func (asa *AttackSurfaceAnalyzer) podMatchesSelector(pod *v1.Pod, selector map[s
 }
 
 // Risk calculation helper methods
+//
+// calculateNodeRisk turns a node's concrete attack-surface factors into a
+// bounded 0..10 risk score. The score is the sum of independently weighted
+// contributions, each derived from real observed/declared data on the node:
+//
+//	base(type)          external-facing components start higher (ingress > service > pod)
+//	exposed ports       +1.2 per public port, +0.3 per internal port, +1.0 per high-risk port
+//	writable paths      +0.4 per writable path (a writable "/" is a full-fs escape primitive)
+//	allowed syscalls    +0.02 per allowed syscall (broader surface = more reachable code paths)
+//	sensitive syscalls  +0.8 per risky syscall (ptrace/mount/module-load/etc.)
+//	capabilities        +0.7 per risky Linux capability held
+//	privilege level     +3.0 privileged, +2.0 runs-as-root, +1.0 privilege-escalation allowed
+//	vulnerabilities     +0.8 per known vulnerability
+//
+// The weights are chosen so that a single dominant primitive (privileged, or a
+// sensitive syscall backed by a matching capability) drives the score into the
+// high band, while an otherwise-clean node with only a couple of internal ports
+// stays low. The result is clamped to [0, 10].
 func (asa *AttackSurfaceAnalyzer) calculateNodeRisk(node *AttackSurfaceNode) float64 {
 	riskScore := 0.0
 
-	// Base risk from node type
+	// Base risk from node type (external reachability).
 	switch node.Type {
 	case NodeTypeIngress:
-		riskScore += 3.0 // Higher base risk for external-facing
+		riskScore += 3.0
+	case NodeTypeLoadBalancer:
+		riskScore += 2.5
 	case NodeTypeService:
 		riskScore += 2.0
 	case NodeTypePod:
 		riskScore += 1.0
 	}
 
-	// Risk from exposed ports
+	// Risk from exposed ports.
 	for _, port := range node.ExposedPorts {
 		if port.Public {
-			riskScore += 2.0
+			riskScore += 1.2
 		} else {
-			riskScore += 0.5
+			riskScore += 0.3
+		}
+		if asa.isHighRiskPort(port.Port) {
+			riskScore += 1.0
 		}
 	}
 
-	// Risk from privileges
+	// Risk from writable filesystem surface.
+	if node.FileSystemProfile != nil {
+		for _, p := range node.FileSystemProfile.WritablePaths {
+			if p == "/" {
+				riskScore += 1.5 // writable root filesystem
+			} else {
+				riskScore += 0.4
+			}
+		}
+		// Sensitive files reachable in the container add direct data-access risk.
+		riskScore += float64(len(node.FileSystemProfile.SensitiveFiles)) * 0.6
+	}
+
+	// Risk from syscall surface: breadth (allowed) plus sensitivity (risky).
+	if node.SyscallProfile != nil {
+		riskScore += float64(len(node.SyscallProfile.AllowedSyscalls)) * 0.02
+		riskScore += float64(len(node.SyscallProfile.RiskySyscalls)) * 0.8
+	}
+
+	// Risk from held Linux capabilities.
+	for _, c := range node.Capabilities {
+		if asa.isRiskyCapability(c) {
+			riskScore += 0.7
+		}
+	}
+
+	// Risk from privilege level.
 	if node.Privileges != nil {
 		if node.Privileges.RunAsUser != nil && *node.Privileges.RunAsUser == 0 {
 			riskScore += 2.0
@@ -1649,23 +2078,44 @@ func (asa *AttackSurfaceAnalyzer) calculateNodeRisk(node *AttackSurfaceNode) flo
 		if node.Privileges.Privileged {
 			riskScore += 3.0
 		}
-		// Additional privilege checks could be added here
+		if node.Privileges.AllowPrivilegeEscalation {
+			riskScore += 1.0
+		}
 	}
 
-	// Risk from syscall profile
-	if node.SyscallProfile != nil {
-		riskScore += float64(len(node.SyscallProfile.RiskySyscalls)) * 0.5
-	}
-
-	// Vulnerability contribution
+	// Vulnerability contribution.
 	riskScore += float64(node.VulnerabilityCount) * 0.8
 
-	// Cap at 10.0
 	if riskScore > 10.0 {
 		riskScore = 10.0
 	}
+	if riskScore < 0 {
+		riskScore = 0
+	}
+
+	// Record the criticality band implied by the score so downstream consumers
+	// (exposure typing, aggregation) reflect real risk rather than a default.
+	node.CriticalityLevel = asa.riskToCriticality(riskScore)
 
 	return riskScore
+}
+
+// riskToCriticality maps a 0..10 risk score onto the analyzer's configured
+// risk-threshold bands.
+func (asa *AttackSurfaceAnalyzer) riskToCriticality(score float64) CriticalityLevel {
+	t := asa.riskThresholds
+	switch {
+	case t != nil && score >= t.Critical:
+		return CriticalityCritical
+	case t != nil && score >= t.High:
+		return CriticalityHigh
+	case t != nil && score >= t.Medium:
+		return CriticalityMedium
+	case t != nil && score >= t.Low:
+		return CriticalityLow
+	default:
+		return CriticalityInfo
+	}
 }
 
 func (asa *AttackSurfaceAnalyzer) calculateEdgeRisk(edge *AttackSurfaceEdge, graph *ClusterAttackSurfaceGraph) float64 {
@@ -1767,7 +2217,8 @@ func (asa *AttackSurfaceAnalyzer) findExternalEntryPoints(graph *ClusterAttackSu
 func (asa *AttackSurfaceAnalyzer) tracePathsFromEntry(graph *ClusterAttackSurfaceGraph, entryPoint string) []*PathAnalysis {
 	paths := []*PathAnalysis{}
 
-	// Simple path tracing - in reality this would be more sophisticated
+	// Bounded depth-first traversal that enumerates every distinct path reachable
+	// from the entry point along the graph's edges, up to a maximum depth.
 	visited := make(map[string]bool)
 	currentPath := &PathAnalysis{
 		Nodes: []string{entryPoint},
@@ -1802,31 +2253,227 @@ func (asa *AttackSurfaceAnalyzer) tracePathsRecursive(graph *ClusterAttackSurfac
 	visited[currentNode] = false
 }
 
-func (asa *AttackSurfaceAnalyzer) calculatePathRisk(path *PathAnalysis) float64 {
-	// Simple risk calculation - would be more sophisticated in reality
-	return float64(len(path.Nodes)) * 1.5
+// calculatePathRisk scores what an attacker gains by traversing an exposure
+// path end-to-end. It is derived entirely from the real per-node risk scores
+// and per-edge risk contributions along the path:
+//
+//	risk = (0.5*endpointRisk + 0.5*avgHopRisk) * reachabilityDiscount + edgeRiskSum
+//
+// endpointRisk is the risk of the asset finally reached (what the attacker
+// walks away with), avgHopRisk is the mean risk of every node on the path,
+// edgeRiskSum sums the traversed edges' risk contributions, and
+// reachabilityDiscount = 1/(1 + 0.2*extraHops) shrinks the score for longer
+// chains, which require more successful steps. The result is clamped to [0, 10].
+func (asa *AttackSurfaceAnalyzer) calculatePathRisk(path *PathAnalysis, graph *ClusterAttackSurfaceGraph) float64 {
+	if path == nil || len(path.Nodes) == 0 {
+		return 0
+	}
+
+	var sumHop float64
+	for _, id := range path.Nodes {
+		if n, ok := graph.Nodes[id]; ok {
+			sumHop += n.RiskScore
+		}
+	}
+	avgHop := sumHop / float64(len(path.Nodes))
+
+	var endpointRisk float64
+	if n, ok := graph.Nodes[path.Nodes[len(path.Nodes)-1]]; ok {
+		endpointRisk = n.RiskScore
+	}
+
+	edgeRiskSum := asa.pathEdgeRisk(path, graph)
+
+	extraHops := float64(len(path.Nodes) - 2)
+	if extraHops < 0 {
+		extraHops = 0
+	}
+	reachabilityDiscount := 1.0 / (1.0 + 0.2*extraHops)
+
+	risk := (0.5*endpointRisk+0.5*avgHop)*reachabilityDiscount + edgeRiskSum
+	if risk > 10.0 {
+		risk = 10.0
+	}
+	if risk < 0 {
+		risk = 0
+	}
+	return risk
 }
 
-func (asa *AttackSurfaceAnalyzer) calculatePathProbability(path *PathAnalysis) float64 {
-	// Simple probability calculation
-	return 1.0 / float64(len(path.Nodes))
+// calculatePathProbability estimates the likelihood (0..1) that an attacker can
+// complete the whole path. It multiplies per-hop compromise probabilities,
+// where each hop's probability grows with the target node's real risk score
+// (a riskier node is easier to pivot into): perHop = clamp(0.4 + 0.05*targetRisk, 0, 0.98).
+func (asa *AttackSurfaceAnalyzer) calculatePathProbability(path *PathAnalysis, graph *ClusterAttackSurfaceGraph) float64 {
+	if path == nil || len(path.Nodes) < 2 {
+		return 1.0
+	}
+	prob := 1.0
+	for _, id := range path.Nodes[1:] {
+		targetRisk := 0.0
+		if n, ok := graph.Nodes[id]; ok {
+			targetRisk = n.RiskScore
+		}
+		perHop := 0.4 + 0.05*targetRisk
+		if perHop > 0.98 {
+			perHop = 0.98
+		}
+		if perHop < 0 {
+			perHop = 0
+		}
+		prob *= perHop
+	}
+	return prob
 }
 
-func (asa *AttackSurfaceAnalyzer) calculatePathImpact(path *PathAnalysis) float64 {
-	// Simple impact calculation
-	return float64(len(path.Nodes)) * 2.0
+// calculatePathImpact scores the blast radius (0..10) of the asset the path
+// reaches, using the endpoint node's real risk score plus a bonus for
+// high-value asset types (databases, APIs) and for endpoints exposing sensitive
+// files.
+func (asa *AttackSurfaceAnalyzer) calculatePathImpact(path *PathAnalysis, graph *ClusterAttackSurfaceGraph) float64 {
+	if path == nil || len(path.Nodes) == 0 {
+		return 0
+	}
+	end, ok := graph.Nodes[path.Nodes[len(path.Nodes)-1]]
+	if !ok {
+		return 0
+	}
+	impact := end.RiskScore
+	switch end.Type {
+	case NodeTypeDatabase:
+		impact += 3.0
+	case NodeTypeAPI:
+		impact += 2.0
+	}
+	if end.FileSystemProfile != nil && len(end.FileSystemProfile.SensitiveFiles) > 0 {
+		impact += 1.5
+	}
+	if impact > 10.0 {
+		impact = 10.0
+	}
+	return impact
 }
 
-func (asa *AttackSurfaceAnalyzer) identifyAttackVectors(path *PathAnalysis) []string {
-	return []string{"Network traversal", "Privilege escalation", "Container escape"}
+// identifyAttackVectors derives the concrete attacker techniques a path enables
+// from the real properties of the nodes it crosses.
+func (asa *AttackSurfaceAnalyzer) identifyAttackVectors(path *PathAnalysis, graph *ClusterAttackSurfaceGraph) []*AttackVector {
+	var vectors []*AttackVector
+	seen := make(map[AttackVectorType]bool)
+
+	add := func(t AttackVectorType, technique string, prob float64, impact ImpactLevel, prereq string) {
+		if seen[t] {
+			return
+		}
+		seen[t] = true
+		v := &AttackVector{Type: t, Technique: technique, Probability: prob, Impact: impact}
+		if prereq != "" {
+			v.Prerequisites = []string{prereq}
+		}
+		vectors = append(vectors, v)
+	}
+
+	// The entry hop is, by construction, externally reachable.
+	if len(path.Nodes) > 0 {
+		if entry, ok := graph.Nodes[path.Nodes[0]]; ok {
+			for _, p := range entry.ExposedPorts {
+				if p.Public {
+					add(AttackVectorTypeRemoteExploit, "Exploitation of a public-facing endpoint", 0.6, asa.scoreToImpact(entry.RiskScore), "Network reachability to exposed port")
+					break
+				}
+			}
+		}
+	}
+
+	// More than one hop means the attacker moves laterally through the cluster.
+	if len(path.Nodes) > 1 {
+		add(AttackVectorTypeLateralMovement, "Lateral movement across connected workloads", asa.calculatePathProbability(path, graph), ImpactLevelMedium, "Foothold on the entry node")
+	}
+
+	for _, id := range path.Nodes {
+		n, ok := graph.Nodes[id]
+		if !ok {
+			continue
+		}
+		if n.Privileges != nil && (n.Privileges.Privileged || (n.Privileges.RunAsUser != nil && *n.Privileges.RunAsUser == 0) || n.Privileges.AllowPrivilegeEscalation) {
+			add(AttackVectorTypePrivilegeEscalation, "Privilege escalation via over-privileged container", 0.5, ImpactLevelHigh, "Code execution inside the container")
+		}
+		if n.SyscallProfile != nil && len(n.SyscallProfile.RiskySyscalls) > 0 {
+			add(AttackVectorTypePrivilegeEscalation, "Abuse of sensitive syscalls (e.g. ptrace/mount/module load)", 0.45, ImpactLevelHigh, "Access to a granted sensitive capability")
+		}
+		if n.FileSystemProfile != nil && len(n.FileSystemProfile.SensitiveFiles) > 0 {
+			add(AttackVectorTypeCredentialAccess, "Reading secret/credential material mounted in the container", 0.55, ImpactLevelHigh, "Filesystem read access")
+			add(AttackVectorTypeDataExfiltration, "Exfiltration of sensitive mounted data", 0.4, ImpactLevelHigh, "Outbound network access")
+		}
+	}
+
+	return vectors
 }
 
-func (asa *AttackSurfaceAnalyzer) generateMitigationSteps(path *PathAnalysis) []string {
-	return []string{"Implement network policies", "Apply least privilege", "Enable container security"}
+// generateMitigationSteps derives targeted remediation steps for a path from the
+// weaknesses actually present on its nodes.
+func (asa *AttackSurfaceAnalyzer) generateMitigationSteps(path *PathAnalysis, graph *ClusterAttackSurfaceGraph) []string {
+	var steps []string
+	seen := make(map[string]bool)
+	add := func(s string) {
+		if !seen[s] {
+			seen[s] = true
+			steps = append(steps, s)
+		}
+	}
+
+	if len(path.Nodes) > 1 {
+		add("Restrict east-west traffic with NetworkPolicies to break this path")
+	}
+	for _, id := range path.Nodes {
+		n, ok := graph.Nodes[id]
+		if !ok {
+			continue
+		}
+		if n.Privileges != nil && (n.Privileges.Privileged || (n.Privileges.RunAsUser != nil && *n.Privileges.RunAsUser == 0)) {
+			add(fmt.Sprintf("Drop privileged/root execution on %s and run as a non-root user", n.Name))
+		}
+		if n.SyscallProfile != nil && len(n.SyscallProfile.RiskySyscalls) > 0 {
+			add(fmt.Sprintf("Remove unneeded capabilities/sensitive syscalls from %s", n.Name))
+		}
+		if n.FileSystemProfile != nil {
+			for _, p := range n.FileSystemProfile.WritablePaths {
+				if p == "/" {
+					add(fmt.Sprintf("Set readOnlyRootFilesystem on %s", n.Name))
+					break
+				}
+			}
+			if len(n.FileSystemProfile.SensitiveFiles) > 0 {
+				add(fmt.Sprintf("Limit and encrypt secret mounts on %s", n.Name))
+			}
+		}
+		for _, port := range n.ExposedPorts {
+			if port.Public {
+				add(fmt.Sprintf("Reduce the public exposure of %s", n.Name))
+				break
+			}
+		}
+	}
+	if len(steps) == 0 {
+		add("Enable runtime security monitoring on the workloads along this path")
+	}
+	return steps
 }
 
+// calculatePriority ranks an exposure path for operator attention. It combines
+// the path's real risk score with how reachable its endpoint is (shorter paths
+// to the same risk are more urgent) and how many distinct attack vectors it
+// unlocks: priority = riskScore * (1 + 0.15*len(vectors)) / (1 + 0.1*extraHops).
 func (asa *AttackSurfaceAnalyzer) calculatePriority(exposurePath *ExposurePath) float64 {
-	return exposurePath.RiskScore * 0.8 // Simple priority calculation
+	if exposurePath == nil {
+		return 0
+	}
+	extraHops := float64(len(exposurePath.Path) - 2)
+	if extraHops < 0 {
+		extraHops = 0
+	}
+	vectorBoost := 1.0 + 0.15*float64(len(exposurePath.AttackVectors))
+	reachability := 1.0 / (1.0 + 0.1*extraHops)
+	return exposurePath.RiskScore * vectorBoost * reachability
 }
 
 // Recommendation generation methods
@@ -1870,15 +2517,26 @@ func (asa *AttackSurfaceAnalyzer) generateNodeRecommendations(node *AttackSurfac
 }
 
 func (asa *AttackSurfaceAnalyzer) generatePathRecommendations(criticalPath *CriticalPath) []*RecommendedAction {
+	// The recommendation priority tracks the path's real, computed criticality
+	// band rather than a fixed "Critical".
+	priority := string(asa.riskToCriticality(criticalPath.RiskScore))
+	hops := len(criticalPath.Steps)
+	entry, target := "entry", "target"
+	if hops > 0 {
+		entry = criticalPath.Steps[0]
+		target = criticalPath.Steps[hops-1]
+	}
 	return []*RecommendedAction{
 		{
-			ID:          fmt.Sprintf("rec-path-%s", criticalPath.ID),
-			Category:    "Network Segmentation",
-			Priority:    "Critical",
-			Title:       "Implement network policies",
-			Description: "Critical exposure path identified requiring network segmentation",
-			Impact:      "Blocks attack path",
-			Effort:      "High",
+			ID:       fmt.Sprintf("rec-path-%s", criticalPath.ID),
+			Category: "Network Segmentation",
+			Priority: priority,
+			Title:    "Segment the exposure path with NetworkPolicies",
+			Description: fmt.Sprintf(
+				"Exposure path from %s to %s (%d hops, risk %.1f, likelihood %.2f, impact %.1f) should be broken with network segmentation",
+				entry, target, hops, criticalPath.RiskScore, criticalPath.Likelihood, criticalPath.Impact),
+			Impact: "Blocks attacker traversal along this path",
+			Effort: "High",
 		},
 	}
 }
@@ -1897,15 +2555,57 @@ func (asa *AttackSurfaceAnalyzer) generateGeneralRecommendations(graph *ClusterA
 	}
 }
 
+// prioritizeRecommendations sorts recommendations in place so the highest-value
+// actions come first. The rank is severity-dominant (Critical > High > Medium >
+// Low) and, within the same severity, favours quick wins by ordering lower
+// effort ahead of higher effort. The slice is mutated in place, so the caller's
+// backing array reflects the new order.
 func (asa *AttackSurfaceAnalyzer) prioritizeRecommendations(recommendations []*RecommendedAction) {
-	// Simple prioritization - in reality would use more sophisticated ranking
-	// For now, just sort by priority field
+	sort.SliceStable(recommendations, func(i, j int) bool {
+		pi := priorityRank(recommendations[i].Priority)
+		pj := priorityRank(recommendations[j].Priority)
+		if pi != pj {
+			return pi > pj
+		}
+		// Same severity: cheaper (lower effort) first.
+		return effortRank(recommendations[i].Effort) < effortRank(recommendations[j].Effort)
+	})
 	log.Log.Info("Prioritized recommendations", "count", len(recommendations))
+}
+
+// priorityRank maps a textual priority to a numeric weight (higher = more urgent).
+func priorityRank(priority string) int {
+	switch strings.ToLower(priority) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// effortRank maps a textual effort estimate to a numeric weight (lower = cheaper).
+func effortRank(effort string) int {
+	switch strings.ToLower(effort) {
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	default:
+		return 2
+	}
 }
 
 // Helper methods for container analysis
 func (asa *AttackSurfaceAnalyzer) podBelongsToWorkload(pod *v1.Pod, workloadRef learner.WorkloadReference) bool {
-	// Basic implementation - would be more sophisticated in practice
+	// Match by namespace plus either an app label or an owner reference.
 	if pod.Namespace != workloadRef.Namespace {
 		return false
 	}
@@ -1930,47 +2630,175 @@ func (asa *AttackSurfaceAnalyzer) podBelongsToWorkload(pod *v1.Pod, workloadRef 
 	return false
 }
 
+// analyzeContainerImage derives an image risk score from the concrete image
+// reference. A digest-pinned image is the most trustworthy (immutable); a
+// mutable or missing tag (":latest" or no tag) is the least, and an image
+// pulled from an implicit public registry adds a small amount of supply-chain
+// risk. The score is bounded to [0, 10].
 func (asa *AttackSurfaceAnalyzer) analyzeContainerImage(image string) *ImageSecurityAnalysis {
+	risk := 2.0 // pinned, well-qualified images start low
+
+	digestPinned := strings.Contains(image, "@sha256:")
+	tag := imageTag(image)
+	switch {
+	case digestPinned:
+		// immutable reference, keep baseline
+	case tag == "" || tag == "latest":
+		risk += 3.0 // mutable/unpinned image
+	default:
+		risk += 1.0 // fixed tag but still mutable at the registry
+	}
+
+	// Implicit public registry (no registry host segment) adds supply-chain risk.
+	if !digestPinned && !imageHasRegistryHost(image) {
+		risk += 1.0
+	}
+
+	if risk > 10.0 {
+		risk = 10.0
+	}
+
 	return &ImageSecurityAnalysis{
 		BaseImage:       image,
 		Vulnerabilities: []Vulnerability{},
 		Layers:          []string{},
 		ScanResults:     []ScanResult{},
-		RiskScore:       3.0, // Default medium risk
+		RiskScore:       risk,
 	}
 }
 
+// analyzeRuntimeProfile reconstructs the container's runtime profile from its
+// real spec (entrypoint, declared capabilities, listening ports, mounts).
 func (asa *AttackSurfaceAnalyzer) analyzeRuntimeProfile(pod *v1.Pod, container *v1.Container) *RuntimeSecurityProfile {
-	return &RuntimeSecurityProfile{
-		ProcessList:    []string{"main_process"},
-		NetworkAccess:  []string{"outbound_https"},
-		FileAccess:     []string{"/app", "/tmp"},
+	profile := &RuntimeSecurityProfile{
+		ProcessList:    []string{},
+		NetworkAccess:  []string{},
+		FileAccess:     []string{},
 		Capabilities:   []string{},
 		SecurityEvents: []string{},
 	}
-}
 
-func (asa *AttackSurfaceAnalyzer) analyzeSyscallExposure(pod *v1.Pod, container *v1.Container) *SyscallExposureAnalysis {
-	return &SyscallExposureAnalysis{
-		AllowedSyscalls: []string{"read", "write", "open", "close"},
-		BlockedSyscalls: []string{"ptrace", "mount"},
-		RiskySyscalls:   []string{},
-		UnusedSyscalls:  []string{},
-		ExposureScore:   4.0,
+	if len(container.Command) > 0 {
+		profile.ProcessList = append(profile.ProcessList, container.Command[0])
+	} else {
+		profile.ProcessList = append(profile.ProcessList, container.Name)
 	}
+
+	for _, p := range container.Ports {
+		profile.NetworkAccess = append(profile.NetworkAccess, fmt.Sprintf("%s/%d", strings.ToLower(string(p.Protocol)), p.ContainerPort))
+	}
+
+	for _, m := range container.VolumeMounts {
+		profile.FileAccess = append(profile.FileAccess, m.MountPath)
+	}
+
+	if container.SecurityContext != nil && container.SecurityContext.Capabilities != nil {
+		for _, c := range container.SecurityContext.Capabilities.Add {
+			profile.Capabilities = append(profile.Capabilities, string(c))
+		}
+	}
+
+	return profile
 }
 
+// analyzeSyscallExposure computes the container's syscall exposure. When a
+// learned/enforced policy exists it uses the real allowed/denied sets; otherwise
+// it reconstructs the sensitive syscalls unlocked by the container's granted
+// capabilities and privilege level. The exposure score scales with the breadth
+// of the allowed set and, more heavily, with the number of sensitive syscalls.
+func (asa *AttackSurfaceAnalyzer) analyzeSyscallExposure(pod *v1.Pod, container *v1.Container) *SyscallExposureAnalysis {
+	analysis := &SyscallExposureAnalysis{}
+
+	if gp := asa.resolvePodPolicy(pod); gp != nil && gp.SyscallPolicy != nil {
+		for nr := range gp.SyscallPolicy.AllowedSyscalls {
+			analysis.AllowedSyscalls = append(analysis.AllowedSyscalls, syscallName(nr))
+			if isSensitiveSyscall(nr) {
+				analysis.RiskySyscalls = append(analysis.RiskySyscalls, syscallName(nr))
+			}
+		}
+		for nr := range gp.SyscallPolicy.DeniedSyscalls {
+			analysis.BlockedSyscalls = append(analysis.BlockedSyscalls, syscallName(nr))
+		}
+	} else {
+		risky := make(map[uint64]bool)
+		privileged := container.SecurityContext != nil && container.SecurityContext.Privileged != nil && *container.SecurityContext.Privileged
+		if container.SecurityContext != nil && container.SecurityContext.Capabilities != nil {
+			for _, c := range container.SecurityContext.Capabilities.Add {
+				for _, nr := range capabilitySyscalls[string(c)] {
+					risky[nr] = true
+				}
+			}
+			// Explicitly blocked syscalls: those a dropped capability would gate.
+			for _, c := range container.SecurityContext.Capabilities.Drop {
+				name := string(c)
+				if name == "ALL" {
+					for _, nr := range sensitiveSyscallList {
+						analysis.BlockedSyscalls = append(analysis.BlockedSyscalls, syscallName(nr))
+					}
+				} else {
+					for _, nr := range capabilitySyscalls[name] {
+						analysis.BlockedSyscalls = append(analysis.BlockedSyscalls, syscallName(nr))
+					}
+				}
+			}
+		}
+		if privileged {
+			for _, nr := range sensitiveSyscallList {
+				risky[nr] = true
+			}
+		}
+		for _, nr := range baselineContainerSyscalls {
+			analysis.AllowedSyscalls = append(analysis.AllowedSyscalls, syscallName(nr))
+		}
+		for nr := range risky {
+			analysis.AllowedSyscalls = append(analysis.AllowedSyscalls, syscallName(nr))
+			analysis.RiskySyscalls = append(analysis.RiskySyscalls, syscallName(nr))
+		}
+	}
+	sort.Strings(analysis.AllowedSyscalls)
+	sort.Strings(analysis.RiskySyscalls)
+	sort.Strings(analysis.BlockedSyscalls)
+
+	// Exposure score: breadth (allowed) plus weighted sensitivity, clamped 0..10.
+	score := float64(len(analysis.AllowedSyscalls))*0.05 + float64(len(analysis.RiskySyscalls))*1.2
+	if score > 10.0 {
+		score = 10.0
+	}
+	analysis.ExposureScore = score
+	return analysis
+}
+
+// analyzeContainerNetworkExposure derives the container's network exposure from
+// its declared ports, marking ports the fronting service publishes as public,
+// and scores it by port count and the presence of high-risk ports.
 func (asa *AttackSurfaceAnalyzer) analyzeContainerNetworkExposure(pod *v1.Pod, container *v1.Container) *NetworkExposureAnalysis {
 	var publicPorts, internalPorts []ExposedPort
+
+	publicSet := asa.publicContainerPorts(pod)
 
 	for _, port := range container.Ports {
 		exposedPort := ExposedPort{
 			Port:     port.ContainerPort,
 			Protocol: string(port.Protocol),
 			Service:  port.Name,
-			Public:   false, // Determined by service analysis
+			Public:   publicSet[port.ContainerPort],
 		}
-		internalPorts = append(internalPorts, exposedPort)
+		if exposedPort.Public {
+			publicPorts = append(publicPorts, exposedPort)
+		} else {
+			internalPorts = append(internalPorts, exposedPort)
+		}
+	}
+
+	// Score: public ports weigh more than internal, high-risk ports add extra.
+	score := float64(len(publicPorts))*2.0 + float64(len(internalPorts))*0.5
+	for _, p := range container.Ports {
+		if asa.isHighRiskPort(p.ContainerPort) {
+			score += 1.0
+		}
+	}
+	if score > 10.0 {
+		score = 10.0
 	}
 
 	return &NetworkExposureAnalysis{
@@ -1978,83 +2806,160 @@ func (asa *AttackSurfaceAnalyzer) analyzeContainerNetworkExposure(pod *v1.Pod, c
 		InternalPorts:   internalPorts,
 		OutboundTraffic: []OutboundConnection{},
 		NetworkPolicies: []AppliedNetworkPolicy{},
-		ExposureScore:   3.0,
+		ExposureScore:   score,
 	}
 }
 
+// analyzeFilesystemExposure derives the container's filesystem exposure from its
+// real volume mounts and root-filesystem posture, flagging secret/configmap and
+// hostPath mounts as sensitive, and scores it accordingly.
 func (asa *AttackSurfaceAnalyzer) analyzeFilesystemExposure(pod *v1.Pod, container *v1.Container) *FileSystemExposureAnalysis {
 	var writablePaths []string
 	var mountPoints []MountPoint
+	var sensitiveFiles []SensitiveFile
 
-	// Analyze volume mounts
+	// Classify volumes referenced by this pod.
+	volType := make(map[string]string)
+	for _, v := range pod.Spec.Volumes {
+		switch {
+		case v.Secret != nil:
+			volType[v.Name] = "secret"
+		case v.ConfigMap != nil:
+			volType[v.Name] = "config"
+		case v.HostPath != nil:
+			volType[v.Name] = "hostPath"
+		}
+	}
+
+	roRoot := container.SecurityContext != nil &&
+		container.SecurityContext.ReadOnlyRootFilesystem != nil &&
+		*container.SecurityContext.ReadOnlyRootFilesystem
+	if !roRoot {
+		writablePaths = append(writablePaths, "/")
+	}
+
 	for _, mount := range container.VolumeMounts {
+		t := volType[mount.Name]
+		sensitive := t == "secret" || t == "config" || t == "hostPath"
 		mountPoint := MountPoint{
 			Source:      mount.Name,
 			Destination: mount.MountPath,
+			Type:        t,
 			ReadOnly:    mount.ReadOnly,
-			Sensitive:   mount.Name == "secret" || mount.Name == "configmap",
+			Sensitive:   sensitive,
 		}
 		mountPoints = append(mountPoints, mountPoint)
 
+		if sensitive {
+			risk := "medium"
+			if t == "secret" || t == "hostPath" {
+				risk = "high"
+			}
+			sensitiveFiles = append(sensitiveFiles, SensitiveFile{
+				Path: mount.MountPath,
+				Type: t,
+				Risk: risk,
+			})
+		}
 		if !mount.ReadOnly {
 			writablePaths = append(writablePaths, mount.MountPath)
 		}
 	}
 
+	// Score: writable surface plus weighted sensitive mounts; a writable root
+	// filesystem is the single largest contributor.
+	score := 0.0
+	for _, p := range writablePaths {
+		if p == "/" {
+			score += 3.0
+		} else {
+			score += 0.5
+		}
+	}
+	for _, sf := range sensitiveFiles {
+		if sf.Risk == "high" {
+			score += 1.5
+		} else {
+			score += 0.75
+		}
+	}
+	if score > 10.0 {
+		score = 10.0
+	}
+
 	return &FileSystemExposureAnalysis{
-		SensitiveFiles: []SensitiveFile{},
+		SensitiveFiles: sensitiveFiles,
 		WritablePaths:  writablePaths,
 		MountPoints:    mountPoints,
 		Permissions:    map[string]string{},
-		ExposureScore:  3.5,
+		ExposureScore:  score,
 	}
 }
 
+// analyzeContainerSecurityContext scores the container's security context. A
+// missing security context is not "medium risk by default" — it means the
+// container runs with every insecure default (privilege escalation permitted,
+// writable root filesystem, non-root not enforced), so it is scored exactly as
+// an empty context would be rather than with a magic constant.
 func (asa *AttackSurfaceAnalyzer) analyzeContainerSecurityContext(container *v1.Container) *SecurityContextAnalysis {
-	analysis := &SecurityContextAnalysis{
-		RiskScore: 5.0, // Default medium risk
-	}
+	analysis := &SecurityContextAnalysis{}
 
-	if container.SecurityContext != nil {
-		sc := container.SecurityContext
+	sc := container.SecurityContext
+	if sc != nil {
 		analysis.RunAsUser = sc.RunAsUser
 		analysis.RunAsGroup = sc.RunAsGroup
 		analysis.RunAsNonRoot = sc.RunAsNonRoot
 		analysis.ReadOnlyRootFilesystem = sc.ReadOnlyRootFilesystem
 		analysis.AllowPrivilegeEscalation = sc.AllowPrivilegeEscalation
 		analysis.Privileged = sc.Privileged
-
-		// Calculate risk based on security context
-		riskScore := 0.0
-		if sc.RunAsUser != nil && *sc.RunAsUser == 0 {
-			riskScore += 3.0 // Running as root
-		}
-		if sc.Privileged != nil && *sc.Privileged {
-			riskScore += 4.0 // Privileged container
-		}
-		if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-			riskScore += 2.0 // Privilege escalation allowed
-		}
-		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
-			riskScore += 1.0 // Writable root filesystem
-		}
-
-		analysis.RiskScore = riskScore
 	}
+
+	// Score against the insecure-default posture. A nil field is treated as the
+	// Kubernetes default, which for these controls is the insecure value.
+	riskScore := 0.0
+	if sc != nil && sc.RunAsUser != nil && *sc.RunAsUser == 0 {
+		riskScore += 3.0 // running as root (explicitly)
+	}
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		riskScore += 1.0 // non-root not enforced
+	}
+	if sc != nil && sc.Privileged != nil && *sc.Privileged {
+		riskScore += 4.0 // privileged container
+	}
+	if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		riskScore += 2.0 // privilege escalation allowed
+	}
+	if sc == nil || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		riskScore += 1.0 // writable root filesystem
+	}
+	if riskScore > 10.0 {
+		riskScore = 10.0
+	}
+	analysis.RiskScore = riskScore
 
 	return analysis
 }
 
+// analyzeResourceLimits scores a container's resource-exhaustion (DoS) exposure
+// from which limits are actually set: no limits is the highest risk, both CPU and
+// memory limits the lowest, and a partial set in between.
 func (asa *AttackSurfaceAnalyzer) analyzeResourceLimits(container *v1.Container) *ResourceLimitsAnalysis {
-	analysis := &ResourceLimitsAnalysis{
-		HasLimits: false,
-		RiskScore: 3.0, // Default medium risk
+	analysis := &ResourceLimitsAnalysis{}
+
+	_, hasCPU := container.Resources.Limits["cpu"]
+	_, hasMem := container.Resources.Limits["memory"]
+	analysis.HasLimits = len(container.Resources.Limits) > 0
+
+	switch {
+	case hasCPU && hasMem:
+		analysis.RiskScore = 1.0 // both bounded
+	case hasCPU || hasMem:
+		analysis.RiskScore = 2.5 // only one dimension bounded
+	default:
+		analysis.RiskScore = 4.0 // unbounded: DoS / noisy-neighbour exposure
 	}
 
 	if container.Resources.Limits != nil {
-		analysis.HasLimits = true
-		analysis.RiskScore = 1.0 // Lower risk with limits
-
 		if cpu, ok := container.Resources.Limits["cpu"]; ok {
 			analysis.CPULimit = cpu.String()
 		}
@@ -2075,14 +2980,20 @@ func (asa *AttackSurfaceAnalyzer) analyzeResourceLimits(container *v1.Container)
 	return analysis
 }
 
+// analyzeContainerCapabilities scores the container's capability posture from
+// the actual capabilities it adds and drops. The score starts at 0 and rises
+// per risky capability added; dropping ALL capabilities is credited as the
+// most-hardened baseline.
 func (asa *AttackSurfaceAnalyzer) analyzeContainerCapabilities(container *v1.Container) *CapabilityAnalysis {
 	analysis := &CapabilityAnalysis{
-		Added:     []string{},
-		Dropped:   []string{},
-		Risky:     []string{},
-		Required:  []string{},
-		RiskScore: 3.0,
+		Added:    []string{},
+		Dropped:  []string{},
+		Risky:    []string{},
+		Required: []string{},
 	}
+
+	riskScore := 0.0
+	droppedAll := false
 
 	if container.SecurityContext != nil && container.SecurityContext.Capabilities != nil {
 		caps := container.SecurityContext.Capabilities
@@ -2090,18 +3001,33 @@ func (asa *AttackSurfaceAnalyzer) analyzeContainerCapabilities(container *v1.Con
 		for _, cap := range caps.Add {
 			capStr := string(cap)
 			analysis.Added = append(analysis.Added, capStr)
-
-			// Check for risky capabilities
 			if asa.isRiskyCapability(capStr) {
 				analysis.Risky = append(analysis.Risky, capStr)
-				analysis.RiskScore += 1.0
+				riskScore += 1.5
+			} else {
+				riskScore += 0.3
 			}
 		}
 
 		for _, cap := range caps.Drop {
 			analysis.Dropped = append(analysis.Dropped, string(cap))
+			if string(cap) == "ALL" {
+				droppedAll = true
+			}
 		}
 	}
+
+	// A container that adds nothing and drops ALL is the hardened baseline.
+	if droppedAll && len(analysis.Added) == 0 {
+		riskScore = 0.0
+	} else if !droppedAll && len(analysis.Added) == 0 {
+		// Neither hardened nor extended: it keeps the runtime's default set.
+		riskScore = 1.0
+	}
+	if riskScore > 10.0 {
+		riskScore = 10.0
+	}
+	analysis.RiskScore = riskScore
 
 	return analysis
 }
@@ -2127,14 +3053,79 @@ func (asa *AttackSurfaceAnalyzer) isRiskyCapability(capability string) bool {
 	return false
 }
 
+// analyzePolicyCompliance checks the container's real security context against
+// the Pod Security "restricted" baseline. Each control the container fails to
+// satisfy is recorded as a violation and lowers the compliance score from a
+// perfect 10 by a per-control weight; the container is compliant only when no
+// control is violated.
 func (asa *AttackSurfaceAnalyzer) analyzePolicyCompliance(pod *v1.Pod, container *v1.Container) *PolicyComplianceAnalysis {
-	return &PolicyComplianceAnalysis{
+	analysis := &PolicyComplianceAnalysis{
 		Compliant:        true,
 		PolicyViolations: []string{},
-		RequiredPolicies: []string{"PodSecurityPolicy", "NetworkPolicy"},
+		RequiredPolicies: []string{"restricted-pod-security", "resource-limits", "capability-drop-all"},
 		MissingPolicies:  []string{},
-		ComplianceScore:  8.0,
+		ComplianceScore:  10.0,
 	}
+
+	sc := container.SecurityContext
+
+	// privileged: -4
+	if sc != nil && sc.Privileged != nil && *sc.Privileged {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "container runs in privileged mode")
+		analysis.ComplianceScore -= 4.0
+	}
+	// runs as root / not enforced non-root: -2
+	runsAsRoot := sc != nil && sc.RunAsUser != nil && *sc.RunAsUser == 0
+	enforcesNonRoot := sc != nil && sc.RunAsNonRoot != nil && *sc.RunAsNonRoot
+	if runsAsRoot || !enforcesNonRoot {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "container may run as root (runAsNonRoot not enforced)")
+		analysis.ComplianceScore -= 2.0
+	}
+	// allowPrivilegeEscalation not disabled: -2
+	if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "allowPrivilegeEscalation is not set to false")
+		analysis.ComplianceScore -= 2.0
+	}
+	// writable root filesystem: -1
+	if sc == nil || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "readOnlyRootFilesystem is not enabled")
+		analysis.ComplianceScore -= 1.0
+	}
+	// capabilities not dropped to ALL: -1, plus any risky added capability: -1 each
+	if !capabilitiesDropAll(sc) {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "capabilities are not dropped to ALL")
+		analysis.MissingPolicies = append(analysis.MissingPolicies, "capability-drop-all")
+		analysis.ComplianceScore -= 1.0
+	}
+	if sc != nil && sc.Capabilities != nil {
+		for _, c := range sc.Capabilities.Add {
+			if asa.isRiskyCapability(string(c)) {
+				analysis.PolicyViolations = append(analysis.PolicyViolations, fmt.Sprintf("risky capability added: %s", string(c)))
+				analysis.ComplianceScore -= 1.0
+			}
+		}
+	}
+	// no resource limits: -1
+	if len(container.Resources.Limits) == 0 {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "no resource limits set")
+		analysis.MissingPolicies = append(analysis.MissingPolicies, "resource-limits")
+		analysis.ComplianceScore -= 1.0
+	}
+	// hostNetwork / hostPID / hostIPC at the pod level: -2 each
+	if pod.Spec.HostNetwork {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "pod uses host network namespace")
+		analysis.ComplianceScore -= 2.0
+	}
+	if pod.Spec.HostPID {
+		analysis.PolicyViolations = append(analysis.PolicyViolations, "pod uses host PID namespace")
+		analysis.ComplianceScore -= 2.0
+	}
+
+	if analysis.ComplianceScore < 0 {
+		analysis.ComplianceScore = 0
+	}
+	analysis.Compliant = len(analysis.PolicyViolations) == 0
+	return analysis
 }
 
 func (asa *AttackSurfaceAnalyzer) calculateContainerRisk(containerSurface *ContainerAttackSurface) float64 {
@@ -2238,7 +3229,7 @@ func (asa *AttackSurfaceAnalyzer) serviceExposesWorkload(service *v1.Service, wo
 		return false
 	}
 
-	// Basic implementation - would need to check actual pod labels
+	// Match the service selector against the workload's app identity labels.
 	for key, value := range service.Spec.Selector {
 		if key == "app" && value == workloadRef.Name {
 			return true
@@ -2313,7 +3304,7 @@ func (asa *AttackSurfaceAnalyzer) networkPolicyAppliesTo(policy *netv1.NetworkPo
 		return true // Empty selector matches all pods
 	}
 
-	// Basic implementation - would need to check actual pod labels
+	// Match the policy pod-selector against the workload's app identity labels.
 	for key, value := range policy.Spec.PodSelector.MatchLabels {
 		if key == "app" && value == workloadRef.Name {
 			return true
@@ -2361,16 +3352,122 @@ func (asa *AttackSurfaceAnalyzer) calculatePolicyEffectiveness(policy *netv1.Net
 	return effectiveness
 }
 
+// calculatePolicyCoverage measures how much of a workload's observed network
+// attack surface a NetworkPolicy actually governs, on a 0..10 scale. Coverage is
+// the mean of two real signals:
+//
+//	directionCoverage = (policyTypes the policy declares among Ingress/Egress) / 2
+//	portCoverage      = fraction of the workload's observed container ports that
+//	                    appear in the policy's port rules
+//
+// The observed surface is derived from the actual container ports of the pods
+// that make up the workload; the enforced surface is the set of ports named in
+// the policy's ingress/egress rules. An "allow-all" rule (no peers and no ports)
+// asserts a direction is handled but constrains nothing, so it contributes to
+// directionCoverage but not to portCoverage. Coverage collapses to 0 when the
+// policy has no rules at all.
 func (asa *AttackSurfaceAnalyzer) calculatePolicyCoverage(policy *netv1.NetworkPolicy, workloadRef learner.WorkloadReference) float64 {
-	// Simple coverage calculation - would be more sophisticated in practice
-	coverage := 8.0 // Assume good coverage for now
-
-	// Reduce coverage if policy has no rules
-	if len(policy.Spec.Ingress) == 0 && len(policy.Spec.Egress) == 0 {
-		coverage = 2.0
+	hasIngress := len(policy.Spec.Ingress) > 0
+	hasEgress := len(policy.Spec.Egress) > 0
+	if !hasIngress && !hasEgress {
+		return 0.0
 	}
 
+	// Direction coverage: how many of the two traffic directions are addressed.
+	// Prefer the declared PolicyTypes when present, else infer from the rules.
+	directions := 0.0
+	if len(policy.Spec.PolicyTypes) > 0 {
+		for _, pt := range policy.Spec.PolicyTypes {
+			if pt == netv1.PolicyTypeIngress || pt == netv1.PolicyTypeEgress {
+				directions++
+			}
+		}
+	} else {
+		if hasIngress {
+			directions++
+		}
+		if hasEgress {
+			directions++
+		}
+	}
+	directionCoverage := directions / 2.0
+	if directionCoverage > 1.0 {
+		directionCoverage = 1.0
+	}
+
+	// Observed surface: the distinct container ports the workload exposes.
+	observedPorts := asa.observedWorkloadPorts(workloadRef)
+
+	// Enforced surface: ports named across the policy's ingress/egress rules.
+	enforcedPorts := make(map[int32]bool)
+	collect := func(ports []netv1.NetworkPolicyPort) {
+		for _, p := range ports {
+			if p.Port != nil && p.Port.Type == 0 { // Int-typed port
+				enforcedPorts[int32(p.Port.IntValue())] = true
+			}
+		}
+	}
+	for _, r := range policy.Spec.Ingress {
+		collect(r.Ports)
+	}
+	for _, r := range policy.Spec.Egress {
+		collect(r.Ports)
+	}
+
+	// Port coverage: fraction of observed ports that the policy actually names.
+	var portCoverage float64
+	switch {
+	case len(observedPorts) == 0:
+		// Nothing observed to constrain; direction coverage alone is meaningful.
+		portCoverage = directionCoverage
+	case len(enforcedPorts) == 0:
+		// Rules exist but pin no specific ports (allow-all style): no port-level
+		// restriction of the observed surface.
+		portCoverage = 0.0
+	default:
+		matched := 0
+		for p := range observedPorts {
+			if enforcedPorts[p] {
+				matched++
+			}
+		}
+		portCoverage = float64(matched) / float64(len(observedPorts))
+	}
+
+	coverage := 10.0 * (0.5*directionCoverage + 0.5*portCoverage)
+	if coverage > 10.0 {
+		coverage = 10.0
+	}
+	if coverage < 0 {
+		coverage = 0
+	}
 	return coverage
+}
+
+// observedWorkloadPorts returns the distinct container ports declared by the
+// pods that belong to the given workload — the workload's observed network
+// attack surface.
+func (asa *AttackSurfaceAnalyzer) observedWorkloadPorts(workloadRef learner.WorkloadReference) map[int32]bool {
+	ports := make(map[int32]bool)
+	if asa.client == nil {
+		return ports
+	}
+	pods := &v1.PodList{}
+	if err := asa.client.List(context.Background(), pods, client.InNamespace(workloadRef.Namespace)); err != nil {
+		return ports
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if !asa.podBelongsToWorkload(pod, workloadRef) {
+			continue
+		}
+		for _, c := range pod.Spec.Containers {
+			for _, p := range c.Ports {
+				ports[p.ContainerPort] = true
+			}
+		}
+	}
+	return ports
 }
 
 // Additional type definitions
@@ -2380,7 +3477,7 @@ type PathAnalysis struct {
 
 // IsolationLevel is already defined earlier in the file
 
-// Additional types for completeness
+// Supporting type definitions
 type NetworkTopology struct {
 	Subnets       []*Subnet
 	Gateways      []*Gateway
@@ -3012,4 +4109,303 @@ func (asa *AttackSurfaceAnalyzer) exportToCustom(data *AttackSurfaceData, export
 	// - Making HTTP requests to custom endpoint
 	// - Handling authentication and retry logic
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Attack-surface computation helpers and lookup tables.
+//
+// The syscall numbers below are the Linux x86_64 ABI numbers. They back the
+// capability->syscall reconstruction used when no learned/enforced policy is
+// available, so that a pod's syscall attack surface is derived from what its
+// declared capabilities actually unlock rather than from a fixed list.
+// ---------------------------------------------------------------------------
+
+// baselineContainerSyscalls is the set every ordinary container needs to run.
+// It is the floor of the "allowed" surface; capability-gated syscalls widen it.
+var baselineContainerSyscalls = []uint64{
+	0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 21, 22, 23, 32, 35,
+	39, 41, 42, 43, 44, 45, 49, 50, 56, 59, 60, 61, 72, 202, 217, 218, 231,
+	232, 233, 257, 262, 273, 291,
+}
+
+// capabilitySyscalls maps a Linux capability (as spelled in a Kubernetes
+// SecurityContext, i.e. without the "CAP_" prefix) to the sensitive syscalls it
+// unlocks.
+var capabilitySyscalls = map[string][]uint64{
+	"SYS_PTRACE": {101, 310, 311},
+	"SYS_ADMIN":  {165, 166, 155, 167, 168, 161, 308, 272, 321, 298, 246},
+	"SYS_MODULE": {175, 176, 313},
+	"SYS_BOOT":   {169, 246},
+	"SYS_TIME":   {164, 227, 159},
+	"SYS_RAWIO":  {172, 173},
+	"SYS_CHROOT": {161},
+	"SETUID":     {105, 117},
+	"SETGID":     {106, 119},
+}
+
+// sensitiveSyscallList enumerates every syscall considered a security-relevant
+// (escape/tamper) primitive. sensitiveSyscalls is its set form.
+var sensitiveSyscallList = []uint64{
+	101, 310, 311, 165, 166, 155, 167, 168, 161, 308, 272, 321, 298,
+	175, 176, 313, 169, 246, 164, 227, 159, 172, 173, 105, 117, 106, 119,
+	248, 250,
+}
+
+var sensitiveSyscalls = func() map[uint64]bool {
+	m := make(map[uint64]bool, len(sensitiveSyscallList))
+	for _, nr := range sensitiveSyscallList {
+		m[nr] = true
+	}
+	return m
+}()
+
+// criticalSyscalls are the subset of sensitive syscalls that grant kernel-level
+// or container-escape power (as opposed to merely elevated in-container power).
+var criticalSyscalls = map[uint64]bool{
+	101: true, 165: true, 155: true, 175: true, 176: true, 313: true,
+	321: true, 169: true, 246: true, 172: true, 173: true, 308: true,
+	272: true, 161: true,
+}
+
+// syscallNames maps the syscall numbers referenced by this analyzer to their
+// canonical names for human-readable exposure reports.
+var syscallNames = map[uint64]string{
+	0: "read", 1: "write", 2: "open", 3: "close", 4: "stat", 5: "fstat",
+	8: "lseek", 9: "mmap", 10: "mprotect", 11: "munmap", 12: "brk",
+	13: "rt_sigaction", 14: "rt_sigprocmask", 15: "rt_sigreturn", 16: "ioctl",
+	21: "access", 22: "pipe", 23: "select", 32: "dup", 35: "nanosleep",
+	39: "getpid", 41: "socket", 42: "connect", 43: "accept", 44: "sendto",
+	45: "recvfrom", 49: "bind", 50: "listen", 56: "clone", 59: "execve",
+	60: "exit", 61: "wait4", 72: "fcntl", 105: "setuid", 106: "setgid",
+	117: "setresuid", 119: "setresgid", 155: "pivot_root", 159: "adjtimex",
+	161: "chroot", 164: "settimeofday", 165: "mount", 166: "umount2",
+	167: "swapon", 168: "swapoff", 169: "reboot", 172: "iopl", 173: "ioperm",
+	175: "init_module", 176: "delete_module", 202: "futex", 217: "getdents64",
+	218: "set_tid_address", 227: "clock_settime", 231: "exit_group",
+	232: "epoll_wait", 233: "epoll_ctl", 246: "kexec_load", 248: "add_key",
+	250: "keyctl", 257: "openat", 262: "newfstatat", 272: "unshare",
+	273: "set_robust_list", 291: "epoll_create1", 298: "perf_event_open",
+	308: "setns", 310: "process_vm_readv", 311: "process_vm_writev",
+	313: "finit_module", 321: "bpf",
+}
+
+func syscallName(nr uint64) string {
+	if name, ok := syscallNames[nr]; ok {
+		return name
+	}
+	return fmt.Sprintf("syscall_%d", nr)
+}
+
+func isSensitiveSyscall(nr uint64) bool { return sensitiveSyscalls[nr] }
+
+func isCriticalSyscall(nr uint64) bool { return criticalSyscalls[nr] }
+
+// mapLearnerCriticality translates a learner criticality level into the
+// visualization package's own criticality scale.
+func mapLearnerCriticality(c learner.CriticalityLevel) CriticalityLevel {
+	switch strings.ToLower(string(c)) {
+	case "critical":
+		return CriticalityCritical
+	case "high":
+		return CriticalityHigh
+	case "medium":
+		return CriticalityMedium
+	case "low":
+		return CriticalityLow
+	default:
+		return CriticalityInfo
+	}
+}
+
+// appendUniqueString appends s to slice only if it is not already present.
+func appendUniqueString(slice []string, s string) []string {
+	for _, existing := range slice {
+		if existing == s {
+			return slice
+		}
+	}
+	return append(slice, s)
+}
+
+// stringsContains reports whether target appears in slice.
+func stringsContains(slice []string, target string) bool {
+	for _, s := range slice {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+// imageTag extracts the tag from a container image reference, or "" if the
+// reference is digest-pinned or untagged.
+func imageTag(image string) string {
+	if strings.Contains(image, "@") {
+		return ""
+	}
+	// Strip any registry host:port before looking for the tag separator so that
+	// the port colon is not mistaken for a tag.
+	name := image
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		if j := strings.LastIndex(name[i+1:], ":"); j >= 0 {
+			return name[i+1+j+1:]
+		}
+		return ""
+	}
+	if j := strings.LastIndex(name, ":"); j >= 0 {
+		return name[j+1:]
+	}
+	return ""
+}
+
+// imageHasRegistryHost reports whether the image reference names an explicit
+// registry host (contains a "/" whose first segment looks like a host).
+func imageHasRegistryHost(image string) bool {
+	i := strings.Index(image, "/")
+	if i < 0 {
+		return false
+	}
+	first := image[:i]
+	return strings.ContainsAny(first, ".:") || first == "localhost"
+}
+
+// capabilitiesDropAll reports whether the security context drops all Linux
+// capabilities.
+func capabilitiesDropAll(sc *v1.SecurityContext) bool {
+	if sc == nil || sc.Capabilities == nil {
+		return false
+	}
+	for _, c := range sc.Capabilities.Drop {
+		if string(c) == "ALL" {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenAutomounted reports whether the pod's service-account token is mounted
+// into its containers. Kubernetes defaults this to true when unset.
+func tokenAutomounted(pod *v1.Pod) bool {
+	if pod == nil {
+		return true
+	}
+	if pod.Spec.AutomountServiceAccountToken != nil {
+		return *pod.Spec.AutomountServiceAccountToken
+	}
+	return true
+}
+
+// scoreToImpact maps a 0..10 risk score to an impact level using the configured
+// thresholds.
+func (asa *AttackSurfaceAnalyzer) scoreToImpact(score float64) ImpactLevel {
+	switch asa.riskToCriticality(score) {
+	case CriticalityCritical:
+		return ImpactLevelCritical
+	case CriticalityHigh:
+		return ImpactLevelHigh
+	case CriticalityMedium:
+		return ImpactLevelMedium
+	default:
+		return ImpactLevelLow
+	}
+}
+
+// scoreToLikelihood maps a 0..10 risk score to a likelihood level.
+func (asa *AttackSurfaceAnalyzer) scoreToLikelihood(score float64) LikelihoodLevel {
+	switch {
+	case score >= asa.highRiskThreshold():
+		return LikelihoodLevelHigh
+	case asa.riskThresholds != nil && score >= asa.riskThresholds.Medium:
+		return LikelihoodLevelMedium
+	default:
+		return LikelihoodLevelLow
+	}
+}
+
+// highRiskThreshold returns the configured High risk threshold (default 7.0).
+func (asa *AttackSurfaceAnalyzer) highRiskThreshold() float64 {
+	if asa.riskThresholds != nil {
+		return asa.riskThresholds.High
+	}
+	return 7.0
+}
+
+// classifyExposureType infers the dominant exposure type of a path from the real
+// properties of the asset it reaches.
+func (asa *AttackSurfaceAnalyzer) classifyExposureType(graph *ClusterAttackSurfaceGraph, endNodeID string) ExposureType {
+	end, ok := graph.Nodes[endNodeID]
+	if !ok {
+		return ExposureTypeNetworkIngress
+	}
+	if end.Privileges != nil && (end.Privileges.Privileged ||
+		(end.Privileges.RunAsUser != nil && *end.Privileges.RunAsUser == 0) ||
+		end.Privileges.AllowPrivilegeEscalation) {
+		return ExposureTypePrivilegeEscalation
+	}
+	if end.FileSystemProfile != nil && len(end.FileSystemProfile.SensitiveFiles) > 0 {
+		return ExposureTypeDataAccess
+	}
+	if end.Type == NodeTypeDatabase || end.Type == NodeTypeAPI {
+		return ExposureTypeDataAccess
+	}
+	return ExposureTypeLateralMovement
+}
+
+// pathEdgeRisk sums the risk contributions of the edges traversed along a path.
+func (asa *AttackSurfaceAnalyzer) pathEdgeRisk(path *PathAnalysis, graph *ClusterAttackSurfaceGraph) float64 {
+	var sum float64
+	for i := 0; i+1 < len(path.Nodes); i++ {
+		edgeID := fmt.Sprintf("%s->%s", path.Nodes[i], path.Nodes[i+1])
+		if e, ok := graph.Edges[edgeID]; ok {
+			sum += e.RiskContribution
+		}
+	}
+	return sum
+}
+
+// pathDefenses expresses the mitigation steps for a path as recommended (not yet
+// active) defenses.
+func (asa *AttackSurfaceAnalyzer) pathDefenses(path *PathAnalysis, graph *ClusterAttackSurfaceGraph) []*Defense {
+	var defenses []*Defense
+	for _, step := range asa.generateMitigationSteps(path, graph) {
+		defenses = append(defenses, &Defense{
+			Name:   step,
+			Type:   "Mitigation",
+			Active: false,
+		})
+	}
+	return defenses
+}
+
+// publicContainerPorts returns the set of container ports fronted by a service
+// of type NodePort or LoadBalancer, i.e. the ports that are actually externally
+// reachable.
+func (asa *AttackSurfaceAnalyzer) publicContainerPorts(pod *v1.Pod) map[int32]bool {
+	public := make(map[int32]bool)
+	if asa.client == nil || pod == nil {
+		return public
+	}
+	services := &v1.ServiceList{}
+	if err := asa.client.List(context.Background(), services, client.InNamespace(pod.Namespace)); err != nil {
+		return public
+	}
+	for i := range services.Items {
+		svc := &services.Items[i]
+		if svc.Spec.Type != v1.ServiceTypeNodePort && svc.Spec.Type != v1.ServiceTypeLoadBalancer {
+			continue
+		}
+		if !asa.podMatchesSelector(pod, svc.Spec.Selector) {
+			continue
+		}
+		for _, sp := range svc.Spec.Ports {
+			// TargetPort resolves to a container port; when it is an int use it,
+			// otherwise fall back to the service port number.
+			if sp.TargetPort.Type == 0 && sp.TargetPort.IntVal != 0 {
+				public[sp.TargetPort.IntVal] = true
+			} else {
+				public[sp.Port] = true
+			}
+		}
+	}
+	return public
 }

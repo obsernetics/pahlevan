@@ -20,13 +20,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
+	"os/signal"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -270,16 +276,10 @@ func NewPolicyDescribeCommand() *cobra.Command {
 				_ = table.Render(writer) //nolint:errcheck // Output error is not critical for CLI
 			}
 
-			// List policy events using kubeClient
+			// List real Kubernetes events for this policy's involved object.
 			if kubeClient != nil {
-				// In a real implementation, this would query Kubernetes events
-				// related to PahlevanPolicy resources in the specified namespace
-				fmt.Fprintf(writer.Writer, "\nPolicy Events (last 24h):\n")
-				fmt.Fprintf(writer.Writer, "%-20s %-15s %-10s %s\n", "Time", "Type", "Reason", "Message")
-				fmt.Fprintf(writer.Writer, "%-20s %-15s %-10s %s\n", "----", "----", "------", "-------")
-				fmt.Fprintf(writer.Writer, "%-20s %-15s %-10s %s\n",
-					"2024-01-15 10:30:00", "Normal", "Created",
-					fmt.Sprintf("Policy created in namespace %s", namespace))
+				fmt.Fprintf(writer.Writer, "\nEvents:\n")
+				printPolicyEvents(writer, kubeClient, policy)
 			}
 
 			return nil
@@ -334,9 +334,19 @@ func NewPolicyCreateCommand() *cobra.Command {
 				return fmt.Errorf("policy validation failed: %v", err)
 			}
 
+			if k8sClient == nil {
+				return fmt.Errorf("kubernetes client is not initialized")
+			}
+
 			if dryRun {
-				writer.PrintInfo("Dry run: Policy would be created")
-				return writer.WriteObject(policy)
+				// Perform a real server-side dry-run: the API server validates
+				// and defaults the object (running admission) but persists
+				// nothing. The returned object reflects server-side defaulting.
+				if err := k8sClient.Create(context.Background(), policy, client.DryRunAll); err != nil {
+					return fmt.Errorf("dry-run create failed: %v", err)
+				}
+				writer.PrintInfo("Dry run: policy accepted by the API server (not persisted)")
+				return cli.NewOutputWriter("yaml").WriteObject(policy)
 			}
 
 			// Create the policy in the cluster
@@ -587,22 +597,11 @@ func formatPorts(ports []int32) string {
 	return cli.FormatList(strPorts)
 }
 
-// GetClients returns the global clients - interfaces with main package initialization
-func GetClients() (client.Client, interface{}, interface{}, string, bool) {
-	// In a production implementation, this would interface with the main package
-	// to get initialized Kubernetes client, eBPF manager, and policy engine.
-	// For now, return safe defaults that allow CLI commands to run without crashing.
-
-	// Return nil clients but indicate they are not available
-	// This allows commands to gracefully handle missing clients
-	return nil, nil, nil, "default", false
-}
-
 // Helper functions for policy creation
 
 func createPolicyFromFile(filename string) (*policyv1alpha1.PahlevanPolicy, error) {
 	// Read file content
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read policy file %s: %w", filename, err)
 	}
@@ -717,32 +716,120 @@ func getCurrentTimestamp() int64 {
 }
 
 func watchPolicyStatus(k8sClient client.Client, policyName, namespace string, writer *cli.OutputWriter) error {
-	writer.PrintInfo(fmt.Sprintf("Watching policy %s/%s for changes (Ctrl+C to stop)...", namespace, policyName))
-
-	// This would implement watching using controller-runtime client
-	// For now, just simulate with a simple loop
-	for i := 0; i < 5; i++ {
-		policy := &policyv1alpha1.PahlevanPolicy{}
-		err := k8sClient.Get(context.Background(), types.NamespacedName{
-			Name:      policyName,
-			Namespace: namespace,
-		}, policy)
-		if err != nil {
-			return fmt.Errorf("failed to get policy %s: %v", policyName, err)
-		}
-
-		fmt.Fprintf(writer.Writer, "[%s] Policy: %s/%s, Phase: %s\n",
-			getCurrentTimeString(),
-			policy.Namespace,
-			policy.Name,
-			cli.ColorizeStatus(string(policy.Status.Phase)))
-
-		// In a real implementation, this would use a proper watch mechanism
-		// time.Sleep(5 * time.Second)
-		break // For now, just show one update
+	restCfg := getRESTConfig()
+	if restCfg == nil {
+		return fmt.Errorf("kubernetes REST config is not initialized")
 	}
 
-	return nil
+	// Build a watch-capable controller-runtime client so we can stream changes
+	// to the PahlevanPolicy CRD (the client-go typed clientset has no knowledge
+	// of this custom resource).
+	watchClient, err := client.NewWithWatch(restCfg, client.Options{Scheme: cli.GetScheme()})
+	if err != nil {
+		return fmt.Errorf("failed to create watch client: %v", err)
+	}
+
+	// Stop cleanly on Ctrl+C.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	writer.PrintInfo(fmt.Sprintf("Watching policy %s/%s for changes (Ctrl+C to stop)...", namespace, policyName))
+
+	// Print the current state first so the user sees something immediately.
+	current := &policyv1alpha1.PahlevanPolicy{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: policyName, Namespace: namespace}, current); err == nil {
+		printPolicyWatchEvent(writer, "INITIAL", current)
+	}
+
+	list := &policyv1alpha1.PahlevanPolicyList{}
+	w, err := watchClient.Watch(ctx, list, client.InNamespace(namespace))
+	if err != nil {
+		return fmt.Errorf("failed to start watch: %v", err)
+	}
+	defer w.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(writer.Writer, "\nStopped watching.\n")
+			return nil
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				// Channel closed by the API server; nothing more to stream.
+				return nil
+			}
+			policy, isPolicy := event.Object.(*policyv1alpha1.PahlevanPolicy)
+			if !isPolicy {
+				continue
+			}
+			// Filter to the policy the user asked to watch.
+			if policy.Name != policyName {
+				continue
+			}
+			printPolicyWatchEvent(writer, string(event.Type), policy)
+		}
+	}
+}
+
+// printPolicyWatchEvent renders a single watch event line for a policy.
+func printPolicyWatchEvent(writer *cli.OutputWriter, eventType string, policy *policyv1alpha1.PahlevanPolicy) {
+	fmt.Fprintf(writer.Writer, "[%s] %-8s Policy: %s/%s, Phase: %s\n",
+		getCurrentTimeString(),
+		eventType,
+		policy.Namespace,
+		policy.Name,
+		cli.ColorizeStatus(string(policy.Status.Phase)))
+}
+
+// printPolicyEvents queries and prints the real Kubernetes events associated
+// with the given policy's involved object.
+func printPolicyEvents(writer *cli.OutputWriter, kubeClient kubernetes.Interface, policy *policyv1alpha1.PahlevanPolicy) {
+	fieldSelector := fields.SelectorFromSet(fields.Set{
+		"involvedObject.name":      policy.Name,
+		"involvedObject.namespace": policy.Namespace,
+		"involvedObject.kind":      "PahlevanPolicy",
+	}).String()
+
+	events, err := kubeClient.CoreV1().Events(policy.Namespace).List(context.Background(), metav1.ListOptions{
+		FieldSelector: fieldSelector,
+	})
+	if err != nil {
+		fmt.Fprintf(writer.Writer, "  <failed to list events: %v>\n", err)
+		return
+	}
+
+	if len(events.Items) == 0 {
+		fmt.Fprintf(writer.Writer, "  <none>\n")
+		return
+	}
+
+	// Sort events by their last-seen time (most recent last).
+	sort.Slice(events.Items, func(i, j int) bool {
+		return eventTime(&events.Items[i]).Before(eventTime(&events.Items[j]))
+	})
+
+	table := cli.NewTableData("LAST SEEN", "TYPE", "REASON", "MESSAGE")
+	for i := range events.Items {
+		e := &events.Items[i]
+		table.AddRow(
+			cli.FormatTimestamp(eventTime(e)),
+			e.Type,
+			e.Reason,
+			cli.TruncateString(e.Message, 60),
+		)
+	}
+	_ = table.Render(writer) //nolint:errcheck // Output error is not critical for CLI
+}
+
+// eventTime returns the most relevant timestamp for an event.
+func eventTime(e *corev1.Event) time.Time {
+	if !e.LastTimestamp.IsZero() {
+		return e.LastTimestamp.Time
+	}
+	if e.EventTime.Time != (time.Time{}) {
+		return e.EventTime.Time
+	}
+	return e.CreationTimestamp.Time
 }
 
 func getCurrentTimeString() string {

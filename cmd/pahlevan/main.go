@@ -23,14 +23,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	"github.com/obsernetics/pahlevan/cmd/pahlevan/commands"
-	"github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
-	"github.com/obsernetics/pahlevan/pkg/cli"
 )
 
 var (
@@ -80,7 +74,7 @@ enforcement, and real-time monitoring of container behavior using eBPF technolog
 			if configFlags.Namespace != nil && *configFlags.Namespace != "" {
 				namespace = *configFlags.Namespace
 			}
-			return initializeClients(kubeconfig, namespace, verbose)
+			return commands.InitializeClients(kubeconfig, namespace, verbose)
 		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -107,60 +101,4 @@ enforcement, and real-time monitoring of container behavior using eBPF technolog
 	)
 
 	return cmd
-}
-
-// Global variables for shared clients
-var (
-	k8sClient       client.Client
-	kubeClient      kubernetes.Interface
-	restConfig      *rest.Config
-	globalNamespace string
-	globalVerbose   bool
-)
-
-// initializeClients initializes Kubernetes clients and global configuration
-func initializeClients(kubeconfig, namespace string, verbose bool) error {
-	// Store global configuration
-	globalNamespace = namespace
-	globalVerbose = verbose
-
-	// Get Kubernetes config
-	var err error
-	if kubeconfig != "" {
-		restConfig, err = config.GetConfigWithContext(kubeconfig)
-	} else {
-		restConfig, err = config.GetConfig()
-	}
-	if err != nil {
-		return fmt.Errorf("failed to get Kubernetes config: %v", err)
-	}
-
-	// Create controller-runtime client
-	scheme := cli.GetScheme()
-	if err := v1alpha1.AddToScheme(scheme); err != nil {
-		return fmt.Errorf("failed to add Pahlevan scheme: %v", err)
-	}
-
-	k8sClient, err = client.New(restConfig, client.Options{Scheme: scheme})
-	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes client: %v", err)
-	}
-
-	// Create standard Kubernetes client
-	kubeClient, err = kubernetes.NewForConfig(restConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes clientset: %v", err)
-	}
-
-	// Set default namespace if not provided
-	if globalNamespace == "" {
-		globalNamespace = "default"
-	}
-
-	return nil
-}
-
-// GetClients returns the initialized clients
-func GetClients() (client.Client, kubernetes.Interface, *rest.Config, string, bool) {
-	return k8sClient, kubeClient, restConfig, globalNamespace, globalVerbose
 }
