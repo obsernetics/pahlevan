@@ -1,0 +1,138 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "pahlevan.fullname" . }}-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-agent
+    app.kubernetes.io/component: node-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-agent
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "pahlevan.labels" . | nindent 8 }}
+        app.kubernetes.io/name: pahlevan-agent
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: node-agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.port | quote }}
+        prometheus.io/path: /metrics
+        {{- with .Values.agent.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "pahlevan.agentServiceAccountName" . }}
+      hostPID: true
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      containers:
+      - name: agent
+        image: {{ include "pahlevan.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/usr/local/bin/pahlevan-agent"]
+        args:
+        - --metrics-bind-address=:{{ .Values.metrics.port }}
+        - --health-probe-bind-address=:{{ .Values.health.port }}
+        - --learning-window={{ .Values.agent.learningWindow }}
+        - --enforcement-delay={{ .Values.agent.enforcementDelay }}
+        - --observability-exports={{ .Values.observability.exports }}
+        securityContext:
+          privileged: false
+          runAsNonRoot: false
+          runAsUser: 0
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: true
+          capabilities:
+            add:
+              {{- toYaml .Values.agent.capabilities | nindent 14 }}
+            drop:
+              - ALL
+        resources:
+          {{- toYaml .Values.agent.resources | nindent 10 }}
+        ports:
+        - name: metrics
+          containerPort: {{ .Values.metrics.port }}
+        - name: health
+          containerPort: {{ .Values.health.port }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        env:
+        - name: PAHLEVAN_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: PAHLEVAN_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+          mountPropagation: Bidirectional
+        - name: btf
+          mountPath: /sys/kernel/btf
+          readOnly: true
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+        - name: cgroup
+          mountPath: /sys/fs/cgroup
+          readOnly: true
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+      volumes:
+      - name: bpffs
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: btf
+        hostPath:
+          path: /sys/kernel/btf
+          type: Directory
+      - name: debugfs
+        hostPath:
+          path: /sys/kernel/debug
+          type: DirectoryOrCreate
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+          type: Directory
+      - name: proc
+        hostPath:
+          path: /proc
+          type: Directory
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

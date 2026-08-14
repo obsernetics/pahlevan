@@ -1,79 +1,40 @@
-{{- if .Values.webhooks.enabled }}
----
+{{- if .Values.agent.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "pahlevan-operator.webhookServiceName" . }}
-  namespace: {{ include "pahlevan-operator.namespace" . }}
+  name: {{ include "pahlevan.fullname" . }}-agent-metrics
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pahlevan-operator.labels" . | nindent 4 }}
-    app.kubernetes.io/component: webhook
-  {{- with .Values.service.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-agent
 spec:
-  type: {{ .Values.service.type }}
-  ports:
-  - name: webhook
-    port: {{ .Values.service.ports.webhook }}
-    targetPort: webhook
-    protocol: TCP
-  selector:
-    {{- include "pahlevan-operator.selectorLabels" . | nindent 4 }}
-{{- end }}
-
-{{- if .Values.metrics.enabled }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "pahlevan-operator.metricsServiceName" . }}
-  namespace: {{ include "pahlevan-operator.namespace" . }}
-  labels:
-    {{- include "pahlevan-operator.labels" . | nindent 4 }}
-    app.kubernetes.io/component: metrics
-  annotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: {{ .Values.service.ports.metrics | quote }}
-    prometheus.io/path: {{ .Values.metrics.path }}
-    {{- with .Values.service.annotations }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-spec:
-  type: {{ .Values.service.type }}
+  type: ClusterIP
+  clusterIP: None
   ports:
   - name: metrics
-    port: {{ .Values.service.ports.metrics }}
+    port: {{ .Values.metrics.port }}
     targetPort: metrics
-    protocol: TCP
-  - name: health
-    port: {{ .Values.service.ports.health }}
-    targetPort: health
-    protocol: TCP
   selector:
-    {{- include "pahlevan-operator.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-agent
+    app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
-
-{{- if .Values.development.profiling.enabled }}
+{{- if .Values.operator.enabled }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "pahlevan-operator.fullname" . }}-profiling
-  namespace: {{ include "pahlevan-operator.namespace" . }}
+  name: {{ include "pahlevan.fullname" . }}-operator-metrics
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pahlevan-operator.labels" . | nindent 4 }}
-    app.kubernetes.io/component: profiling
-  annotations:
-    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-operator
 spec:
   type: ClusterIP
   ports:
-  - name: profiling
-    port: {{ .Values.development.profiling.port }}
-    targetPort: profiling
-    protocol: TCP
+  - name: metrics
+    port: {{ .Values.metrics.port }}
+    targetPort: metrics
   selector:
-    {{- include "pahlevan-operator.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
