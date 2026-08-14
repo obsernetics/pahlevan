@@ -130,19 +130,29 @@ func applyFilePolicy(o *adaptive.Overrides, fp *policyv1alpha1.FilePolicy) []str
 		return nil
 	}
 	var warnings []string
-	o.AllowedFiles = append(o.AllowedFiles, cleanPaths(fp.AllowedPaths)...)
-	o.DeniedFiles = append(o.DeniedFiles, cleanPaths(fp.DeniedPaths)...)
 
-	// ReadOnlyPaths and WriteAllowedPaths are both "this path may be opened".
-	// The LSM hook governs file_open without splitting read from write, so
-	// honouring them as allow entries is accurate for what the kernel does and
-	// the distinction is called out rather than pretended.
-	if len(fp.ReadOnlyPaths) > 0 || len(fp.WriteAllowedPaths) > 0 {
-		o.AllowedFiles = append(o.AllowedFiles, cleanPaths(fp.ReadOnlyPaths)...)
-		o.AllowedFiles = append(o.AllowedFiles, cleanPaths(fp.WriteAllowedPaths)...)
-		warnings = append(warnings,
-			"readOnlyPaths and writeAllowedPaths are allowed as opens; the file_open "+
-				"LSM hook does not distinguish read from write, so read-only is not enforced")
+	// allowedPaths grants both modes: an operator naming a path without
+	// qualification means the workload may use it.
+	allowed := cleanPaths(fp.AllowedPaths)
+	o.AllowedFiles = append(o.AllowedFiles, allowed...)
+	o.AllowedWriteFiles = append(o.AllowedWriteFiles, allowed...)
+
+	// deniedPaths revokes both, so a denial cannot be sidestepped by opening
+	// the path the other way.
+	denied := cleanPaths(fp.DeniedPaths)
+	o.DeniedFiles = append(o.DeniedFiles, denied...)
+	o.DeniedWriteFiles = append(o.DeniedWriteFiles, denied...)
+
+	// readOnlyPaths and writeAllowedPaths are now real rather than aspirational:
+	// the allow-set keys on the access mode, so granting a read genuinely does
+	// not grant a write.
+	for _, p := range cleanPaths(fp.ReadOnlyPaths) {
+		o.AllowedFiles = append(o.AllowedFiles, p)
+		o.DeniedWriteFiles = append(o.DeniedWriteFiles, p)
+	}
+	for _, p := range cleanPaths(fp.WriteAllowedPaths) {
+		o.AllowedFiles = append(o.AllowedFiles, p)
+		o.AllowedWriteFiles = append(o.AllowedWriteFiles, p)
 	}
 	if ef := fp.ExecutableFilter; ef != nil {
 		o.AllowedExecs = append(o.AllowedExecs, cleanPaths(ef.AllowedExecutables)...)
@@ -350,6 +360,7 @@ func applyExceptions(o *adaptive.Overrides, exceptions []policyv1alpha1.Enforcem
 		switch ex.Type {
 		case policyv1alpha1.ExceptionTypeFile:
 			o.AllowedFiles = append(o.AllowedFiles, patterns...)
+			o.AllowedWriteFiles = append(o.AllowedWriteFiles, patterns...)
 			if warn := warnGlobs(fmt.Sprintf("exceptions[%d]", i), patterns); warn != "" {
 				warnings = append(warnings, warn)
 			}

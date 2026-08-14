@@ -65,7 +65,7 @@ also its main way of causing an outage.
 |---|---|---|---|
 | How policy is produced | **Learned automatically** from observed behavior during a window, per cgroup | Hand-written rules in YAML, plus a large curated default ruleset | Hand-written `TracingPolicy` CRs |
 | Rule content ecosystem | **None.** There is nothing to share, because there are no rules | Extensive: `falco-rules`, maturity tiers (stable, incubating, sandbox), distributed as OCI artifacts via `falcoctl` | A library of example policies and a growing set of curated ones |
-| Expressiveness | Low. An allow-set of paths, IPv4 destinations, binaries, and capabilities. No conditions, no arguments, no correlation | High. A full condition language over syscall fields, with macros, lists, and priorities | High. Hook selection, argument matching, `matchBinaries`, namespace and pod scoping, per-action selectors |
+| Expressiveness | Low. An allow-set of paths (read and write kept separate), destinations keyed by address, port, family and protocol, binaries, and capabilities. No conditions, no arguments, no correlation | High. A full condition language over syscall fields, with macros, lists, and priorities | High. Hook selection, argument matching, `matchBinaries`, namespace and pod scoping, per-action selectors |
 | Effort to protect a new workload | Apply one `PahlevanPolicy` with a selector and a learning window | None to start (defaults), then ongoing tuning to cut false positives | Write and test a policy per behavior |
 | Risk model | You get whatever the workload did during the window. Under-cover the window and you block legitimate work | You get whatever the rules cover. Miss a rule and you never see the attack | You get exactly what you wrote. Write it too broadly and you can kill the node |
 | Auditability of the policy | The learned set is visible in `ContainerProfile`, but nobody reviewed it before it took effect | Rules are readable, reviewable, version controlled | Policies are readable, reviewable, version controlled |
@@ -176,8 +176,8 @@ the generated seccomp profile.
 
 What a rule cannot express, it says so rather than being dropped. A CIDR wider
 than a single host, a port range past 1024 entries, a label-selected peer, a
-DNS name, an ingress rule, a glob, `readOnlyPaths` (the `file_open` hook does
-not separate read from write) and `processFilter` each produce a warning
+DNS name, an ingress rule, a glob, `readOnlyPaths` is enforced, since the allow-set
+keys on the access mode. `processFilter` and the rest each produce a warning
 naming the field and the reason. A path must also be fully resolved: the
 kernel hashes what `bpf_d_path` returns, so an exception for a symlink grants
 nothing.

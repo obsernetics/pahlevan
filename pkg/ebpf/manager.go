@@ -141,7 +141,20 @@ const (
 	// DeniedDirection is set on NetworkEvent.Direction when the connect was
 	// denied. Network events carry no Flags field, so the bit rides here.
 	DeniedDirection uint8 = 0x80
+	// WriteFlag is set on FileEvent.Flags when the open requested write access.
+	// It is derived in-kernel from f_mode, the same source the allow-set key
+	// uses, so what userspace sees and what the kernel keyed on cannot
+	// disagree. It shares a bit position with KilledFlag, which is exec-only.
+	WriteFlag uint32 = 0x40000000
 )
+
+// IsWrite reports whether the open requested write access. Reads and writes are
+// separate allow-set entries, so a workload that only ever read a path is not
+// thereby permitted to write it.
+func (e *FileEvent) IsWrite() bool { return e.Flags&WriteFlag != 0 }
+
+// IsDenied reports whether the open was refused in-kernel.
+func (e *FileEvent) IsDenied() bool { return e.Flags&DeniedFlag != 0 }
 
 type EventHandler interface {
 	HandleSyscallEvent(event *SyscallEvent) error

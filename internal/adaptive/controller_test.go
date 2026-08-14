@@ -27,9 +27,18 @@ type allowRecorder struct {
 	err   error
 }
 
-func (a *allowRecorder) AllowFilePath(_ uint64, path string, allowed bool) error {
+func (a *allowRecorder) AllowFilePath(cgroupID uint64, path string, allowed bool) error {
+	return a.AllowFilePathMode(cgroupID, path, false, allowed)
+}
+
+// AllowFilePathMode records reads under the bare path and writes under a "w:"
+// prefix, so a test can assert that granting one did not grant the other.
+func (a *allowRecorder) AllowFilePathMode(_ uint64, path string, write, allowed bool) error {
 	if a.files == nil {
 		a.files = map[string]bool{}
+	}
+	if write {
+		path = "w:" + path
 	}
 	a.files[path] = allowed
 	return a.err
@@ -304,7 +313,14 @@ func (o *orderedEnforcer) SetNetworkEnforcement(uint64, bool) error    { return 
 func (o *orderedEnforcer) SetExecEnforcement(uint64, bool) error       { return nil }
 func (o *orderedEnforcer) SetCapabilityEnforcement(uint64, bool) error { return nil }
 
-func (o *orderedEnforcer) AllowFilePath(_ uint64, path string, _ bool) error {
+func (o *orderedEnforcer) AllowFilePath(cgroupID uint64, path string, allowed bool) error {
+	return o.AllowFilePathMode(cgroupID, path, false, allowed)
+}
+
+func (o *orderedEnforcer) AllowFilePathMode(_ uint64, path string, write, _ bool) error {
+	if write {
+		path = "w:" + path
+	}
 	o.calls = append(o.calls, "seed:"+path)
 	return nil
 }

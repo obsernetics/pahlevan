@@ -121,16 +121,54 @@ func TestFilePolicyTranslation(t *testing.T) {
 		},
 	}, now)
 
-	// Whitespace trimmed, blanks dropped, duplicates collapsed.
+	assert.Empty(t, warnings)
+
+	// Whitespace trimmed, blanks dropped, duplicates collapsed. Reads cover
+	// allowedPaths, readOnlyPaths and writeAllowedPaths, since a path you may
+	// write is a path you may open.
 	assert.Equal(t, []string{
 		"/etc/ssl/cert.pem", "/var/run/secrets/token", "/etc/config", "/var/log/app.log",
 	}, d.Overrides.AllowedFiles)
+
+	// Writes are a separate grant: allowedPaths and writeAllowedPaths only.
+	assert.Equal(t, []string{
+		"/etc/ssl/cert.pem", "/var/run/secrets/token", "/var/log/app.log",
+	}, d.Overrides.AllowedWriteFiles)
+
+	// readOnlyPaths means read-only, so the write is actively revoked rather
+	// than merely not granted; that also survives a learned write.
+	assert.Contains(t, d.Overrides.DeniedWriteFiles, "/etc/config")
+
+	// deniedPaths revokes both modes, so a denial cannot be sidestepped by
+	// opening the path the other way.
 	assert.Equal(t, []string{"/etc/shadow"}, d.Overrides.DeniedFiles)
+	assert.Contains(t, d.Overrides.DeniedWriteFiles, "/etc/shadow")
+
 	assert.Equal(t, []string{"/usr/bin/curl"}, d.Overrides.AllowedExecs)
 	assert.Equal(t, []string{"/usr/bin/nc"}, d.Overrides.DeniedExecs)
+}
 
-	// Read-only is not actually enforceable through file_open; say so.
-	assert.True(t, hasWarning(warnings, "does not distinguish read from write"))
+// readOnlyPaths used to be a lie: the allow-set keyed on the path alone, so a
+// path granted for reading was equally writable.
+func TestReadOnlyPathIsNotWritable(t *testing.T) {
+	d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		FilePolicy:        &policyv1alpha1.FilePolicy{ReadOnlyPaths: []string{"/etc/passwd"}},
+	}, now)
+	assert.Empty(t, warnings)
+	assert.Equal(t, []string{"/etc/passwd"}, d.Overrides.AllowedFiles)
+	assert.Equal(t, []string{"/etc/passwd"}, d.Overrides.DeniedWriteFiles)
+	assert.Empty(t, d.Overrides.AllowedWriteFiles)
+}
+
+func TestWriteAllowedPathGrantsBothModes(t *testing.T) {
+	d, _ := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		FilePolicy:        &policyv1alpha1.FilePolicy{WriteAllowedPaths: []string{"/var/log/app.log"}},
+	}, now)
+	assert.Equal(t, []string{"/var/log/app.log"}, d.Overrides.AllowedFiles)
+	assert.Equal(t, []string{"/var/log/app.log"}, d.Overrides.AllowedWriteFiles)
+	assert.Empty(t, d.Overrides.DeniedWriteFiles)
 }
 
 // A glob would be hashed literally and match nothing, which looks exactly like
