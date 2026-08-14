@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -287,8 +288,10 @@ func (sl *SyscallLearner) StartLearning(ctx context.Context, containerID string,
 		Confidence:          0.0,
 	}
 
-	// Apply learning configuration from policy
-	if policy.Spec.LearningConfig.WindowSize != nil {
+	// Apply learning configuration from policy. The policy is optional: a nil
+	// policy simply means "learn with the learner's default window" rather than
+	// dereferencing a nil pointer and panicking.
+	if policy != nil && policy.Spec.LearningConfig.WindowSize != nil {
 		state.LearningWindow = policy.Spec.LearningConfig.WindowSize.Duration
 	}
 
@@ -472,9 +475,19 @@ func (sl *SyscallLearner) RecordLifecycleEvent(containerID string, event Lifecyc
 }
 
 func (sl *SyscallLearner) GenerateProfile(containerID string) (*LearningProfile, error) {
-	sl.mu.RLock()
-	defer sl.mu.RUnlock()
+	// A full write lock is required: this method stores the generated profile
+	// into sl.learningProfiles. (It previously took only an RLock, which both
+	// raced on that write and deadlocked when StopLearning — already holding the
+	// write lock — called through here on a non-reentrant RWMutex.)
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
 
+	return sl.generateProfileLocked(containerID)
+}
+
+// generateProfileLocked builds and stores the learning profile for a container.
+// The caller must already hold sl.mu (write lock).
+func (sl *SyscallLearner) generateProfileLocked(containerID string) (*LearningProfile, error) {
 	state, exists := sl.containers[containerID]
 	if !exists {
 		return nil, fmt.Errorf("container not found in learning state: %s", containerID)
@@ -594,9 +607,10 @@ func (sl *SyscallLearner) StopLearning(containerID string) error {
 		Phase:     string(state.Phase),
 	})
 
-	// Generate final profile if not already done
+	// Generate final profile if not already done. Call the lock-free helper
+	// because we already hold the write lock here.
 	if state.Phase != PhaseProfileGenerated {
-		_, err := sl.GenerateProfile(containerID)
+		_, err := sl.generateProfileLocked(containerID)
 		if err != nil {
 			return fmt.Errorf("failed to generate final profile: %v", err)
 		}
@@ -641,13 +655,21 @@ func (sl *SyscallLearner) checkPhaseTransition(state *ContainerLearningState) {
 }
 
 func (sl *SyscallLearner) updateLearningProgress(state *ContainerLearningState) {
-	// Calculate learning progress based on various factors
-	timeProgress := float64(time.Since(state.StartTime)) / float64(state.LearningWindow)
+	// Calculate learning progress based on various factors. Guard the divisors:
+	// a zero learning window or baseline threshold would otherwise yield
+	// Inf/NaN progress that then poisons every downstream metric.
+	timeProgress := 1.0
+	if state.LearningWindow > 0 {
+		timeProgress = float64(time.Since(state.StartTime)) / float64(state.LearningWindow)
+	}
 	if timeProgress > 1.0 {
 		timeProgress = 1.0
 	}
 
-	observationProgress := float64(len(state.SyscallObservations)) / float64(sl.baselineThreshold)
+	observationProgress := 1.0
+	if sl.baselineThreshold > 0 {
+		observationProgress = float64(len(state.SyscallObservations)) / float64(sl.baselineThreshold)
+	}
 	if observationProgress > 1.0 {
 		observationProgress = 1.0
 	}
@@ -961,28 +983,33 @@ func (sl *SyscallLearner) directionToString(dir uint8) string {
 }
 
 func (sl *SyscallLearner) detectFileType(path string) string {
-	// Simple file type detection based on path
-	if len(path) > 4 {
-		ext := path[len(path)-4:]
-		switch ext {
-		case ".so", ".dll":
-			return "library"
-		case ".bin", ".exe":
-			return "executable"
-		case ".log":
-			return "log"
-		case ".tmp":
-			return "temporary"
-		}
+	// Simple file type detection based on path.
+	if path == "" {
+		return "regular"
 	}
 
-	if path[0:4] == "/tmp" || path[0:8] == "/var/tmp" {
+	// Suffix matching (instead of a fixed 4-byte slice) so extensions of any
+	// length are detected — the old slice could never match ".so" (3 bytes).
+	switch {
+	case strings.HasSuffix(path, ".so") || strings.HasSuffix(path, ".dll"):
+		return "library"
+	case strings.HasSuffix(path, ".bin") || strings.HasSuffix(path, ".exe"):
+		return "executable"
+	case strings.HasSuffix(path, ".log"):
+		return "log"
+	case strings.HasSuffix(path, ".tmp"):
 		return "temporary"
 	}
-	if path[0:5] == "/proc" {
+
+	// Use HasPrefix instead of fixed-width slicing: slicing a path shorter than
+	// the requested bound (e.g. "/tmp" with path[0:8]) panics with an index
+	// out of range, which previously crashed the learner on short paths.
+	switch {
+	case strings.HasPrefix(path, "/tmp") || strings.HasPrefix(path, "/var/tmp"):
+		return "temporary"
+	case strings.HasPrefix(path, "/proc"):
 		return "procfs"
-	}
-	if path[0:4] == "/dev" {
+	case strings.HasPrefix(path, "/dev"):
 		return "device"
 	}
 
