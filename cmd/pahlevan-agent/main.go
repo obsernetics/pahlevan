@@ -64,6 +64,7 @@ func main() {
 		exportWebhook        string
 		exportDenialsOnly    bool
 		metricsDetail        string
+		seccompRoot          string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -82,6 +83,9 @@ func main() {
 		"Write JSON-lines security events to this file for `pahlevan events` and log shippers (empty disables).")
 	flag.StringVar(&exportWebhook, "export-webhook", os.Getenv("PAHLEVAN_EXPORT_WEBHOOK"),
 		"POST batched JSON security events to this URL (empty disables).")
+	flag.StringVar(&seccompRoot, "seccomp-root", "/var/lib/kubelet/seccomp",
+		"The kubelet's seccomp root. Only used to render the localhostProfile value "+
+			"reported on ContainerProfile; the agent never reads this path.")
 	flag.StringVar(&metricsDetail, "metrics-detail", "basic",
 		"Metrics cardinality: basic (aggregate, default) or high (adds per-container, "+
 			"per-syscall and per-path series - expensive across a fleet).")
@@ -161,6 +165,7 @@ func main() {
 	polResolver := newPolicyResolver(mgr.GetClient(), nodeName)
 	adaptiveCtl := adaptive.NewController(ctrl.Log.WithName("adaptive"), ebpfManager, attrResolver, polResolver)
 	adaptiveCtl.SeccompDir = seccompDir
+	adaptiveCtl.SeccompRoot = seccompRoot
 	adaptiveCtl.Client = mgr.GetClient()
 	adaptiveCtl.Node = nodeName
 	adaptiveCtl.Metrics = metricsManager

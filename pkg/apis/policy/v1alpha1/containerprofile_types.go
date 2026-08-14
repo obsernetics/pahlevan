@@ -81,6 +81,10 @@ type ContainerProfileStatus struct {
 	// enforce transition. It resets on every transition and on rollback.
 	DenialCount int32 `json:"denialCount,omitempty"`
 
+	// Seccomp describes the profile generated from LearnedSyscalls, if the
+	// agent was configured to emit one.
+	Seccomp *SeccompProfileRef `json:"seccomp,omitempty"`
+
 	// Per-signal breakdown of DenialCount. Split out because "twelve denials"
 	// and "twelve denied egress attempts" are very different findings, and the
 	// operator aggregates these into the governing policy's status.
@@ -88,6 +92,42 @@ type ContainerProfileStatus struct {
 	DeniedNetwork      int32 `json:"deniedNetwork,omitempty"`
 	DeniedExecs        int32 `json:"deniedExecs,omitempty"`
 	DeniedCapabilities int32 `json:"deniedCapabilities,omitempty"`
+}
+
+// SeccompProfileRef points at the seccomp profile the agent generated from a
+// container's learned syscall set.
+//
+// The profile is written to a node-local directory. Reporting it here is what
+// makes it usable: a pod's seccompProfile cannot be changed after admission and
+// the operator deliberately runs without a mutating webhook, so an operator has
+// to reference the profile themselves on the next rollout. Without this they
+// would have to know the agent's flags and go looking on the node.
+type SeccompProfileRef struct {
+	// LocalhostProfile is the value to put in the pod's
+	// securityContext.seccompProfile.localhostProfile. It is relative to the
+	// kubelet's seccomp root, which is what that field expects.
+	LocalhostProfile string `json:"localhostProfile,omitempty"`
+
+	// Path is the absolute path on the node, for debugging.
+	Path string `json:"path,omitempty"`
+
+	// Node is the node the file lives on. The profile is written by each node's
+	// agent, so it exists only where that container ran.
+	Node string `json:"node,omitempty"`
+
+	// AllowedSyscalls is how many syscalls the profile permits, including the
+	// safety baseline. TotalSyscalls is the size of the architecture's syscall
+	// table, so the pair states the privilege reduction without arithmetic.
+	AllowedSyscalls int32 `json:"allowedSyscalls,omitempty"`
+	TotalSyscalls   int32 `json:"totalSyscalls,omitempty"`
+
+	// SkippedUnknown counts learned syscall numbers with no name in this
+	// architecture's table. They cannot appear in a profile, so a non-zero
+	// value means the profile is narrower than what was observed.
+	SkippedUnknown int32 `json:"skippedUnknown,omitempty"`
+
+	// GeneratedAt is when the profile was last written.
+	GeneratedAt *metav1.Time `json:"generatedAt,omitempty"`
 }
 
 // +kubebuilder:object:root=true
