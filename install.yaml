@@ -125,7 +125,13 @@ spec:
                 description: FilePolicy defines file access policies
                 properties:
                   allowedPaths:
-                    description: AllowedPaths explicitly allows specific paths
+                    description: |-
+                      AllowedPaths explicitly allows specific paths.
+
+                      Paths must be fully resolved and exact. Enforcement keys on the path the
+                      kernel resolves, which follows symlinks, so "/etc/os-release" grants
+                      nothing where it links to /usr/lib/os-release. Wildcards are not
+                      supported and are matched literally.
                     items:
                       type: string
                     type: array
@@ -134,7 +140,9 @@ spec:
                       paths
                     type: string
                   deniedPaths:
-                    description: DeniedPaths explicitly denies specific paths
+                    description: |-
+                      DeniedPaths explicitly denies specific paths, removing them from the
+                      learned baseline. The same resolution rules as AllowedPaths apply.
                     items:
                       type: string
                     type: array

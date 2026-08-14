@@ -229,10 +229,16 @@ type IPBlock struct {
 
 // FilePolicy defines file access policies
 type FilePolicy struct {
-	// AllowedPaths explicitly allows specific paths
+	// AllowedPaths explicitly allows specific paths.
+	//
+	// Paths must be fully resolved and exact. Enforcement keys on the path the
+	// kernel resolves, which follows symlinks, so "/etc/os-release" grants
+	// nothing where it links to /usr/lib/os-release. Wildcards are not
+	// supported and are matched literally.
 	AllowedPaths []string `json:"allowedPaths,omitempty"`
 
-	// DeniedPaths explicitly denies specific paths
+	// DeniedPaths explicitly denies specific paths, removing them from the
+	// learned baseline. The same resolution rules as AllowedPaths apply.
 	DeniedPaths []string `json:"deniedPaths,omitempty"`
 
 	// DefaultAction specifies default action for unknown paths
