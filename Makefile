@@ -319,3 +319,9 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	test -s $(LOCALBIN)/golangci-lint && $(LOCALBIN)/golangci-lint --version | grep -q $(GOLANGCI_LINT_VERSION) || \
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(LOCALBIN) $(GOLANGCI_LINT_VERSION)
+.PHONY: vm-test
+vm-test: ## Run the eBPF load/observe tests inside the VM (hack/vm must be up)
+	@./hack/vm/up.sh
+	@git archive HEAD -o .vmcache/src.tar
+	@./hack/vm/cp.sh .vmcache/src.tar /home/pahlevan/src.tar
+	@./hack/vm/run.sh 'rm -rf ~/pahlevan && mkdir -p ~/pahlevan && tar -xf ~/src.tar -C ~/pahlevan && cd ~/pahlevan && sudo env PATH=$$PATH GOFLAGS=-mod=mod PAHLEVAN_EBPF_VM_TEST=1 go test ./pkg/ebpf/ -run TestVMLoad -v'
