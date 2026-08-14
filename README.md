@@ -19,7 +19,7 @@ Self-learning workload baselines, enforced <i>in-kernel</i> - no hand-written ru
   <a href="#contributing"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
 </p>
 
-<img src="docs/assets/demo.gif" alt="Pahlevan learn-then-enforce demo: a workload is profiled during a learning window, then an attacker's read of /etc/shadow is denied in-kernel with EPERM" width="820" />
+<img src="docs/assets/demo.gif" alt="Pahlevan learn-then-enforce demo: a workload is profiled during a learning window, then an attacker's read of /etc/shadow, exec of nc, and IPv6 egress are each denied in-kernel with EPERM" width="880" />
 
 </div>
 

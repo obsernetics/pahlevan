@@ -77,6 +77,20 @@ help: ## Display this help.
 # API types and the controllers anyway.
 GEN_PATHS ?= paths="./pkg/apis/..." paths="./internal/..."
 
+.PHONY: demo-gif
+demo-gif: ## Re-render docs/assets/demo.gif from the vhs tape (needs vhs + ffmpeg)
+	@command -v vhs >/dev/null || { echo "vhs not found: https://github.com/charmbracelet/vhs"; exit 1; }
+	@command -v ffmpeg >/dev/null || { echo "ffmpeg not found"; exit 1; }
+	vhs docs/assets/demo.tape
+	@# vhs emits ~1100 frames at full width; 12fps at 1000px is visually
+	@# identical in a README and about a third of the bytes.
+	ffmpeg -loglevel error -y -i docs/assets/demo.gif \
+		-vf "fps=12,scale=1000:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" \
+		docs/assets/demo.opt.gif
+	mv docs/assets/demo.opt.gif docs/assets/demo.gif
+	cp docs/assets/demo.gif pages/assets/demo.gif
+	@echo "rendered $$(du -h docs/assets/demo.gif | cut -f1) docs/assets/demo.gif (and the pages copy)"
+
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook $(GEN_PATHS) output:crd:artifacts:config=config/crd output:rbac:artifacts:config=config/rbac
