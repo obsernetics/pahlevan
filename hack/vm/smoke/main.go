@@ -1,10 +1,10 @@
 // smoke - loads and attaches the CO-RE eBPF smoke test inside the VM.
 //
 // It proves the VM can do what the host must never do:
-//   * load a compiled CO-RE object,
-//   * attach an ordinary tracepoint,
-//   * attach a BPF-LSM program (only possible when the bpf LSM is active),
-//   * observe both programs actually running.
+//   - load a compiled CO-RE object,
+//   - attach an ordinary tracepoint,
+//   - attach a BPF-LSM program (only possible when the bpf LSM is active),
+//   - observe both programs actually running.
 //
 // Exit code 0 only if BOTH the tracepoint and the LSM hook loaded, attached,
 // and fired. Any failure prints the error and exits non-zero.
