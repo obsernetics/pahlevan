@@ -20,7 +20,11 @@ type ContainerProfileSpec struct {
 	ContainerID string `json:"containerID,omitempty"`
 
 	// CgroupID is the cgroup v2 id the eBPF data plane keys enforcement on.
-	CgroupID uint64 `json:"cgroupID,omitempty"`
+	// Signed because Kubernetes API types may not use unsigned integers; the
+	// serialized schema is int64 either way, and cgroup ids never approach the
+	// sign bit. Using uint64 here also broke server-side apply, whose
+	// structured-merge-diff reflection has no uint64 kind.
+	CgroupID int64 `json:"cgroupID,omitempty"`
 
 	// Node is the node whose agent owns this profile.
 	Node string `json:"node,omitempty"`
@@ -57,6 +61,25 @@ type ContainerProfileStatus struct {
 
 	// LastUpdated is when the agent last refreshed this profile.
 	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
+
+	// EnforcementAttempts is how many times this container has been transitioned
+	// to enforcing. More than one means an earlier attempt was rolled back.
+	EnforcementAttempts int32 `json:"enforcementAttempts,omitempty"`
+
+	// RollbackCount is how many times self-healing returned this container from
+	// enforcing to learning because the learned baseline was breaking it.
+	RollbackCount int32 `json:"rollbackCount,omitempty"`
+
+	// LastRollbackTime is when the most recent rollback happened.
+	LastRollbackTime *metav1.Time `json:"lastRollbackTime,omitempty"`
+
+	// LastRollbackReason explains the most recent rollback (denial rate or the
+	// specific pod distress that was observed).
+	LastRollbackReason string `json:"lastRollbackReason,omitempty"`
+
+	// DenialCount is the number of in-kernel denials observed since the current
+	// enforce transition. It resets on every transition and on rollback.
+	DenialCount int32 `json:"denialCount,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -65,6 +88,7 @@ type ContainerProfileStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Syscalls",type=integer,JSONPath=`.status.syscallCount`
 // +kubebuilder:printcolumn:name="Files",type=integer,JSONPath=`.status.fileCount`
+// +kubebuilder:printcolumn:name="Rollbacks",type=integer,JSONPath=`.status.rollbackCount`
 // +kubebuilder:printcolumn:name="Node",type=string,JSONPath=`.spec.node`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

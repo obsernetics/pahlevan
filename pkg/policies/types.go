@@ -1,26 +1,10 @@
 package policies
 
 import (
-	"time"
-
 	"github.com/obsernetics/pahlevan/pkg/learner"
 )
 
-// Note: Self-healing types are defined in their respective implementation files:
-// - SelfHealingManager: defined in self_healing.go
-// - SelfHealingState: defined in enforcement_engine.go
-// - RollbackAction: defined in lifecycle_manager.go
-// - RollbackActionType: defined in self_healing.go
-// - RollbackCondition: defined in self_healing.go
-// - EmergencyAction: defined in self_healing.go
-
-type SelfHealingMetrics struct {
-	TotalRollbacks      int
-	SuccessfulRollbacks int
-	FailedRollbacks     int
-	AverageRecoveryTime time.Duration
-	LastRecoveryTime    time.Time
-}
+// SelfHealingState is defined in enforcement_engine.go.
 
 // Attack surface analysis types
 type AttackSurfaceAnalyzer struct {
@@ -177,33 +161,6 @@ func NewAttackSurfaceAnalyzer() *AttackSurfaceAnalyzer {
 }
 
 // Note: All other methods are defined in their respective implementation files alongside the types
-
-func (shm *SelfHealingMetrics) UpdateSuccess(recoveryTime time.Duration) {
-	shm.TotalRollbacks++
-	shm.SuccessfulRollbacks++
-
-	// Update average recovery time
-	if shm.SuccessfulRollbacks == 1 {
-		shm.AverageRecoveryTime = recoveryTime
-	} else {
-		total := shm.AverageRecoveryTime * time.Duration(shm.SuccessfulRollbacks-1)
-		shm.AverageRecoveryTime = (total + recoveryTime) / time.Duration(shm.SuccessfulRollbacks)
-	}
-
-	shm.LastRecoveryTime = time.Now()
-}
-
-func (shm *SelfHealingMetrics) UpdateFailure() {
-	shm.TotalRollbacks++
-	shm.FailedRollbacks++
-}
-
-func (shm *SelfHealingMetrics) SuccessRate() float64 {
-	if shm.TotalRollbacks == 0 {
-		return 0.0
-	}
-	return float64(shm.SuccessfulRollbacks) / float64(shm.TotalRollbacks)
-}
 
 func (asa *AttackSurfaceAnalyzer) AnalyzeContainer(profile *learner.LearningProfile) *AttackSurfaceAnalysis {
 	analysis := &AttackSurfaceAnalysis{

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -33,14 +34,24 @@ func (p fakePoliciesMeta) PodMeta(string) (string, string, bool) {
 	return p.ns, p.name, p.metaOK
 }
 
-func newTestScheme(t *testing.T) *fake.ClientBuilder {
+// newRuntimeScheme returns a scheme with the Pahlevan CRDs and core/v1, so both
+// ContainerProfile persistence and pod reads / Event writes can be faked.
+func newRuntimeScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := policyv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1 AddToScheme: %v", err)
+	}
+	return s
+}
+
+func newTestScheme(t *testing.T) *fake.ClientBuilder {
+	t.Helper()
 	return fake.NewClientBuilder().
-		WithScheme(s).
+		WithScheme(newRuntimeScheme(t)).
 		WithStatusSubresource(&policyv1alpha1.ContainerProfile{})
 }
 
