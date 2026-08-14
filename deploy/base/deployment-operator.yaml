@@ -1,0 +1,94 @@
+# The operator is the control plane: no host access, no eBPF, no privilege. It is
+# therefore a great fit for a user namespace (hostUsers: false), which maps its
+# root to an unprivileged host UID and shrinks blast radius. Leader election keeps
+# a single active replica while running 2 for availability.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pahlevan-operator
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/part-of: pahlevan
+    app.kubernetes.io/component: control-plane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pahlevan-operator
+        app.kubernetes.io/part-of: pahlevan
+        app.kubernetes.io/component: control-plane
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: pahlevan-operator
+      # User namespaces (KEP-127, GA in recent Kubernetes): the operator's
+      # in-container root maps to an unprivileged UID on the host.
+      hostUsers: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: operator
+        image: ghcr.io/obsernetics/pahlevan:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/pahlevan-operator"]
+        args:
+        - --leader-elect
+        - --metrics-bind-address=:8080
+        - --health-probe-bind-address=:8081
+        - --observability-exports=prometheus,otel
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        ports:
+        - name: metrics
+          containerPort: 8080
+        - name: health
+          containerPort: 8081
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: pahlevan-operator
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule

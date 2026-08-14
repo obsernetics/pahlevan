@@ -1,0 +1,149 @@
+# The agent runs on EVERY node as a privileged DaemonSet — this is the shape a
+# node-level eBPF security tool must take (the same as Falco and Tetragon). A
+# single-replica Deployment can only instrument the one node it lands on.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pahlevan-agent
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-agent
+    app.kubernetes.io/part-of: pahlevan
+    app.kubernetes.io/component: node-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pahlevan-agent
+        app.kubernetes.io/part-of: pahlevan
+        app.kubernetes.io/component: node-agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: pahlevan-agent
+      # Host PID namespace is required to resolve the host PIDs seen in kernel
+      # events back to processes/containers.
+      hostPID: true
+      hostNetwork: false
+      hostIPC: false
+      # Priority so the security agent is not evicted under node pressure.
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: agent
+        image: ghcr.io/obsernetics/pahlevan:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/pahlevan-agent"]
+        args:
+        - --metrics-bind-address=:8080
+        - --health-probe-bind-address=:8081
+        - --learning-window=5m
+        - --enforcement-delay=30s
+        - --observability-exports=prometheus,otel
+        securityContext:
+          # eBPF program load/attach and LSM/seccomp enforcement need real
+          # privilege in the init namespace. CAP_BPF + CAP_PERFMON is the modern
+          # least-privilege set (kernel >= 5.8); SYS_ADMIN/SYS_RESOURCE cover
+          # older kernels and map operations. This container CANNOT run in a user
+          # namespace — that is what the operator (separate Deployment) is for.
+          privileged: false
+          runAsNonRoot: false
+          runAsUser: 0
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: true
+          capabilities:
+            add:
+            - BPF
+            - PERFMON
+            - SYS_ADMIN
+            - SYS_RESOURCE
+            - NET_ADMIN
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        ports:
+        - name: metrics
+          containerPort: 8080
+        - name: health
+          containerPort: 8081
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        env:
+        - name: PAHLEVAN_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: PAHLEVAN_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+        volumeMounts:
+        - name: bpffs
+          mountPath: /sys/fs/bpf
+          mountPropagation: Bidirectional
+        - name: btf
+          mountPath: /sys/kernel/btf
+          readOnly: true
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+        - name: cgroup
+          mountPath: /sys/fs/cgroup
+          readOnly: true
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+      volumes:
+      - name: bpffs
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: btf
+        hostPath:
+          path: /sys/kernel/btf
+          type: Directory
+      - name: debugfs
+        hostPath:
+          path: /sys/kernel/debug
+          type: DirectoryOrCreate
+      - name: cgroup
+        hostPath:
+          path: /sys/fs/cgroup
+          type: Directory
+      - name: proc
+        hostPath:
+          path: /proc
+          type: Directory
+      nodeSelector:
+        kubernetes.io/os: linux
+      # Run on all nodes, including control-plane.
+      tolerations:
+      - operator: Exists
