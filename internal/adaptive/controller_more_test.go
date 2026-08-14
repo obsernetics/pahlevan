@@ -31,7 +31,12 @@ func (p fakePoliciesMeta) Resolve(uint64, attribution.ContainerRef) (Decision, b
 	if p.blocking {
 		mode = ModeBlocking
 	}
-	return Decision{PolicyName: "test", Mode: mode, Window: p.window}, p.ok
+	return Decision{
+		PolicyName:  "test",
+		Mode:        mode,
+		Window:      p.window,
+		SelfHealing: SelfHealingDecision{Enabled: true},
+	}, p.ok
 }
 
 func (p fakePoliciesMeta) PodMeta(string) (string, string, bool) {

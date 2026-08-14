@@ -704,7 +704,7 @@ func destString(d Destination) string {
 // the baseline is treated as settled, so a container that is fine for an hour
 // and then legitimately gets denied is not un-enforced by an attacker's noise.
 func (c *Controller) maybeRollback(id uint64, st *cgState) {
-	cfg := c.Rollback
+	cfg := c.rollbackConfigFor(id, st)
 	if cfg.ObservationWindow <= 0 {
 		return
 	}
@@ -726,6 +726,34 @@ func (c *Controller) maybeRollback(id uint64, st *cgState) {
 		return
 	}
 	c.rollback(id, st, reason)
+}
+
+// rollbackConfigFor resolves the rollback settings for a container: the
+// controller defaults, overridden by whatever spec.selfHealing sets.
+//
+// spec.selfHealing was previously ignored outright, so a policy that switched
+// self-healing off still had its containers un-enforced by denial noise, and
+// rollbackThreshold and rollbackWindow were accepted by the API and never
+// read. Callers must hold c.mu.
+func (c *Controller) rollbackConfigFor(id uint64, st *cgState) RollbackConfig {
+	cfg := c.Rollback
+	d, ok := c.policies.Resolve(id, st.ref)
+	if !ok {
+		return cfg
+	}
+	if !d.SelfHealing.Enabled {
+		// An operator who turned self-healing off wants the container to stay
+		// enforcing whatever happens. Zeroing the window disables the check.
+		cfg.ObservationWindow = 0
+		return cfg
+	}
+	if d.SelfHealing.Threshold > 0 {
+		cfg.DenialThreshold = d.SelfHealing.Threshold
+	}
+	if d.SelfHealing.Window > 0 {
+		cfg.ObservationWindow = d.SelfHealing.Window
+	}
+	return cfg
 }
 
 // rollback returns a container to learning: it clears every enforcement bit in

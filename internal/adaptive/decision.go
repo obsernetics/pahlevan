@@ -89,6 +89,28 @@ type Decision struct {
 
 	// Overrides are the operator's corrections to the learned baseline.
 	Overrides Overrides
+
+	// SelfHealing is the policy's rollback configuration. The agent used to
+	// apply compiled-in defaults and ignore spec.selfHealing entirely, so a
+	// policy that switched self-healing off still had its containers
+	// un-enforced by denial noise.
+	SelfHealing SelfHealingDecision
+}
+
+// SelfHealingDecision is how a policy configures rollback out of enforcement.
+type SelfHealingDecision struct {
+	// Enabled reflects spec.selfHealing.enabled. When false the container stays
+	// enforcing whatever happens, which is what an operator who turned it off
+	// asked for.
+	Enabled bool
+
+	// Threshold is the denial count that triggers a rollback, from
+	// spec.selfHealing.rollbackThreshold. Zero means use the controller default.
+	Threshold int
+
+	// Window is how long after the enforce transition denials are attributable
+	// to it, from spec.selfHealing.rollbackWindow. Zero means use the default.
+	Window time.Duration
 }
 
 // EnforceAfter is the total time from the start of learning to the enforce
