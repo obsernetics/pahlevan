@@ -57,6 +57,7 @@ func main() {
 		enforcementDelay     time.Duration
 		observabilityExports string
 		nodeName             string
+		seccompDir           string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -69,6 +70,8 @@ func main() {
 		"Comma-separated list of observability exports (prometheus,otel,datadog).")
 	flag.StringVar(&nodeName, "node-name", os.Getenv("PAHLEVAN_NODE_NAME"),
 		"Name of the node this agent runs on (defaults to $PAHLEVAN_NODE_NAME).")
+	flag.StringVar(&seccompDir, "seccomp-dir", os.Getenv("PAHLEVAN_SECCOMP_DIR"),
+		"Directory to write learned seccomp profiles for use as pod localhostProfiles (empty disables).")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -138,6 +141,7 @@ func main() {
 	attrResolver := attribution.NewResolver(attribution.DefaultCgroupRoot)
 	polResolver := newPolicyResolver(mgr.GetClient(), nodeName)
 	adaptiveCtl := adaptive.NewController(ctrl.Log.WithName("adaptive"), ebpfManager, attrResolver, polResolver)
+	adaptiveCtl.SeccompDir = seccompDir
 
 	// Register event handlers BEFORE starting readers so no events are missed.
 	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})
