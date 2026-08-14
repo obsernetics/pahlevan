@@ -19,6 +19,7 @@ emit() {
   emit deploy/base/namespace.yaml
   emit config/crd/policy.pahlevan.io_pahlevanpolicies.yaml
   emit config/crd/policy.pahlevan.io_containerprofiles.yaml
+  emit config/crd/policy.pahlevan.io_attacksurfaces.yaml
   emit deploy/base/serviceaccount.yaml
   emit deploy/base/rbac.yaml
   emit deploy/base/daemonset-agent.yaml

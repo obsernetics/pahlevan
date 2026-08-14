@@ -75,27 +75,9 @@ Pahlevan splits the **data plane** (per-node, privileged) from the **control pla
 (cluster-wide, unprivileged) — the same node-instrumentation model as Falco and
 Tetragon, but with a leader-elected operator driving policy.
 
-```mermaid
-flowchart TB
-  subgraph CP["Control plane"]
-    OP["Operator (Deployment, leader-elected)<br/>hostUsers: false / user namespace<br/>policy lifecycle • status aggregation • admission"]
-    CRD["PahlevanPolicy CRD"]
-  end
-
-  subgraph Node["Each node"]
-    AG["Agent (privileged DaemonSet)<br/>loads & attaches eBPF • per-cgroup baselines • local enforcement"]
-    subgraph K["Linux kernel (eBPF data plane)"]
-      TP["raw_tracepoint/sys_enter<br/>observe all syscalls<br/>(dedup per cgroup,syscall)"]
-      LSM["lsm/file_open<br/>observe + DENY opens<br/>bpf_d_path • cgroup id"]
-    end
-    AG --> TP
-    AG --> LSM
-  end
-
-  CRD --> OP
-  OP -- "desired policy" --> AG
-  AG -- "learning/enforcement status" --> OP
-```
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="Pahlevan architecture: a leader-elected operator and the PahlevanPolicy/ContainerProfile/AttackSurface CRDs drive per-node privileged agents that load eBPF programs (raw_tracepoint/sys_enter, lsm/file_open, lsm/socket_connect) which observe and deny in-kernel" width="900" />
+</p>
 
 - **Agent** — a privileged **DaemonSet** on every node. It owns the eBPF data plane:
   loading and attaching programs, building per-container baselines, and enforcing

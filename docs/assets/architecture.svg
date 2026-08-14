@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Pahlevan architecture: control-plane operator and CRDs drive per-node privileged agents that run eBPF programs in the kernel">
+  <defs>
+    <style>
+      .card{fill:#0e1729;stroke:#28344b;stroke-width:1.5;rx:12}
+      .grp{fill:#0b1220;stroke:#1f2a40;stroke-width:1.5;stroke-dasharray:6 5}
+      .title{fill:#e6edf7;font-size:19px;font-weight:700}
+      .h{fill:#7dd3fc;font-size:15px;font-weight:700}
+      .t{fill:#c6d2e6;font-size:12.5px}
+      .s{fill:#8aa0bf;font-size:11.5px}
+      .lbl{fill:#9fb3d1;font-size:11px;font-style:italic}
+      .accent{fill:#38bdf8}
+      .edge{stroke:#4b5f80;stroke-width:2;fill:none}
+      .edge2{stroke:#38bdf8;stroke-width:2;fill:none}
+    </style>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4b5f80"/></marker>
+    <marker id="arwa" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#38bdf8"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="560" fill="#070b14"/>
+  <text x="32" y="42" class="title">Pahlevan — data plane + control plane</text>
+
+  <!-- Control plane -->
+  <rect x="32" y="66" width="896" height="150" rx="14" class="grp"/>
+  <text x="52" y="92" class="h">Control plane (cluster-wide, unprivileged)</text>
+
+  <rect x="52" y="104" width="300" height="96" rx="12" class="card"/>
+  <text x="70" y="130" class="t" font-weight="700">Operator — Deployment</text>
+  <text x="70" y="150" class="s">leader-elected · hostUsers: false (user namespace)</text>
+  <text x="70" y="170" class="s">policy lifecycle · status aggregation</text>
+  <text x="70" y="188" class="s">CEL ValidatingAdmissionPolicy (no webhook)</text>
+
+  <rect x="380" y="104" width="548" height="96" rx="12" class="card"/>
+  <text x="398" y="130" class="t" font-weight="700">Custom Resources (policy.pahlevan.io)</text>
+  <text x="398" y="152" class="s">• PahlevanPolicy — selector · learning window · enforcement mode</text>
+  <text x="398" y="172" class="s">• ContainerProfile — learned syscalls / files / egress (inspectable)</text>
+  <text x="398" y="192" class="s">• AttackSurface — computed risk &amp; exposure report</text>
+
+  <!-- Node -->
+  <rect x="32" y="248" width="896" height="278" rx="14" class="grp"/>
+  <text x="52" y="274" class="h">Each node (privileged data plane)</text>
+
+  <rect x="52" y="288" width="380" height="104" rx="12" class="card"/>
+  <text x="70" y="314" class="t" font-weight="700">Agent — privileged DaemonSet</text>
+  <text x="70" y="334" class="s">CAP_BPF · CAP_PERFMON · hostPID</text>
+  <text x="70" y="352" class="s">loads/attaches eBPF · per-cgroup baselines</text>
+  <text x="70" y="370" class="s">learn → enforce · seccomp profile generation</text>
+  <text x="70" y="386" class="s">cgroup-id → pod attribution (userns-safe)</text>
+
+  <!-- kernel programs -->
+  <rect x="460" y="288" width="468" height="216" rx="12" fill="#0b1220" stroke="#28344b" stroke-width="1.5"/>
+  <text x="478" y="314" class="h">Linux kernel — eBPF (CO-RE)</text>
+
+  <rect x="478" y="326" width="432" height="50" rx="10" class="card"/>
+  <text x="494" y="346" class="t">raw_tracepoint/sys_enter</text>
+  <text x="494" y="364" class="s">observe every syscall · in-kernel dedup per (cgroup, syscall)</text>
+
+  <rect x="478" y="384" width="432" height="52" rx="10" class="card"/>
+  <text x="494" y="404" class="t">lsm/file_open <tspan class="accent">→ DENY</tspan></text>
+  <text x="494" y="422" class="s">full path via bpf_d_path · unlearned open → EPERM</text>
+
+  <rect x="478" y="444" width="432" height="50" rx="10" class="card"/>
+  <text x="494" y="464" class="t">lsm/socket_connect <tspan class="accent">→ DENY</tspan></text>
+  <text x="494" y="482" class="s">unlearned egress destination → EPERM</text>
+
+  <!-- edges -->
+  <path class="edge" d="M202,200 L202,104" marker-end="url(#arw)"/>
+  <text x="210" y="238" class="lbl">watches CRDs</text>
+  <path class="edge2" d="M242,288 L242,216" marker-end="url(#arwa)"/>
+  <text x="250" y="236" class="lbl">policy ↕ status</text>
+  <path class="edge2" d="M432,340 L460,340" marker-end="url(#arwa)"/>
+  <path class="edge2" d="M432,340 C446,340 446,410 460,410" marker-end="url(#arwa)"/>
+  <path class="edge2" d="M432,340 C446,340 446,468 460,468" marker-end="url(#arwa)"/>
+</svg>

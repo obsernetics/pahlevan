@@ -1,0 +1,128 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: attacksurfaces.policy.pahlevan.io
+spec:
+  group: policy.pahlevan.io
+  names:
+    kind: AttackSurface
+    listKind: AttackSurfaceList
+    plural: attacksurfaces
+    shortNames:
+    - asurf
+    singular: attacksurface
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.riskScore
+      name: Risk
+      type: integer
+    - jsonPath: .status.lastAnalysis
+      name: Analyzed
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AttackSurface is a computed, inspectable attack-surface report for a workload
+          (exposed syscalls/ports, writable files, capabilities, and an overall risk
+          score). It reuses the AttackSurfaceStatus schema already tracked on
+          PahlevanPolicy, promoted to a first-class resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AttackSurfaceSpec identifies the workload an attack-surface
+              report describes.
+            properties:
+              namespace:
+                description: Namespace of the analyzed workload.
+                type: string
+              policyRef:
+                description: PolicyRef is the PahlevanPolicy this surface was computed
+                  for.
+                type: string
+              workload:
+                description: Workload identifies the analyzed workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion of the workload
+                    type: string
+                  kind:
+                    description: Kind of the workload
+                    type: string
+                  name:
+                    description: Name of the workload
+                    type: string
+                  namespace:
+                    description: Namespace of the workload
+                    type: string
+                  uid:
+                    description: UID of the workload
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - namespace
+                type: object
+            type: object
+          status:
+            description: AttackSurfaceStatus provides attack surface analysis
+            properties:
+              capabilities:
+                description: Capabilities lists effective capabilities
+                items:
+                  type: string
+                type: array
+              exposedPorts:
+                description: ExposedPorts lists exposed network ports
+                items:
+                  format: int32
+                  type: integer
+                type: array
+              exposedSyscalls:
+                description: ExposedSyscalls lists exposed syscalls
+                items:
+                  type: string
+                type: array
+              lastAnalysis:
+                description: LastAnalysis indicates when analysis was last performed
+                format: date-time
+                type: string
+              riskScore:
+                description: RiskScore provides overall risk score
+                format: int32
+                type: integer
+              writableFiles:
+                description: WritableFiles lists writable file paths
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
