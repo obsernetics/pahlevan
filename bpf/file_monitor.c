@@ -101,6 +101,55 @@ static __always_inline __u64 hash_path(const __u8 *p, int n)
 	return h;
 }
 
+/* A container runtime must write /proc/<pid>/oom_score_adj to enter an
+ * already-running container: runc's nsexec does it during `kubectl exec`, and
+ * so does an exec liveness probe. Under enforcement that write is denied,
+ * because bpf_d_path resolves /proc/self to /proc/<pid> and no fixed path can
+ * be seeded to match a pid that changes every time.
+ *
+ * The result was that enforcing a policy made the workload undebuggable and
+ * broke exec probes, which is the kind of operational cost that gets a security
+ * tool switched off.
+ *
+ * oom_score_adj is a per-process OOM-killer hint. It is not a privilege
+ * boundary and grants no access to anything, so exempting exactly this basename
+ * is a much smaller concession than the alternative. Nothing else under /proc
+ * is exempted; /proc/<pid>/mem and friends stay governed.
+ */
+static __always_inline int is_oom_score_adj(const __u8 *p, int n)
+{
+	static const char suffix[] = "/oom_score_adj";
+	const int slen = sizeof(suffix) - 1; /* 14, excluding the NUL */
+
+	if (n < slen + 6)
+		return 0;
+	if (p[0] != '/' || p[1] != 'p' || p[2] != 'r' ||
+	    p[3] != 'o' || p[4] != 'c' || p[5] != '/')
+		return 0;
+
+	int len = 0;
+	for (int i = 0; i < n; i++) {
+		if (p[i] == 0)
+			break;
+		len = i + 1;
+	}
+	if (len < slen)
+		return 0;
+
+	int off = len - slen;
+	/* Clamp so the verifier can prove every index below is in range. */
+	if (off < 0 || off > n - slen)
+		return 0;
+	off &= (PATH_MAX_LEN - 1);
+
+	for (int i = 0; i < slen; i++) {
+		int idx = (off + i) & (PATH_MAX_LEN - 1);
+		if (p[idx] != (__u8)suffix[i])
+			return 0;
+	}
+	return 1;
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(file_open, struct file *file)
 {
@@ -152,6 +201,12 @@ int BPF_PROG(file_open, struct file *file)
 	/* Enforcement mode for this cgroup (default: learning). */
 	__u8 *modep = bpf_map_lookup_elem(&file_mode, &cgroup_id);
 	__u8 mode = modep ? *modep : MODE_LEARN;
+
+	/* Let the container runtime in. See is_oom_score_adj. */
+	if (is_oom_score_adj(e->path, sizeof(e->path))) {
+		bpf_ringbuf_discard(e, 0);
+		return 0;
+	}
 
 	__u8 *known = bpf_map_lookup_elem(&file_allowed, &key);
 

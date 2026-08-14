@@ -293,6 +293,16 @@ Operation not permitted
 because that path is not in the workload's learned set. Debugging an enforcing
 pod requires removing the policy first.
 
+> **Fixed after this run.** `bpf_d_path` resolves `/proc/self` to
+> `/proc/<pid>`, so no fixed path could ever be seeded to match a pid that
+> changes every time; the fix is a targeted kernel-side exemption for that one
+> basename under `/proc/`. `oom_score_adj` is a per-process OOM-killer hint and
+> not a privilege boundary, so the concession is far smaller than leaving
+> enforcing pods undebuggable and exec liveness probes broken.
+> `TestVMOomScoreAdjStaysWritableUnderEnforcement` verifies both halves against
+> a real kernel: the write goes through, and `/proc/self/environ` is still
+> denied, so the exemption did not open up `/proc` generally.
+
 ## Which mechanism actually blocked what
 
 This is the question the first run got wrong, so it is worth being exact. All
