@@ -13,23 +13,9 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type SyscallMonitorContainerPolicy struct {
-	_               structs.HostLayout
-	ContainerId     uint32
-	LearningMode    uint32
-	AllowedSyscalls [64]uint64
-	ViolationCount  uint32
-	_               [4]byte
-	LastUpdateNs    uint64
-}
-
-type SyscallMonitorPolicyConfig struct {
-	_                  structs.HostLayout
-	GlobalLearningMode uint32
-	EnforcementEnabled uint32
-	LearningWindowNs   uint64
-	MaxViolations      uint32
-	_                  [4]byte
+type SyscallMonitorConfig struct {
+	_       structs.HostLayout
+	Enabled uint8
 }
 
 // LoadSyscallMonitor returns the embedded CollectionSpec for SyscallMonitor.
@@ -74,18 +60,16 @@ type SyscallMonitorSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type SyscallMonitorProgramSpecs struct {
-	TraceSysEnterOpenat *ebpf.ProgramSpec `ebpf:"trace_sys_enter_openat"`
-	TraceSysEnterRead   *ebpf.ProgramSpec `ebpf:"trace_sys_enter_read"`
-	TraceSysEnterWrite  *ebpf.ProgramSpec `ebpf:"trace_sys_enter_write"`
+	HandleSysEnter *ebpf.ProgramSpec `ebpf:"handle_sys_enter"`
 }
 
 // SyscallMonitorMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type SyscallMonitorMapSpecs struct {
-	ContainerPolicies *ebpf.MapSpec `ebpf:"container_policies"`
-	Events            *ebpf.MapSpec `ebpf:"events"`
-	GlobalConfig      *ebpf.MapSpec `ebpf:"global_config"`
+	ConfigMap   *ebpf.MapSpec `ebpf:"config_map"`
+	Events      *ebpf.MapSpec `ebpf:"events"`
+	SyscallSeen *ebpf.MapSpec `ebpf:"syscall_seen"`
 }
 
 // SyscallMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -114,16 +98,16 @@ func (o *SyscallMonitorObjects) Close() error {
 //
 // It can be passed to LoadSyscallMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type SyscallMonitorMaps struct {
-	ContainerPolicies *ebpf.Map `ebpf:"container_policies"`
-	Events            *ebpf.Map `ebpf:"events"`
-	GlobalConfig      *ebpf.Map `ebpf:"global_config"`
+	ConfigMap   *ebpf.Map `ebpf:"config_map"`
+	Events      *ebpf.Map `ebpf:"events"`
+	SyscallSeen *ebpf.Map `ebpf:"syscall_seen"`
 }
 
 func (m *SyscallMonitorMaps) Close() error {
 	return _SyscallMonitorClose(
-		m.ContainerPolicies,
+		m.ConfigMap,
 		m.Events,
-		m.GlobalConfig,
+		m.SyscallSeen,
 	)
 }
 
@@ -137,16 +121,12 @@ type SyscallMonitorVariables struct {
 //
 // It can be passed to LoadSyscallMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type SyscallMonitorPrograms struct {
-	TraceSysEnterOpenat *ebpf.Program `ebpf:"trace_sys_enter_openat"`
-	TraceSysEnterRead   *ebpf.Program `ebpf:"trace_sys_enter_read"`
-	TraceSysEnterWrite  *ebpf.Program `ebpf:"trace_sys_enter_write"`
+	HandleSysEnter *ebpf.Program `ebpf:"handle_sys_enter"`
 }
 
 func (p *SyscallMonitorPrograms) Close() error {
 	return _SyscallMonitorClose(
-		p.TraceSysEnterOpenat,
-		p.TraceSysEnterRead,
-		p.TraceSysEnterWrite,
+		p.HandleSysEnter,
 	)
 }
 

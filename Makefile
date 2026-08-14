@@ -155,10 +155,18 @@ ebpf-compile: ebpf-deps ## Compile eBPF programs
 	$(CLANG) $(BPF_CFLAGS) -target $(BPF_TARGET) -c file_monitor.c -o file_monitor.o
 	@echo "eBPF programs compiled successfully"
 
+BPFTOOL ?= $(shell command -v bpftool 2>/dev/null || echo /usr/lib/linux-tools-$(shell uname -r)/bpftool)
+
+.PHONY: vmlinux
+vmlinux: ## Generate bpf/vmlinux.h from the running kernel BTF (for CO-RE builds)
+	@if [ ! -f $(BPF_DIR)/vmlinux.h ]; then \
+		echo "Generating $(BPF_DIR)/vmlinux.h from /sys/kernel/btf/vmlinux..."; \
+		$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $(BPF_DIR)/vmlinux.h; \
+	else echo "$(BPF_DIR)/vmlinux.h present"; fi
+
 .PHONY: ebpf-generate
-ebpf-generate: ebpf-compile ## Generate Go bindings for eBPF programs
+ebpf-generate: vmlinux ## Generate Go bindings for eBPF programs (CO-RE)
 	@echo "Generating Go bindings for eBPF programs..."
-	@which bpf2go > /dev/null || go install github.com/cilium/ebpf/cmd/bpf2go@latest
 	cd $(PKG_DIR) && go generate -x ./...
 	@echo "Go bindings generated successfully"
 

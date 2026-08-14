@@ -11,10 +11,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
+	"sync/atomic"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/obsernetics/pahlevan/internal/controller"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/obsernetics/pahlevan/pkg/metrics"
@@ -97,6 +100,24 @@ func main() {
 		setupLog.Error(err, "unable to load eBPF programs")
 		os.Exit(1)
 	}
+	if err := ebpfManager.AttachPrograms(); err != nil {
+		setupLog.Error(err, "unable to attach eBPF programs")
+		os.Exit(1)
+	}
+
+	// Register the event pipeline sink before starting readers so no events are
+	// missed. The observer counts/logs events and (in a later step) feeds the
+	// learner; policy reconcilers add their own handlers via the manager.
+	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})
+
+	// dataCtx drives the eBPF ring-buffer readers; cancelled on shutdown signal.
+	dataCtx, cancelData := context.WithCancel(context.Background())
+	defer cancelData()
+	if err := ebpfManager.Start(dataCtx); err != nil {
+		setupLog.Error(err, "unable to start eBPF event readers")
+		os.Exit(1)
+	}
+	setupLog.Info("eBPF data plane attached and running")
 
 	// The agent runs a controller-runtime manager WITHOUT leader election: each
 	// node's agent is active for its own node. Cross-node status coordination is
@@ -162,4 +183,34 @@ func main() {
 		setupLog.Error(err, "problem running agent")
 		os.Exit(1)
 	}
+}
+
+// agentObserver is the default sink for the eBPF event pipeline. It counts events
+// and logs a periodic sample; the learner is fed from here in a later step.
+type agentObserver struct {
+	log       logr.Logger
+	syscalls  atomic.Uint64
+	networks  atomic.Uint64
+	files     atomic.Uint64
+}
+
+func (o *agentObserver) HandleSyscallEvent(e *ebpf.SyscallEvent) error {
+	n := o.syscalls.Add(1)
+	// Every observed (cgroup,syscall) pair is already deduped in-kernel, so each
+	// event is a distinct signal worth a debug line; sample INFO occasionally.
+	o.log.V(1).Info("syscall", "nr", e.SyscallNr, "comm", e.Comm, "cgroup", e.CgroupID, "pid", e.PID)
+	if n%1000 == 0 {
+		o.log.Info("syscall events observed", "count", n)
+	}
+	return nil
+}
+
+func (o *agentObserver) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
+	o.networks.Add(1)
+	return nil
+}
+
+func (o *agentObserver) HandleFileEvent(e *ebpf.FileEvent) error {
+	o.files.Add(1)
+	return nil
 }

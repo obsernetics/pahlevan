@@ -59,6 +59,10 @@ kubeconfig
 *.deb
 *.rpm
 
+# QEMU/KVM eBPF test VM cache (cloud image, VM disk, seed ISO, SSH keys).
+# Large binaries and secrets - never commit. See hack/vm/.
+.vmcache/
+
 # Local development
 .env
 .env.local
@@ -66,3 +70,6 @@ kubeconfig
 
 # Git locks
 .git/index.lock
+
+# Generated CO-RE kernel header (make vmlinux)
+bpf/vmlinux.h

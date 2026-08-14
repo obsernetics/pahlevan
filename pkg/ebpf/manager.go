@@ -39,7 +39,9 @@ var (
 	})
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" SyscallMonitor ../../bpf/syscall_monitor.c
+// SyscallMonitor is CO-RE (uses bpf/vmlinux.h); the others are being migrated to
+// CO-RE in a later step and still compile against kernel uapi headers.
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" SyscallMonitor ../../bpf/syscall_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" NetworkMonitor ../../bpf/network_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" FileMonitor ../../bpf/file_monitor.c
 
@@ -85,6 +87,7 @@ type SyscallEvent struct {
 	SyscallNr   uint64
 	Timestamp   uint64
 	Comm        string
+	CgroupID    uint64 // real attribution key from bpf_get_current_cgroup_id()
 	ContainerID string
 	Phase       uint8
 	Action      uint8
@@ -251,28 +254,16 @@ func (m *Manager) AttachPrograms() error {
 		return fmt.Errorf("cannot attach: eBPF programs not loaded (call LoadPrograms first)")
 	}
 
-	// Attach syscall tracepoints
-	syscallTracepoints := []string{
-		"sys_enter_openat",
-		"sys_enter_read",
-		"sys_enter_write",
-		"sys_enter_execve",
-		"sys_enter_clone",
-		"sys_enter_fork",
-		"sys_enter_socket",
-		"sys_enter_connect",
-		"sys_enter_bind",
-	}
-
-	for _, tp := range syscallTracepoints {
-		prog := m.syscallCollection.Programs[fmt.Sprintf("trace_%s", tp)]
-		if prog == nil {
-			continue
-		}
-
-		l, err := link.Tracepoint("syscalls", tp, prog, nil)
+	// Attach the single raw tracepoint on sys_enter. One program observes every
+	// syscall (vs a hand-picked handful of tracepoints), which is what the
+	// learner needs; per-(cgroup,syscall) dedup happens in-kernel.
+	if prog := m.syscallCollection.Programs["handle_sys_enter"]; prog != nil {
+		l, err := link.AttachRawTracepoint(link.RawTracepointOptions{
+			Name:    "sys_enter",
+			Program: prog,
+		})
 		if err != nil {
-			return fmt.Errorf("failed to attach tracepoint %s: %v", tp, err)
+			return fmt.Errorf("failed to attach raw_tracepoint sys_enter: %v", err)
 		}
 		m.syscallLinks = append(m.syscallLinks, l)
 	}
@@ -754,59 +745,48 @@ func convertToEBPFFilePolicy(policy *FilePolicy) *EBPFFileAccessPolicy {
 	return ebpfPolicy
 }
 
+// parseSyscallEvent decodes the CO-RE `struct syscall_event` emitted by
+// bpf/syscall_monitor.c (see that file for the authoritative layout):
+//
+//	__u64 cgroup_id; __u64 timestamp_ns; __u64 syscall_nr;
+//	__u32 pid; __u32 tid; __u32 uid; __u32 gid; __u8 comm[16];  // 56 bytes
 func parseSyscallEvent(data []byte) *SyscallEvent {
-	// Parse raw eBPF syscall_event struct data
-	if len(data) < 32 { // Minimum size for syscall_event struct
+	const size = 8 + 8 + 8 + 4 + 4 + 4 + 4 + 16 // 56
+	if len(data) < size {
 		return nil
 	}
 
-	event := &SyscallEvent{}
-
-	// Parse eBPF syscall_event struct layout:
-	// __u32 pid; __u32 tid; __u32 syscall_nr; __u64 timestamp_ns; char comm[16]; __u32 container_id;
-	offset := 0
-
-	// Parse PID (uint32)
-	event.PID = uint32(data[offset]) | uint32(data[offset+1])<<8 |
-		uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
-	offset += 4
-
-	// Parse TID (uint32) - note Go SyscallEvent has TGID but eBPF has tid
-	event.TGID = uint32(data[offset]) | uint32(data[offset+1])<<8 |
-		uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
-	offset += 4
-
-	// Parse syscall_nr (uint32 in eBPF, but uint64 in Go)
-	event.SyscallNr = uint64(uint32(data[offset]) | uint32(data[offset+1])<<8 |
-		uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24)
-	offset += 4
-
-	// Parse timestamp_ns (uint64)
-	event.Timestamp = uint64(data[offset]) | uint64(data[offset+1])<<8 |
-		uint64(data[offset+2])<<16 | uint64(data[offset+3])<<24 |
-		uint64(data[offset+4])<<32 | uint64(data[offset+5])<<40 |
-		uint64(data[offset+6])<<48 | uint64(data[offset+7])<<56
-	offset += 8
-
-	// Parse comm (char[16]) - find null terminator
-	commBytes := make([]byte, 0, 16)
-	for i := 0; i < 16 && offset+i < len(data); i++ {
-		if data[offset+i] == 0 {
-			break
-		}
-		commBytes = append(commBytes, data[offset+i])
+	event := &SyscallEvent{
+		CgroupID:  binary.LittleEndian.Uint64(data[0:8]),
+		Timestamp: binary.LittleEndian.Uint64(data[8:16]),
+		SyscallNr: binary.LittleEndian.Uint64(data[16:24]),
+		PID:       binary.LittleEndian.Uint32(data[24:28]),
+		UID:       binary.LittleEndian.Uint32(data[32:36]),
+		GID:       binary.LittleEndian.Uint32(data[36:40]),
 	}
-	event.Comm = string(commBytes)
-	offset += 16
+	// eBPF `pid` is the userspace TGID; expose it as both for now.
+	event.TGID = event.PID
 
-	// Parse container_id (uint32) - convert to string
-	if offset+4 <= len(data) {
-		containerID := uint32(data[offset]) | uint32(data[offset+1])<<8 |
-			uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
-		event.ContainerID = fmt.Sprintf("%d", containerID)
+	comm := data[40:56]
+	if i := indexZero(comm); i >= 0 {
+		comm = comm[:i]
 	}
+	event.Comm = string(comm)
+
+	// Until pod attribution (pkg/attribution) resolves cgroup->pod, surface the
+	// cgroup id as the container identifier.
+	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
 
 	return event
+}
+
+func indexZero(b []byte) int {
+	for i, c := range b {
+		if c == 0 {
+			return i
+		}
+	}
+	return -1
 }
 
 func parseNetworkEvent(data []byte) *NetworkEvent {
