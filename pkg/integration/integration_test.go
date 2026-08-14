@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,6 +79,7 @@ func (m *MockEBPFManager) SimulateFileEvent(event *ebpf.FileEvent) {
 // MockLearningEngine implements a mock learning engine for integration testing
 type MockLearningEngine struct {
 	mock.Mock
+	mu       sync.Mutex
 	profiles map[string]*learner.LearningProfile
 }
 
@@ -89,6 +91,9 @@ func NewMockLearningEngine() *MockLearningEngine {
 
 func (m *MockLearningEngine) HandleSyscallEvent(event *ebpf.SyscallEvent) error {
 	args := m.Called(event)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	// Simulate adding to learning profile
 	profile, exists := m.profiles[event.ContainerID]
@@ -132,6 +137,10 @@ func (m *MockLearningEngine) HandleNetworkEvent(event *ebpf.NetworkEvent) error 
 func (m *MockLearningEngine) HandleFileEvent(event *ebpf.FileEvent) error {
 	args := m.Called(event)
 	return args.Error(0)
+}
+
+func (m *MockLearningEngine) HandleProcessEvent(event *ebpf.ProcessEvent) error {
+	return nil
 }
 
 func (m *MockLearningEngine) GetProfile(containerID string) *learner.LearningProfile {

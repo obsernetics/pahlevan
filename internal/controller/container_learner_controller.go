@@ -114,6 +114,12 @@ func (r *ContainerLearnerReconciler) handlePodRunning(ctx context.Context, pod *
 	// Track the pod if not already tracked
 	r.trackPod(pod)
 
+	// Lazily initialize the tracking map: Reconcile may be invoked before
+	// SetupWithManager (notably in tests), and writing to a nil map panics.
+	if r.TrackedContainers == nil {
+		r.TrackedContainers = make(map[string]*ContainerTrackingInfo)
+	}
+
 	// Find applicable policies for this pod
 	policies, err := r.findApplicablePolicies(ctx, pod)
 	if err != nil {
@@ -302,6 +308,13 @@ func (r *ContainerLearnerReconciler) startLearningForContainer(
 	logger := log.FromContext(ctx)
 	logger.Info("Starting learning for container", "containerID", containerID)
 
+	// The syscall learner is optional (e.g. eBPF-less nodes or tests); without
+	// it there is nothing to start, so treat this as a no-op rather than
+	// dereferencing a nil learner.
+	if r.SyscallLearner == nil {
+		return nil
+	}
+
 	// Create workload reference
 	workloadRef := learner.WorkloadReference{
 		Name:      trackingInfo.WorkloadName,
@@ -335,6 +348,11 @@ func (r *ContainerLearnerReconciler) startLearningForContainer(
 func (r *ContainerLearnerReconciler) stopLearningForContainer(ctx context.Context, containerID string) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Stopping learning for container", "containerID", containerID)
+
+	// Nothing to stop when the learner is absent.
+	if r.SyscallLearner == nil {
+		return nil
+	}
 
 	// Stop learning with the syscall learner
 	if err := r.SyscallLearner.StopLearning(containerID); err != nil {

@@ -693,13 +693,29 @@ func (ct *ContainerTracker) getDeploymentNameFromReplicaSet(replicaSetName strin
 	return replicaSetName
 }
 
+// containerKey returns a stable map key for a container. The CRI container ID
+// is preferred, but pending/waiting containers have no ID yet; falling back to
+// the pod UID and container name keeps such containers distinct instead of
+// letting them collide under the empty-string key.
+func containerKey(container *ContainerInfo) string {
+	if container.ID != "" {
+		return container.ID
+	}
+	return container.PodUID + "/" + container.Name
+}
+
 // updateContainer updates or creates a container in the tracker
 func (ct *ContainerTracker) updateContainer(container *ContainerInfo) {
+	if container == nil {
+		return
+	}
+
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
-	oldContainer, exists := ct.containers[container.ID]
-	ct.containers[container.ID] = container
+	key := containerKey(container)
+	oldContainer, exists := ct.containers[key]
+	ct.containers[key] = container
 
 	// Emit appropriate event
 	var eventType ContainerEventType
@@ -756,11 +772,18 @@ func (ct *ContainerTracker) handlePodDeletion(pod *corev1.Pod) {
 
 // emitEvent sends an event to all registered handlers
 func (ct *ContainerTracker) emitEvent(event *ContainerEvent) {
+	if event == nil {
+		return
+	}
+	containerID := ""
+	if event.Container != nil {
+		containerID = event.Container.ID
+	}
 	for _, handler := range ct.eventHandlers {
 		go func(h ContainerEventHandler) {
 			if err := h.HandleContainerEvent(event); err != nil {
 				ct.logger.Error(err, "Handler failed to process container event",
-					"event", event.Type, "container", event.Container.ID)
+					"event", event.Type, "container", containerID)
 			}
 		}(handler)
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 func TestGenerate(t *testing.T) {
-	// read(0), write(1), openat(257) — plus an unknown number.
+	// read(0), write(1), openat(257) - plus an unknown number.
 	prof, skipped := Generate([]uint64{0, 1, 257, 999999})
 	if skipped != 1 {
 		t.Errorf("expected 1 skipped unknown syscall, got %d", skipped)

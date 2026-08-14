@@ -4,7 +4,7 @@
 // eBPF data plane: loading and attaching programs, consuming the kernel event
 // stream, learning per-container behavioural baselines, and applying enforcement
 // locally on the node it runs on. Unlike the operator it does NOT participate in
-// leader election — every node's agent is independently active for its own node.
+// leader election - every node's agent is independently active for its own node.
 //
 // The control-plane duties (CRD defaulting/validation, cluster-wide status
 // aggregation, admission policy) live in the separate pahlevan-operator binary.
@@ -263,5 +263,9 @@ func (o *agentObserver) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 
 func (o *agentObserver) HandleFileEvent(e *ebpf.FileEvent) error {
 	o.files.Add(1)
+	return nil
+}
+
+func (o *agentObserver) HandleProcessEvent(event *ebpf.ProcessEvent) error {
 	return nil
 }

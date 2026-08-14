@@ -1,73 +1,82 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Pahlevan architecture: control-plane operator and CRDs drive per-node privileged agents that run eBPF programs in the kernel">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Pahlevan architecture: a leader-elected operator and CRDs drive per-node privileged agents that run eBPF programs in the kernel">
   <defs>
     <style>
-      .card{fill:#0e1729;stroke:#28344b;stroke-width:1.5;rx:12}
+      .card{fill:#0e1729;stroke:#28344b;stroke-width:1.5}
       .grp{fill:#0b1220;stroke:#1f2a40;stroke-width:1.5;stroke-dasharray:6 5}
-      .title{fill:#e6edf7;font-size:19px;font-weight:700}
+      .title{fill:#e6edf7;font-size:20px;font-weight:700}
       .h{fill:#7dd3fc;font-size:15px;font-weight:700}
-      .t{fill:#c6d2e6;font-size:12.5px}
-      .s{fill:#8aa0bf;font-size:11.5px}
-      .lbl{fill:#9fb3d1;font-size:11px;font-style:italic}
-      .accent{fill:#38bdf8}
-      .edge{stroke:#4b5f80;stroke-width:2;fill:none}
-      .edge2{stroke:#38bdf8;stroke-width:2;fill:none}
+      .bt{fill:#e6edf7;font-size:14px;font-weight:700}
+      .s{fill:#93a4c0;font-size:12px}
+      .lbl{fill:#9fb3d1;font-size:12px;font-style:italic}
+      .accent{fill:#38bdf8;font-weight:700}
+      .edge{stroke:#5b7099;stroke-width:2.5;fill:none}
     </style>
-    <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4b5f80"/></marker>
-    <marker id="arwa" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#38bdf8"/></marker>
+    <marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#5b7099"/>
+    </marker>
   </defs>
 
-  <rect x="0" y="0" width="960" height="560" fill="#070b14"/>
-  <text x="32" y="42" class="title">Pahlevan — data plane + control plane</text>
+  <rect x="0" y="0" width="960" height="600" fill="#070b14"/>
+  <text x="40" y="44" class="title">Pahlevan architecture</text>
 
-  <!-- Control plane -->
-  <rect x="32" y="66" width="896" height="150" rx="14" class="grp"/>
-  <text x="52" y="92" class="h">Control plane (cluster-wide, unprivileged)</text>
+  <!-- ===== Control plane group ===== -->
+  <rect x="40" y="66" width="880" height="150" rx="14" class="grp"/>
+  <text x="60" y="92" class="h">Control plane &#183; cluster-wide, unprivileged</text>
 
-  <rect x="52" y="104" width="300" height="96" rx="12" class="card"/>
-  <text x="70" y="130" class="t" font-weight="700">Operator — Deployment</text>
-  <text x="70" y="150" class="s">leader-elected · hostUsers: false (user namespace)</text>
-  <text x="70" y="170" class="s">policy lifecycle · status aggregation</text>
-  <text x="70" y="188" class="s">CEL ValidatingAdmissionPolicy (no webhook)</text>
+  <!-- CRDs (left) -->
+  <rect x="60" y="104" width="380" height="96" rx="12" class="card"/>
+  <text x="80" y="128" class="bt">Custom Resources</text>
+  <text x="80" y="150" class="s">PahlevanPolicy &#183; selector, window, mode</text>
+  <text x="80" y="169" class="s">ContainerProfile &#183; learned baseline</text>
+  <text x="80" y="188" class="s">AttackSurface &#183; risk &amp; exposure</text>
 
-  <rect x="380" y="104" width="548" height="96" rx="12" class="card"/>
-  <text x="398" y="130" class="t" font-weight="700">Custom Resources (policy.pahlevan.io)</text>
-  <text x="398" y="152" class="s">• PahlevanPolicy — selector · learning window · enforcement mode</text>
-  <text x="398" y="172" class="s">• ContainerProfile — learned syscalls / files / egress (inspectable)</text>
-  <text x="398" y="192" class="s">• AttackSurface — computed risk &amp; exposure report</text>
+  <!-- Operator (right) -->
+  <rect x="520" y="104" width="380" height="96" rx="12" class="card"/>
+  <text x="540" y="128" class="bt">Operator &#183; Deployment</text>
+  <text x="540" y="150" class="s">leader-elected &#183; hostUsers: false (userns)</text>
+  <text x="540" y="169" class="s">policy lifecycle &#183; status aggregation</text>
+  <text x="540" y="188" class="s">CEL ValidatingAdmissionPolicy</text>
 
-  <!-- Node -->
-  <rect x="32" y="248" width="896" height="278" rx="14" class="grp"/>
-  <text x="52" y="274" class="h">Each node (privileged data plane)</text>
+  <!-- CRDs -> Operator (clean horizontal) -->
+  <line x1="440" y1="152" x2="514" y2="152" class="edge" marker-end="url(#arw)"/>
+  <text x="447" y="144" class="lbl">reconciles</text>
 
-  <rect x="52" y="288" width="380" height="104" rx="12" class="card"/>
-  <text x="70" y="314" class="t" font-weight="700">Agent — privileged DaemonSet</text>
-  <text x="70" y="334" class="s">CAP_BPF · CAP_PERFMON · hostPID</text>
-  <text x="70" y="352" class="s">loads/attaches eBPF · per-cgroup baselines</text>
-  <text x="70" y="370" class="s">learn → enforce · seccomp profile generation</text>
-  <text x="70" y="386" class="s">cgroup-id → pod attribution (userns-safe)</text>
+  <!-- ===== vertical connector: control plane <-> node ===== -->
+  <line x1="480" y1="216" x2="480" y2="292" class="edge" marker-end="url(#arw)"/>
+  <text x="496" y="258" class="lbl">desired policy &#8595;</text>
+  <text x="496" y="276" class="lbl">learning / status &#8593;</text>
 
-  <!-- kernel programs -->
-  <rect x="460" y="288" width="468" height="216" rx="12" fill="#0b1220" stroke="#28344b" stroke-width="1.5"/>
-  <text x="478" y="314" class="h">Linux kernel — eBPF (CO-RE)</text>
+  <!-- ===== Node group ===== -->
+  <rect x="40" y="300" width="880" height="270" rx="14" class="grp"/>
+  <text x="60" y="326" class="h">Each node &#183; privileged data plane</text>
 
-  <rect x="478" y="326" width="432" height="50" rx="10" class="card"/>
-  <text x="494" y="346" class="t">raw_tracepoint/sys_enter</text>
-  <text x="494" y="364" class="s">observe every syscall · in-kernel dedup per (cgroup, syscall)</text>
+  <!-- Agent (left) -->
+  <rect x="60" y="340" width="330" height="200" rx="12" class="card"/>
+  <text x="80" y="366" class="bt">Agent &#183; privileged DaemonSet</text>
+  <text x="80" y="392" class="s">CAP_BPF &#183; CAP_PERFMON &#183; hostPID</text>
+  <text x="80" y="414" class="s">loads &amp; attaches eBPF programs</text>
+  <text x="80" y="436" class="s">per-cgroup learn, then enforce</text>
+  <text x="80" y="458" class="s">seccomp profile generation</text>
+  <text x="80" y="480" class="s">cgroup-id &#8594; pod attribution</text>
+  <text x="80" y="502" class="s">(userns-safe)</text>
 
-  <rect x="478" y="384" width="432" height="52" rx="10" class="card"/>
-  <text x="494" y="404" class="t">lsm/file_open <tspan class="accent">→ DENY</tspan></text>
-  <text x="494" y="422" class="s">full path via bpf_d_path · unlearned open → EPERM</text>
+  <!-- Agent -> kernel (clean horizontal) -->
+  <line x1="390" y1="430" x2="464" y2="430" class="edge" marker-end="url(#arw)"/>
+  <text x="397" y="422" class="lbl">load</text>
 
-  <rect x="478" y="444" width="432" height="50" rx="10" class="card"/>
-  <text x="494" y="464" class="t">lsm/socket_connect <tspan class="accent">→ DENY</tspan></text>
-  <text x="494" y="482" class="s">unlearned egress destination → EPERM</text>
+  <!-- Kernel (right) -->
+  <rect x="470" y="340" width="430" height="212" rx="12" fill="#0b1220" stroke="#28344b" stroke-width="1.5"/>
+  <text x="490" y="366" class="h">Linux kernel &#183; eBPF (CO-RE)</text>
 
-  <!-- edges -->
-  <path class="edge" d="M202,200 L202,104" marker-end="url(#arw)"/>
-  <text x="210" y="238" class="lbl">watches CRDs</text>
-  <path class="edge2" d="M242,288 L242,216" marker-end="url(#arwa)"/>
-  <text x="250" y="236" class="lbl">policy ↕ status</text>
-  <path class="edge2" d="M432,340 L460,340" marker-end="url(#arwa)"/>
-  <path class="edge2" d="M432,340 C446,340 446,410 460,410" marker-end="url(#arwa)"/>
-  <path class="edge2" d="M432,340 C446,340 446,468 460,468" marker-end="url(#arwa)"/>
+  <rect x="490" y="378" width="390" height="48" rx="10" class="card"/>
+  <text x="506" y="398" class="bt">raw_tracepoint/sys_enter</text>
+  <text x="506" y="416" class="s">observe every syscall &#183; dedup per (cgroup, syscall)</text>
+
+  <rect x="490" y="434" width="390" height="48" rx="10" class="card"/>
+  <text x="506" y="454" class="bt">lsm/file_open <tspan class="accent">&#8594; DENY</tspan></text>
+  <text x="506" y="472" class="s">bpf_d_path &#183; unlearned open &#8594; EPERM</text>
+
+  <rect x="490" y="490" width="390" height="48" rx="10" class="card"/>
+  <text x="506" y="510" class="bt">lsm/socket_connect &#183; lsm/bprm_check <tspan class="accent">&#8594; DENY</tspan></text>
+  <text x="506" y="528" class="s">unlearned egress / exec &#8594; EPERM</text>
 </svg>

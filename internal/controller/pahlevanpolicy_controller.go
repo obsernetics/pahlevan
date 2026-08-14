@@ -160,11 +160,15 @@ func (r *PahlevanPolicyReconciler) handleInitialization(ctx context.Context, pol
 			continue
 		}
 
-		// Start learning for this workload
-		r.EBPFManager.AddEventHandler(&PolicyEventHandler{
-			reconciler: r,
-			policy:     policy,
-		})
+		// Start learning for this workload. The eBPF manager is optional (e.g. on
+		// nodes where eBPF is unavailable, or in tests); guard against a nil
+		// manager rather than panicking during reconciliation.
+		if r.EBPFManager != nil {
+			r.EBPFManager.AddEventHandler(&PolicyEventHandler{
+				reconciler: r,
+				policy:     policy,
+			})
+		}
 	}
 
 	// Update status to learning phase
@@ -512,6 +516,12 @@ func (r *PahlevanPolicyReconciler) matchesSelector(labels map[string]string, sel
 }
 
 func (r *PahlevanPolicyReconciler) shouldTransitionToEnforcement(policy *policyv1alpha1.PahlevanPolicy) bool {
+	// Without a learning status there is nothing to evaluate; treat as not ready
+	// rather than dereferencing a nil pointer.
+	if policy.Status.LearningStatus == nil {
+		return false
+	}
+
 	// Check if minimum samples have been collected
 	if policy.Spec.LearningConfig.MinSamples != nil {
 		if policy.Status.LearningStatus.SamplesCollected < int64(*policy.Spec.LearningConfig.MinSamples) {
@@ -622,6 +632,11 @@ func (h *PolicyEventHandler) HandleNetworkEvent(event *ebpf.NetworkEvent) error 
 
 func (h *PolicyEventHandler) HandleFileEvent(event *ebpf.FileEvent) error {
 	// Handle file events
+	return nil
+}
+
+func (h *PolicyEventHandler) HandleProcessEvent(event *ebpf.ProcessEvent) error {
+	// Handle process (exec) events
 	return nil
 }
 
