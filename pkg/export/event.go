@@ -217,6 +217,18 @@ func (k *KubernetesRef) Empty() bool {
 		k.PodUID == "" && k.ContainerID == "" && k.Runtime == "" && k.QoSClass == "")
 }
 
+// Complete reports whether the reference names a pod an operator can act on.
+//
+// A cgroup id resolves to a pod UID immediately, but turning that UID into a
+// namespace and name needs the node's pod cache, which is populated by a
+// refresh tick. Events arriving before that tick carry a UID and nothing else,
+// which is why this is a distinct question from Empty: such a reference is
+// worth emitting but must not be memoised, or a container attributed once at
+// startup stays half-attributed for the agent's lifetime.
+func (k *KubernetesRef) Complete() bool {
+	return k != nil && k.Namespace != "" && k.Pod != ""
+}
+
 // AttributionFunc resolves a cgroup id to the pod that owns it. It is a plain
 // function so callers can adapt whatever resolver they already have, for
 // example pkg/attribution's Resolver:

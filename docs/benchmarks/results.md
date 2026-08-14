@@ -457,6 +457,13 @@ exported as `"destinationIp":"1.0.0.127"`, and one to `10.43.0.10:53` as
 order, so every network event in the export names the wrong host. The port,
 protocol and deny action are correct.
 
+> **Fixed after this run.** The field holds `sin_addr.s_addr`, which is already
+> in network byte order, and two of the three formatters shifted it as though
+> it were a host-order number. There is one owner of the conversion now and the
+> duplicates defer to it. Note what this combination meant: the enforcement
+> side was correct throughout, so the kernel denied the right destination while
+> the evidence named a different one.
+
 **Pod attribution is mostly missing.** Of 28736 exported events, 763 carried any
 `kubernetes` object and only 31 carried a pod name. The denials do carry
 `podUid`, `containerId`, `runtime` and `qosClass`, but `namespace` and `pod` are
@@ -464,6 +471,14 @@ empty, so a consumer has to resolve cgroup or pod UID to a pod name itself. The
 benchmark's correlator falls back to matching `cgroupId` for exactly this reason.
 An earlier run in the same session was worse: of 70136 events, 13 carried a pod
 name and it was a *previous, deleted* target pod.
+
+> **Fixed after this run.** The handler memoised whatever the first lookup
+> returned, including a failure. Events start flowing the moment the eBPF
+> programs attach, which is before the node's pod cache has been populated, so
+> the first lookup for a container routinely failed or returned a bare pod UID
+> and that answer was cached for the lifetime of the agent. Only a reference
+> carrying both a namespace and a pod name is memoised now; anything less is
+> re-resolved until it completes.
 
 `PahlevanPolicy.status` stayed **empty** for the whole run: no phase, no learning
 progress, no enforcement counters. Enforcement state is observable through the
