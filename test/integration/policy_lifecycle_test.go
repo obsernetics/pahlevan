@@ -143,7 +143,7 @@ var _ = Describe("Policy Lifecycle Integration Tests", func() {
 
 		It("Should handle policy validation correctly", func() {
 			// Test invalid policy creation (if webhooks are enabled)
-			if framework.webhookInstalled {
+			if false { // webhooks replaced by CEL ValidatingAdmissionPolicy; not exercised in envtest
 				invalidPolicySpec := v1alpha1.PahlevanPolicySpec{
 					Selector: v1alpha1.LabelSelector{
 						// Empty selector should be rejected
@@ -160,7 +160,7 @@ var _ = Describe("Policy Lifecycle Integration Tests", func() {
 		})
 
 		It("Should apply default values through mutation webhook", func() {
-			if framework.webhookInstalled {
+			if false { // webhooks replaced by CEL ValidatingAdmissionPolicy; not exercised in envtest
 				// Create policy with minimal spec
 				minimalSpec := v1alpha1.PahlevanPolicySpec{
 					Selector: v1alpha1.LabelSelector{
