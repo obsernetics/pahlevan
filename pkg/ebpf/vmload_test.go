@@ -177,7 +177,7 @@ func TestVMLoadFileMonitor(t *testing.T) {
 // in a dedicated cgroup, files opened during LEARN are auto-added to the allow
 // set; after switching that cgroup to ENFORCE, a previously-unseen file open is
 // DENIED in-kernel (EPERM) while a learned file still opens. This is auto-learned
-// allow-list enforcement — no hand-written rules, and real prevention (not
+// allow-list enforcement - no hand-written rules, and real prevention (not
 // alerting). VM-only.
 func TestVMFileAdaptiveEnforcement(t *testing.T) {
 	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
@@ -225,7 +225,7 @@ func TestVMFileAdaptiveEnforcement(t *testing.T) {
 	if err := runIn("/etc/hostname"); err != nil {
 		t.Fatalf("learn run failed: %v", err)
 	}
-	// Give the ring buffer time isn't needed — the allow-set is updated in-kernel
+	// Give the ring buffer time isn't needed - the allow-set is updated in-kernel
 	// synchronously during the open. Confirm we learned something.
 	var learned int
 	{
@@ -329,4 +329,74 @@ func TestVMLoadNetworkMonitor(t *testing.T) {
 		t.Errorf("expected a destination port")
 	}
 	t.Logf("observed network event: dport=%d daddr=%#x cgroup=%d pid=%d", ev.DstPort, ev.DstIP, ev.CgroupID, ev.PID)
+}
+
+// TestVMExecAdaptiveEnforcement proves in-kernel exec control: in a dedicated
+// cgroup, binaries run during LEARN are added to the allow-set; after switching to
+// ENFORCE, executing an unlearned binary is denied (EPERM) while a learned one
+// still runs. VM-only (requires bpf LSM).
+func TestVMExecAdaptiveEnforcement(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			t.Fatalf("verifier: %+v", ve)
+		}
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-exec-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	runIn := func(bin string) error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec %s", cg, bin)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// LEARN: run /bin/true (and the sh that execs it) so they're allowed.
+	if err := runIn("/bin/true"); err != nil {
+		t.Fatalf("learn run failed: %v", err)
+	}
+	// ENFORCE.
+	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce: %v", err)
+	}
+	// Learned /bin/true still runs.
+	if err := runIn("/bin/true"); err != nil {
+		t.Errorf("expected learned /bin/true allowed under enforcement, got: %v", err)
+	} else {
+		t.Log("learned /bin/true allowed under enforcement")
+	}
+	// Unlearned binary is denied (copy true to a new path so it's unseen).
+	_ = exec.Command("/bin/cp", "/bin/true", "/tmp/pahlevan-unlearned").Run()
+	defer os.Remove("/tmp/pahlevan-unlearned")
+	if err := runIn("/tmp/pahlevan-unlearned"); err == nil {
+		t.Error("expected unlearned binary exec to be DENIED under enforcement")
+	} else {
+		t.Logf("DENIED in-kernel as expected: exec /tmp/pahlevan-unlearned -> %v", err)
+	}
 }

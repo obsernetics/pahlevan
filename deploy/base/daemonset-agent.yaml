@@ -1,4 +1,4 @@
-# The agent runs on EVERY node as a privileged DaemonSet — this is the shape a
+# The agent runs on EVERY node as a privileged DaemonSet - this is the shape a
 # node-level eBPF security tool must take (the same as Falco and Tetragon). A
 # single-replica Deployment can only instrument the one node it lands on.
 apiVersion: apps/v1
@@ -54,7 +54,7 @@ spec:
           # privilege in the init namespace. CAP_BPF + CAP_PERFMON is the modern
           # least-privilege set (kernel >= 5.8); SYS_ADMIN/SYS_RESOURCE cover
           # older kernels and map operations. This container CANNOT run in a user
-          # namespace — that is what the operator (separate Deployment) is for.
+          # namespace - that is what the operator (separate Deployment) is for.
           privileged: false
           runAsNonRoot: false
           runAsUser: 0

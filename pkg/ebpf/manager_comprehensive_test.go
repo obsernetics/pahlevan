@@ -1063,6 +1063,10 @@ func (m *MockEventHandler) HandleFileEvent(event *FileEvent) error {
 	return nil
 }
 
+func (m *MockEventHandler) HandleProcessEvent(event *ProcessEvent) error {
+	return nil
+}
+
 // Add validation methods to events
 func (se *SyscallEvent) Validate() error {
 	if se.ContainerID == "" {

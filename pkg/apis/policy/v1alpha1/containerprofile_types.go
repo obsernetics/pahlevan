@@ -27,7 +27,7 @@ type ContainerProfileSpec struct {
 }
 
 // ContainerProfileStatus is the learned behavioural baseline reported by the
-// node agent. It is what the kernel enforces once the container is enforcing —
+// node agent. It is what the kernel enforces once the container is enforcing -
 // a first-class, inspectable, git-backupable record (no equivalent in Falco or
 // Tetragon).
 type ContainerProfileStatus struct {
@@ -42,6 +42,9 @@ type ContainerProfileStatus struct {
 
 	// LearnedNetworkDestinations is the set of egress destinations (ip:port).
 	LearnedNetworkDestinations []string `json:"learnedNetworkDestinations,omitempty"`
+
+	// LearnedExecutables is the set of binary paths the container executed.
+	LearnedExecutables []string `json:"learnedExecutables,omitempty"`
 
 	// Counts for quick inspection / printcolumns.
 	SyscallCount int32 `json:"syscallCount,omitempty"`

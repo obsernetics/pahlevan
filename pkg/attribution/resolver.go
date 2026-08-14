@@ -56,8 +56,14 @@ func (r *Resolver) Refresh() error {
 	next := map[uint64]ContainerRef{}
 	err := filepath.WalkDir(r.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			// A nil DirEntry means the walk could not read the root itself
+			// (e.g. cgroupfs is not mounted); surface that as an error rather
+			// than silently returning an empty map.
+			if d == nil {
+				return err
+			}
 			// Skip unreadable subtrees rather than aborting the whole walk.
-			if d != nil && d.IsDir() {
+			if d.IsDir() {
 				return fs.SkipDir
 			}
 			return nil

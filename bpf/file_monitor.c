@@ -4,7 +4,7 @@
  * File access monitoring (CO-RE) via the BPF LSM file_open hook.
  *
  * The LSM hook sees every file open with the resolved struct file, which lets us
- * capture the full path (bpf_d_path) and — in enforcement mode later — DENY by
+ * capture the full path (bpf_d_path) and - in enforcement mode later - DENY by
  * returning -EPERM. That is strictly stronger than tracepoints, which cannot
  * block. Requires a kernel with BPF LSM active (lsm=...,bpf).
  *
@@ -38,7 +38,7 @@ struct {
 
 /* The learned allow-set: key = cgroup_id ^ FNV(path). During learning this is
  * auto-populated by the kernel; during enforcement, an open whose (cgroup, path)
- * is absent is denied. This IS the adaptive policy — no hand-written rules. */
+ * is absent is denied. This IS the adaptive policy - no hand-written rules. */
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, __u64);

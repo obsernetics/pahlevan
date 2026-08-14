@@ -5,7 +5,7 @@
  *
  * A single raw tracepoint on sys_enter observes EVERY syscall (not a hand-picked
  * few), which is what behavioural learning needs. To keep userspace volume sane
- * we emit only the FIRST time a given (cgroup, syscall) pair is seen — that is
+ * we emit only the FIRST time a given (cgroup, syscall) pair is seen - that is
  * exactly the signal the learner wants (the syscall set of a workload), and it
  * also naturally surfaces a NEW syscall appearing after the learning window.
  *
