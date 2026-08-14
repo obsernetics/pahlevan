@@ -145,7 +145,20 @@ func (h *Handler) resolve(cgroupID uint64) *KubernetesRef {
 		resolved = &copied
 	}
 
-	if h.cache != nil {
+	// Only a complete reference is memoised.
+	//
+	// This used to cache whatever came back, including nil. Events start
+	// flowing the moment the programs attach, which is before the node's pod
+	// cache has been populated, so the first lookup for a container routinely
+	// failed or returned a bare pod UID. That answer was then cached for the
+	// lifetime of the agent, and every later event for that container went out
+	// with an empty namespace and pod - the denials an operator most needs to
+	// attribute were exactly the ones that could not be.
+	//
+	// An unresolved cgroup now costs a resolver lookup per event until it
+	// resolves, which is a map read under a read lock, and stops costing
+	// anything the moment the pod cache catches up.
+	if h.cache != nil && resolved.Complete() {
 		h.cacheMu.Lock()
 		if len(h.cache) >= h.cacheMax {
 			// The cache is a bounded memo, not an LRU: dropping it wholesale
