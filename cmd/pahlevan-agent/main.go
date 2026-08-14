@@ -1,3 +1,13 @@
+// Command pahlevan-agent is the per-node data-plane component of Pahlevan.
+//
+// It is meant to run as a privileged DaemonSet (one pod per node). It owns the
+// eBPF data plane: loading and attaching programs, consuming the kernel event
+// stream, learning per-container behavioural baselines, and applying enforcement
+// locally on the node it runs on. Unlike the operator it does NOT participate in
+// leader election — every node's agent is independently active for its own node.
+//
+// The control-plane duties (CRD defaulting/validation, cluster-wide status
+// aggregation, admission policy) live in the separate pahlevan-operator binary.
 package main
 
 import (
@@ -17,14 +27,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 )
 
 var (
 	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	setupLog = ctrl.Log.WithName("agent-setup")
 )
 
 func init() {
@@ -35,36 +44,35 @@ func init() {
 func main() {
 	var (
 		metricsAddr          string
-		enableLeaderElection bool
 		probeAddr            string
-		enableWebhooks       bool
 		learningWindowDur    time.Duration
 		enforcementDelay     time.Duration
 		observabilityExports string
+		nodeName             string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&enableWebhooks, "enable-webhooks", false, "Enable admission webhooks.")
 	flag.DurationVar(&learningWindowDur, "learning-window", 5*time.Minute,
 		"Duration for learning phase before switching to enforcement.")
 	flag.DurationVar(&enforcementDelay, "enforcement-delay", 30*time.Second,
 		"Delay before starting enforcement after learning phase.")
 	flag.StringVar(&observabilityExports, "observability-exports", "prometheus,otel",
 		"Comma-separated list of observability exports (prometheus,otel,datadog).")
+	flag.StringVar(&nodeName, "node-name", os.Getenv("PAHLEVAN_NODE_NAME"),
+		"Name of the node this agent runs on (defaults to $PAHLEVAN_NODE_NAME).")
 
-	opts := zap.Options{
-		Development: true,
-	}
+	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	// Setup observability
+	if nodeName == "" {
+		setupLog.Info("warning: node name is empty; set --node-name or PAHLEVAN_NODE_NAME for correct node-scoped behaviour")
+	}
+
+	// Observability + metrics.
 	observabilityManager, err := observability.NewManager(observabilityExports)
 	if err != nil {
 		setupLog.Error(err, "unable to setup observability")
@@ -72,10 +80,12 @@ func main() {
 	}
 	defer observabilityManager.Shutdown()
 
-	// Setup metrics
 	metricsManager := metrics.NewManager()
 
-	// Initialize eBPF manager
+	// Data plane: initialize the eBPF manager. Program load/attach happens inside
+	// the manager and requires a privileged, eBPF-capable kernel (the DaemonSet
+	// runtime environment). Construction failing here means the node cannot run
+	// the data plane at all, so we exit.
 	ebpfManager, err := ebpf.NewManager()
 	if err != nil {
 		setupLog.Error(err, "unable to initialize eBPF manager")
@@ -83,36 +93,26 @@ func main() {
 	}
 	defer ebpfManager.Close()
 
-	// Load eBPF programs
 	if err := ebpfManager.LoadPrograms(); err != nil {
 		setupLog.Error(err, "unable to load eBPF programs")
 		os.Exit(1)
 	}
 
+	// The agent runs a controller-runtime manager WITHOUT leader election: each
+	// node's agent is active for its own node. Cross-node status coordination is
+	// handled via per-node status entries (see PahlevanPolicy status), not by
+	// electing a single active agent.
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
-		},
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Port: 9443,
-		}),
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "pahlevan-operator-lock",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		LeaderElectionReleaseOnCancel: true,
+		LeaderElection:         false,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
-	// Setup controllers
 	if err = (&controller.PahlevanPolicyReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
@@ -148,13 +148,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup webhooks if enabled
-	if enableWebhooks {
-		setupLog.Info("Webhook support not yet implemented")
-	}
-
-	//+kubebuilder:scaffold:builder
-
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -164,9 +157,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	setupLog.Info("starting pahlevan-agent", "node", nodeName)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+		setupLog.Error(err, "problem running agent")
 		os.Exit(1)
 	}
 }
