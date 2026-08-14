@@ -25,41 +25,46 @@ RUN go mod download && go mod verify
 # Copy source code
 COPY . .
 
-# Copy eBPF source files for code generation
-
-# Generate Go bindings for eBPF programs
-RUN go install github.com/cilium/ebpf/cmd/bpf2go@latest
-RUN cd pkg/ebpf && go generate ./...
+# eBPF Go bindings (*_bpfel.go / *_bpfeb.go) are committed to the repo, so no
+# clang/bpf2go codegen step is needed here. Regenerate them out-of-band with
+# `make ebpf` on a Linux host with clang + libbpf-dev.
 
 # Build Go binaries with optimizations
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
 
-RUN CGO_ENABLED=1 GOOS=linux go build \
+# cilium/ebpf is pure Go (no cgo needed to load eBPF), so build static binaries
+# for the distroless runtime. Three binaries ship in one image; the DaemonSet and
+# Deployment select which to run via their command + securityContext.
+RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
-    -a -installsuffix cgo \
-    -o manager cmd/operator/main.go
+    -o pahlevan-agent ./cmd/pahlevan-agent
 
-RUN CGO_ENABLED=1 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
-    -a -installsuffix cgo \
-    -o pahlevan cmd/pahlevan/main.go
+    -o pahlevan-operator ./cmd/pahlevan-operator
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -o pahlevan ./cmd/pahlevan
 
 ##################################################
 # Runtime Stage: Distroless Runtime
 ##################################################
-FROM gcr.io/distroless/base-debian12:nonroot AS runtime
+# Use the plain distroless base (not :nonroot): the agent DaemonSet must run
+# privileged for eBPF, while the operator Deployment sets runAsNonRoot itself.
+# The effective user is therefore chosen per-workload via securityContext.
+FROM gcr.io/distroless/base-debian12 AS runtime
 
-# Copy binary from builder
-COPY --from=go-builder /src/manager /usr/local/bin/manager
+# Copy binaries from builder
+COPY --from=go-builder /src/pahlevan-agent /usr/local/bin/pahlevan-agent
+COPY --from=go-builder /src/pahlevan-operator /usr/local/bin/pahlevan-operator
 COPY --from=go-builder /src/pahlevan /usr/local/bin/pahlevan
 
-# Copy eBPF programs
+# Copy compiled eBPF objects (fallback for non-CO-RE / debugging; the bindings
+# are embedded in the agent binary via bpf2go).
 COPY --from=go-builder /src/pkg/ebpf/*.o /opt/pahlevan/ebpf/
-
-# Set up non-root user (already set by distroless nonroot)
-USER 65532:65532
 
 # Add metadata
 LABEL org.opencontainers.image.title="Pahlevan"
@@ -72,7 +77,9 @@ LABEL org.opencontainers.image.documentation="https://github.com/obsernetics/pah
 # Expose metrics port
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/manager"]
+# Default entrypoint is the operator; the agent DaemonSet overrides `command` to
+# run /usr/local/bin/pahlevan-agent.
+ENTRYPOINT ["/usr/local/bin/pahlevan-operator"]
 
 ##################################################
 # Development Stage (for debugging)
@@ -91,18 +98,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binaries and eBPF programs
-COPY --from=go-builder /src/manager /usr/local/bin/manager
+COPY --from=go-builder /src/pahlevan-agent /usr/local/bin/pahlevan-agent
+COPY --from=go-builder /src/pahlevan-operator /usr/local/bin/pahlevan-operator
 COPY --from=go-builder /src/pahlevan /usr/local/bin/pahlevan
 COPY --from=go-builder /src/pkg/ebpf/*.o /opt/pahlevan/ebpf/
 
-# Create non-root user
-RUN groupadd -r pahlevan && useradd -r -g pahlevan pahlevan
-
-USER pahlevan
-
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/manager"]
+ENTRYPOINT ["/usr/local/bin/pahlevan-agent"]
 
 ##################################################
 # Test Stage (for running tests in CI)

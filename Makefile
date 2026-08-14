@@ -24,7 +24,10 @@ CGO_ENABLED=1
 CLANG?=clang
 LLC?=llc
 LLVM_STRIP?=llvm-strip
-BPF_CFLAGS := -O2 -g -Wall -Werror
+# -I for the arch asm/ headers (Debian/Ubuntu multiarch path); needed because the
+# programs include <linux/bpf.h> which pulls <asm/types.h>. -Werror is dropped so
+# benign warnings from kernel-header includes don't fail codegen.
+BPF_CFLAGS := -O2 -g -Wall -I/usr/include/x86_64-linux-gnu
 BPF_TARGET=bpf
 KERNEL_VERSION?=$(shell uname -r)
 
@@ -163,6 +166,9 @@ ebpf-generate: ebpf-compile ## Generate Go bindings for eBPF programs
 ebpf-build: ebpf-generate ## Build eBPF programs and generate bindings
 	@echo "eBPF build completed"
 
+.PHONY: ebpf
+ebpf: ebpf-generate ## Alias: regenerate committed eBPF Go bindings (requires clang + libbpf-dev)
+
 .PHONY: ebpf-verify
 ebpf-verify: ebpf-build ## Verify eBPF programs
 	@echo "Verifying eBPF programs..."
@@ -177,12 +183,18 @@ test-ebpf: ebpf-build ## Test eBPF programs
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ebpf-build ## Build manager binary.
-	go build -o bin/manager cmd/operator/main.go
+build: manifests generate fmt vet ## Build agent, operator, and CLI binaries.
+	go build -o bin/pahlevan-agent ./cmd/pahlevan-agent
+	go build -o bin/pahlevan-operator ./cmd/pahlevan-operator
+	go build -o bin/pahlevan ./cmd/pahlevan
 
-.PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/operator/main.go
+.PHONY: run-operator
+run-operator: manifests generate fmt vet ## Run the control-plane operator from your host.
+	go run ./cmd/pahlevan-operator
+
+.PHONY: run-agent
+run-agent: manifests generate fmt vet ## Run the node agent from your host (requires eBPF-capable kernel; use a VM).
+	go run ./cmd/pahlevan-agent
 
 # If you wish built the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64 ). However, you must enable docker buildKit for it.
