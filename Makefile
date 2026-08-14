@@ -15,7 +15,7 @@ IMG ?= $(CONTAINER_NAME):$(VERSION)
 ENVTEST_K8S_VERSION = 1.28.0
 
 # Go variables
-GO_VERSION=1.24
+GO_VERSION=1.25
 GOOS?=$(shell go env GOOS)
 GOARCH?=$(shell go env GOARCH)
 CGO_ENABLED=1
@@ -24,7 +24,10 @@ CGO_ENABLED=1
 CLANG?=clang
 LLC?=llc
 LLVM_STRIP?=llvm-strip
-BPF_CFLAGS := -O2 -g -Wall -Werror
+# -I for the arch asm/ headers (Debian/Ubuntu multiarch path); needed because the
+# programs include <linux/bpf.h> which pulls <asm/types.h>. -Werror is dropped so
+# benign warnings from kernel-header includes don't fail codegen.
+BPF_CFLAGS := -O2 -g -Wall -I/usr/include/x86_64-linux-gnu
 BPF_TARGET=bpf
 KERNEL_VERSION?=$(shell uname -r)
 
@@ -152,16 +155,27 @@ ebpf-compile: ebpf-deps ## Compile eBPF programs
 	$(CLANG) $(BPF_CFLAGS) -target $(BPF_TARGET) -c file_monitor.c -o file_monitor.o
 	@echo "eBPF programs compiled successfully"
 
+BPFTOOL ?= $(shell command -v bpftool 2>/dev/null || echo /usr/lib/linux-tools-$(shell uname -r)/bpftool)
+
+.PHONY: vmlinux
+vmlinux: ## Generate bpf/vmlinux.h from the running kernel BTF (for CO-RE builds)
+	@if [ ! -f $(BPF_DIR)/vmlinux.h ]; then \
+		echo "Generating $(BPF_DIR)/vmlinux.h from /sys/kernel/btf/vmlinux..."; \
+		$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $(BPF_DIR)/vmlinux.h; \
+	else echo "$(BPF_DIR)/vmlinux.h present"; fi
+
 .PHONY: ebpf-generate
-ebpf-generate: ebpf-compile ## Generate Go bindings for eBPF programs
+ebpf-generate: vmlinux ## Generate Go bindings for eBPF programs (CO-RE)
 	@echo "Generating Go bindings for eBPF programs..."
-	@which bpf2go > /dev/null || go install github.com/cilium/ebpf/cmd/bpf2go@latest
 	cd $(PKG_DIR) && go generate -x ./...
 	@echo "Go bindings generated successfully"
 
 .PHONY: ebpf-build
 ebpf-build: ebpf-generate ## Build eBPF programs and generate bindings
 	@echo "eBPF build completed"
+
+.PHONY: ebpf
+ebpf: ebpf-generate ## Alias: regenerate committed eBPF Go bindings (requires clang + libbpf-dev)
 
 .PHONY: ebpf-verify
 ebpf-verify: ebpf-build ## Verify eBPF programs
@@ -177,12 +191,18 @@ test-ebpf: ebpf-build ## Test eBPF programs
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ebpf-build ## Build manager binary.
-	go build -o bin/manager cmd/operator/main.go
+build: manifests generate fmt vet ## Build agent, operator, and CLI binaries.
+	go build -o bin/pahlevan-agent ./cmd/pahlevan-agent
+	go build -o bin/pahlevan-operator ./cmd/pahlevan-operator
+	go build -o bin/pahlevan ./cmd/pahlevan
 
-.PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/operator/main.go
+.PHONY: run-operator
+run-operator: manifests generate fmt vet ## Run the control-plane operator from your host.
+	go run ./cmd/pahlevan-operator
+
+.PHONY: run-agent
+run-agent: manifests generate fmt vet ## Run the node agent from your host (requires eBPF-capable kernel; use a VM).
+	go run ./cmd/pahlevan-agent
 
 # If you wish built the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64 ). However, you must enable docker buildKit for it.
@@ -233,7 +253,7 @@ install-all: manifests kustomize ## Install complete Pahlevan operator (CRDs, RB
 	@echo "📋 Next steps:"
 	@echo "  1. Create a PahlevanPolicy: kubectl apply -f examples/quickstart/simple-policy.yaml"
 	@echo "  2. Check status: kubectl get pahlevanpolicy"
-	@echo "  3. View logs: kubectl logs -n pahlevan-system deployment/pahlevan-controller-manager"
+	@echo "  3. View agent logs: kubectl logs -n pahlevan-system -l app.kubernetes.io/name=pahlevan-agent"
 
 .PHONY: quick-start
 quick-start: install-all ## Complete quick start installation with example
@@ -299,3 +319,9 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	test -s $(LOCALBIN)/golangci-lint && $(LOCALBIN)/golangci-lint --version | grep -q $(GOLANGCI_LINT_VERSION) || \
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(LOCALBIN) $(GOLANGCI_LINT_VERSION)
+.PHONY: vm-test
+vm-test: ## Run the eBPF load/observe tests inside the VM (hack/vm must be up)
+	@./hack/vm/up.sh
+	@git archive HEAD -o .vmcache/src.tar
+	@./hack/vm/cp.sh .vmcache/src.tar /home/pahlevan/src.tar
+	@./hack/vm/run.sh 'rm -rf ~/pahlevan && mkdir -p ~/pahlevan && tar -xf ~/src.tar -C ~/pahlevan && cd ~/pahlevan && sudo env PATH=$$PATH GOFLAGS=-mod=mod PAHLEVAN_EBPF_VM_TEST=1 go test ./pkg/ebpf/ -run TestVMLoad -v'

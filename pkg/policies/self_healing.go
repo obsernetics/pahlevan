@@ -19,6 +19,7 @@ package policies
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -73,6 +74,13 @@ type HealingState struct {
 	HealingInProgress   bool
 	EmergencyMode       bool
 	AdaptiveThresholds  *ContainerThresholds
+
+	// Runtime observations used for health assessment. These are populated by
+	// the agent/controller from the container runtime status.
+	RestartCount           int32
+	LastRestartTime        time.Time
+	Ready                  bool
+	ReadinessProbeFailures int
 }
 
 // HealthStatus represents the current health of a container
@@ -348,6 +356,7 @@ type HealthCheckMetadata struct {
 
 // Anomaly detection
 type AnomalyDetector struct {
+	mu              sync.Mutex
 	algorithms      map[string]AnomalyAlgorithm
 	baselines       map[string]*Baseline
 	anomalyHistory  map[string][]*Anomaly
@@ -657,6 +666,7 @@ func (shm *SelfHealingManager) RegisterContainer(
 		ConsecutiveFailures: 0,
 		HealingInProgress:   false,
 		EmergencyMode:       false,
+		Ready:               true,
 		AdaptiveThresholds:  &ContainerThresholds{ContainerID: containerID},
 	}
 
@@ -828,6 +838,32 @@ func (shm *SelfHealingManager) UnregisterContainer(containerID string) error {
 	delete(shm.healingStates, containerID)
 	delete(shm.rollbackHistory, containerID)
 	delete(shm.healthCheckers, containerID)
+
+	return nil
+}
+
+// UpdateContainerRuntimeStatus records runtime observations (restart count and
+// readiness) reported by the agent/controller. These feed the health
+// assessment's crashloop and readiness detection.
+func (shm *SelfHealingManager) UpdateContainerRuntimeStatus(containerID string, restartCount int32, ready bool) error {
+	shm.mu.Lock()
+	defer shm.mu.Unlock()
+
+	state, exists := shm.healingStates[containerID]
+	if !exists {
+		return fmt.Errorf("container not registered: %s", containerID)
+	}
+
+	if restartCount > state.RestartCount {
+		state.LastRestartTime = time.Now()
+	}
+	state.RestartCount = restartCount
+	if ready && !state.Ready {
+		state.ReadinessProbeFailures = 0
+	} else if !ready {
+		state.ReadinessProbeFailures++
+	}
+	state.Ready = ready
 
 	return nil
 }
@@ -1021,9 +1057,9 @@ func (shm *SelfHealingManager) triggerEmergencyResponse(ctx context.Context, con
 	}
 }
 
-// Implementation methods (simplified for brevity)
 func (shm *SelfHealingManager) initializeComponents() error {
-	// Initialize anomaly detector
+	// Initialize anomaly detector with a concrete statistical (z-score)
+	// algorithm that compares current behavior against the learned baseline.
 	shm.anomalyDetector = &AnomalyDetector{
 		algorithms:      make(map[string]AnomalyAlgorithm),
 		baselines:       make(map[string]*Baseline),
@@ -1031,6 +1067,7 @@ func (shm *SelfHealingManager) initializeComponents() error {
 		learningEnabled: true,
 		sensitivity:     0.8,
 	}
+	shm.anomalyDetector.algorithms["zscore"] = &ZScoreAnomalyAlgorithm{Threshold: 3.0}
 
 	// Initialize adaptive thresholds
 	shm.adaptiveThresholds = &AdaptiveThresholds{
@@ -1105,6 +1142,18 @@ func (shm *SelfHealingManager) shouldTriggerSelfHealing(state *HealingState, vio
 	// Check consecutive failures threshold
 	if state.ConsecutiveFailures >= shm.escalationThresholds.ConsecutiveFailures {
 		return true
+	}
+
+	// A container that is crash-looping (many restarts) or currently in a
+	// critical/failing health state warrants healing regardless of raw counts.
+	if state.RestartCount >= 5 {
+		return true
+	}
+	if state.HealthStatus != nil {
+		if state.HealthStatus.Overall == HealthLevelCritical ||
+			state.HealthStatus.Overall == HealthLevelFailing {
+			return true
+		}
 	}
 
 	// Check violation frequency - if too many violations recently, trigger healing
@@ -1320,31 +1369,7 @@ func (shm *SelfHealingManager) performHealthChecks() {
 	shm.mu.RUnlock()
 
 	for containerID, state := range states {
-		// Simple health check based on current violation rate
-		health := &HealthStatus{
-			Overall:            HealthLevelHealthy,
-			ComponentHealth:    make(map[ComponentType]*ComponentHealth),
-			PerformanceMetrics: nil,
-			ErrorMetrics:       nil,
-			TrendAnalysis:      nil,
-			PredictedHealth:    nil,
-			LastUpdated:        time.Now(),
-		}
-
-		// Determine health level based on recent violations
-		recentViolations := 0
-		cutoff := time.Now().Add(-time.Hour)
-		for _, violation := range state.ViolationHistory {
-			if violation.Timestamp.After(cutoff) {
-				recentViolations++
-			}
-		}
-
-		if recentViolations > 10 {
-			health.Overall = HealthLevelCritical
-		} else if recentViolations > 5 {
-			health.Overall = HealthLevelFailing
-		}
+		health := shm.assessHealth(state)
 
 		// Update the healing state
 		shm.mu.Lock()
@@ -1359,6 +1384,97 @@ func (shm *SelfHealingManager) performHealthChecks() {
 	}
 }
 
+// assessHealth performs a real health assessment of a container using the
+// observations the manager already tracks: crashloop/restart counts, readiness,
+// consecutive health failures and violation spikes. It returns a populated
+// HealthStatus with an overall level plus supporting error metrics.
+func (shm *SelfHealingManager) assessHealth(state *HealingState) *HealthStatus {
+	health := &HealthStatus{
+		Overall:         HealthLevelHealthy,
+		ComponentHealth: make(map[ComponentType]*ComponentHealth),
+		LastUpdated:     time.Now(),
+	}
+	if state == nil {
+		health.Overall = HealthLevelUnknown
+		return health
+	}
+
+	now := time.Now()
+
+	// --- Violation spike analysis (recent vs longer-term rate) ---
+	shortWindow := 5 * time.Minute
+	longWindow := time.Hour
+	recent := 0
+	longer := 0
+	criticalRecent := 0
+	var errorCount int64
+	errorTypes := map[string]int64{}
+	for _, v := range state.ViolationHistory {
+		age := now.Sub(v.Timestamp)
+		if age <= longWindow {
+			longer++
+			errorCount++
+			errorTypes[string(v.ViolationType)]++
+		}
+		if age <= shortWindow {
+			recent++
+			if v.Severity == ViolationSeverityCritical {
+				criticalRecent++
+			}
+		}
+	}
+
+	// Rate per minute in each window.
+	recentRate := float64(recent) / shortWindow.Minutes()
+	baselineRate := float64(longer) / longWindow.Minutes()
+
+	// --- Crashloop detection ---
+	// A container restarting repeatedly (or with many consecutive health
+	// failures) is treated as crash-looping.
+	crashLoop := false
+	if state.RestartCount >= 5 {
+		crashLoop = true
+	}
+	if state.ConsecutiveFailures >= shm.escalationThresholds.ConsecutiveFailures {
+		crashLoop = true
+	}
+
+	// --- Overall level determination ---
+	switch {
+	case crashLoop || criticalRecent >= 3 || recent > 10:
+		health.Overall = HealthLevelCritical
+	case !state.Ready && state.RestartCount >= 3:
+		health.Overall = HealthLevelCritical
+	case recent > 5 || criticalRecent > 0 || state.ConsecutiveFailures >= 2:
+		health.Overall = HealthLevelFailing
+	case !state.Ready || (baselineRate > 0 && recentRate > baselineRate*2) || recent > 0:
+		health.Overall = HealthLevelWarning
+	default:
+		health.Overall = HealthLevelHealthy
+	}
+
+	// --- Error metrics ---
+	errorRate := 0.0
+	if longer > 0 {
+		errorRate = float64(recent) / float64(longer)
+	}
+	health.ErrorMetrics = &ErrorMetrics{
+		ErrorRate:      errorRate,
+		ErrorCount:     errorCount,
+		CriticalErrors: int64(criticalRecent),
+		ErrorTypes:     errorTypes,
+	}
+
+	// --- Component health for the security dimension ---
+	securityScore := shm.healthLevelToScore(health.Overall)
+	health.ComponentHealth[ComponentTypeSecurity] = &ComponentHealth{
+		Status: health.Overall,
+		Score:  securityScore,
+	}
+
+	return health
+}
+
 func (shm *SelfHealingManager) detectAnomalies() {
 	shm.mu.RLock()
 	states := make(map[string]*HealingState)
@@ -1368,6 +1484,18 @@ func (shm *SelfHealingManager) detectAnomalies() {
 	shm.mu.RUnlock()
 
 	for containerID, state := range states {
+		// Statistical anomaly detection: compare the current behavior rate
+		// against the learned baseline (mean/stddev) for this container.
+		if anomaly, ok := shm.analyzeBehaviorRate(containerID, state); ok {
+			log.Log.Info("Behavioral rate anomaly detected",
+				"containerID", containerID,
+				"value", anomaly.Value,
+				"expected", anomaly.ExpectedValue,
+				"deviation", anomaly.Deviation,
+				"score", anomaly.Score)
+			shm.recordAnomaly(containerID, anomaly)
+		}
+
 		// Check for behavioral anomalies based on violation history
 		if shm.hasAnomalousViolationPattern(state) {
 			log.Log.Info("Anomalous violation pattern detected",
@@ -1500,7 +1628,206 @@ func (shm *SelfHealingManager) healthLevelToScore(level HealthLevel) float64 {
 	}
 }
 
-// Additional types and structures would be defined here...
+// ZScoreAnomalyAlgorithm is a concrete statistical anomaly detector. It flags a
+// data point as anomalous when it deviates from the learned baseline mean by
+// more than Threshold standard deviations (a z-score test).
+type ZScoreAnomalyAlgorithm struct {
+	Threshold float64
+}
+
+// UpdateBaseline recomputes the baseline mean and standard deviation from the
+// provided historical data.
+func (z *ZScoreAnomalyAlgorithm) UpdateBaseline(data []float64, baseline *Baseline) error {
+	if baseline == nil {
+		return fmt.Errorf("nil baseline")
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	mean, stddev := meanStdDev(data)
+	baseline.Mean = mean
+	baseline.StandardDev = stddev
+	baseline.SampleCount = int64(len(data))
+	baseline.LastUpdate = time.Now()
+	if len(data) >= 5 {
+		baseline.Confidence = 0.95
+	} else {
+		baseline.Confidence = 0.5 + 0.09*float64(len(data))
+	}
+	return nil
+}
+
+// DetectAnomalies returns anomalies for any point in data whose absolute z-score
+// exceeds the configured threshold relative to the baseline.
+func (z *ZScoreAnomalyAlgorithm) DetectAnomalies(data []float64, baseline *Baseline) ([]*Anomaly, error) {
+	if baseline == nil {
+		return nil, fmt.Errorf("nil baseline")
+	}
+	threshold := z.Threshold
+	if threshold <= 0 {
+		threshold = 3.0
+	}
+
+	anomalies := make([]*Anomaly, 0)
+	for _, value := range data {
+		var score float64
+		if baseline.StandardDev > 0 {
+			score = (value - baseline.Mean) / baseline.StandardDev
+		} else if value != baseline.Mean {
+			// Zero variance baseline: any deviation is a strong anomaly.
+			score = value - baseline.Mean
+			if score != 0 {
+				score = score / abs(score) * (threshold + 1)
+			}
+		}
+
+		if abs(score) >= threshold {
+			anomalies = append(anomalies, &Anomaly{
+				Timestamp:     time.Now(),
+				Type:          AnomalyTypePoint,
+				Severity:      zScoreToSeverity(abs(score), threshold),
+				Score:         abs(score),
+				Value:         value,
+				ExpectedValue: baseline.Mean,
+				Deviation:     value - baseline.Mean,
+			})
+		}
+	}
+	return anomalies, nil
+}
+
+func (z *ZScoreAnomalyAlgorithm) GetMetadata() *AlgorithmMetadata {
+	threshold := z.Threshold
+	if threshold <= 0 {
+		threshold = 3.0
+	}
+	return &AlgorithmMetadata{
+		Name:    "zscore",
+		Type:    "statistical",
+		Version: "1.0",
+		Parameters: map[string]interface{}{
+			"threshold": threshold,
+		},
+	}
+}
+
+// analyzeBehaviorRate builds a per-minute violation-rate series from the
+// container's violation history, updates the container's baseline from the
+// historical portion, and tests the most recent bucket against it.
+func (shm *SelfHealingManager) analyzeBehaviorRate(containerID string, state *HealingState) (*Anomaly, bool) {
+	if state == nil || shm.anomalyDetector == nil {
+		return nil, false
+	}
+
+	const buckets = 15
+	series := violationRateSeries(state.ViolationHistory, time.Minute, buckets)
+	// Need enough history to form a baseline plus a current sample.
+	if len(series) < 4 {
+		return nil, false
+	}
+	current := series[len(series)-1]
+	history := series[:len(series)-1]
+
+	shm.anomalyDetector.mu.Lock()
+	defer shm.anomalyDetector.mu.Unlock()
+
+	algo, ok := shm.anomalyDetector.algorithms["zscore"]
+	if !ok {
+		return nil, false
+	}
+	baseline := shm.anomalyDetector.baselines[containerID]
+	if baseline == nil {
+		baseline = &Baseline{}
+		shm.anomalyDetector.baselines[containerID] = baseline
+	}
+	if err := algo.UpdateBaseline(history, baseline); err != nil {
+		return nil, false
+	}
+
+	anomalies, err := algo.DetectAnomalies([]float64{current}, baseline)
+	if err != nil || len(anomalies) == 0 {
+		return nil, false
+	}
+	// Only treat upward spikes (more activity than baseline) as anomalies.
+	if anomalies[0].Deviation <= 0 {
+		return nil, false
+	}
+	return anomalies[0], true
+}
+
+// recordAnomaly appends an anomaly to the detector's per-container history.
+func (shm *SelfHealingManager) recordAnomaly(containerID string, anomaly *Anomaly) {
+	if shm.anomalyDetector == nil || anomaly == nil {
+		return
+	}
+	shm.anomalyDetector.mu.Lock()
+	defer shm.anomalyDetector.mu.Unlock()
+	shm.anomalyDetector.anomalyHistory[containerID] = append(shm.anomalyDetector.anomalyHistory[containerID], anomaly)
+	// Bound history growth.
+	if len(shm.anomalyDetector.anomalyHistory[containerID]) > 100 {
+		shm.anomalyDetector.anomalyHistory[containerID] = shm.anomalyDetector.anomalyHistory[containerID][len(shm.anomalyDetector.anomalyHistory[containerID])-100:]
+	}
+}
+
+// violationRateSeries buckets the given violations into `count` consecutive
+// windows of `bucketSize` ending now, returning the count per bucket (oldest
+// first). Buckets are only emitted from the first bucket that ends after the
+// earliest violation so leading empty buckets do not dominate the baseline.
+func violationRateSeries(violations []*ViolationEvent, bucketSize time.Duration, count int) []float64 {
+	if count <= 0 || bucketSize <= 0 {
+		return nil
+	}
+	now := time.Now()
+	series := make([]float64, count)
+	for _, v := range violations {
+		age := now.Sub(v.Timestamp)
+		if age < 0 {
+			age = 0
+		}
+		idxFromEnd := int(age / bucketSize)
+		if idxFromEnd >= count {
+			continue
+		}
+		series[count-1-idxFromEnd]++
+	}
+	return series
+}
+
+// meanStdDev computes the arithmetic mean and population standard deviation.
+func meanStdDev(data []float64) (float64, float64) {
+	if len(data) == 0 {
+		return 0, 0
+	}
+	var sum float64
+	for _, d := range data {
+		sum += d
+	}
+	mean := sum / float64(len(data))
+	var variance float64
+	for _, d := range data {
+		diff := d - mean
+		variance += diff * diff
+	}
+	variance /= float64(len(data))
+	return mean, math.Sqrt(variance)
+}
+
+func abs(x float64) float64 {
+	return math.Abs(x)
+}
+
+func zScoreToSeverity(score, threshold float64) ViolationSeverity {
+	switch {
+	case score >= threshold*2:
+		return ViolationSeverityCritical
+	case score >= threshold*1.5:
+		return ViolationSeverityHigh
+	default:
+		return ViolationSeverityMedium
+	}
+}
+
+// Additional supporting types and structures.
 type EscalationRule struct {
 	Conditions []*EscalationCondition
 	Actions    []*EscalationAction

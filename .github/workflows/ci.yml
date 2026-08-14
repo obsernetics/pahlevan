@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 env:
-  GO_VERSION: "1.24"
+  GO_VERSION: "1.25"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
@@ -40,20 +40,13 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-build-
 
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic
-
-    - name: Generate eBPF bindings
-      run: |
-        go install github.com/cilium/ebpf/cmd/bpf2go@latest
-        go generate ./pkg/ebpf/
-
+    # The eBPF Go bindings and their embedded objects are committed, so no
+    # clang/bpf2go codegen is needed here. Regenerate out-of-band with `make ebpf`.
     - name: Build binaries
       run: |
+        go build -o bin/pahlevan-agent ./cmd/pahlevan-agent
+        go build -o bin/pahlevan-operator ./cmd/pahlevan-operator
         go build -o bin/pahlevan ./cmd/pahlevan
-        go build -o bin/operator ./cmd/operator
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v5

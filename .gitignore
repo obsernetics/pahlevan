@@ -21,10 +21,13 @@ build/
 vendor/
 
 # eBPF related
+# The bpf2go-generated Go bindings (*_bpfel.go / *_bpfeb.go) AND the compiled
+# objects they //go:embed (pkg/ebpf/*.o) are committed, so `go build ./...` works
+# from a clean checkout with no clang/codegen step. Regenerate with `make ebpf`.
+# All other *.o (e.g. the redundant manual bpf/*.o compile artifacts) stay ignored.
 *.bpf.o
-*_bpf.go
-*_bpfel.go
-*_bpfeb.go
+*.o
+!pkg/ebpf/*.o
 
 # Testing and coverage
 coverage.out
@@ -56,6 +59,10 @@ kubeconfig
 *.deb
 *.rpm
 
+# QEMU/KVM eBPF test VM cache (cloud image, VM disk, seed ISO, SSH keys).
+# Large binaries and secrets - never commit. See hack/vm/.
+.vmcache/
+
 # Local development
 .env
 .env.local
@@ -63,3 +70,6 @@ kubeconfig
 
 # Git locks
 .git/index.lock
+
+# Generated CO-RE kernel header (make vmlinux)
+bpf/vmlinux.h
