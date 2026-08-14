@@ -95,6 +95,13 @@ func (r *AttackSurfaceAnalyzerReconciler) performClusterAnalysis(ctx context.Con
 
 	startTime := time.Now()
 
+	// The analyzer is a required collaborator; without it there is no analysis to
+	// run, so skip cleanly instead of panicking on a nil dereference.
+	if r.AttackSurfaceAnalyzer == nil {
+		logger.Info("Attack surface analyzer not configured; skipping analysis")
+		return nil
+	}
+
 	// Perform comprehensive cluster analysis
 	clusterGraph, err := r.AttackSurfaceAnalyzer.AnalyzeClusterAttackSurface()
 	if err != nil {
