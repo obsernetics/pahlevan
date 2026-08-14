@@ -55,6 +55,16 @@ struct {
 	__uint(max_entries, 1);
 } file_config SEC(".maps");
 
+/* Enforcement: userspace inserts the FNV-1a hash of a path to DENY. When a
+ * file_open resolves to a blocked path, the LSM hook returns -EPERM and the open
+ * fails in-kernel. This is the capability Falco (alert-only) cannot provide. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 1 << 16);
+} file_blocked SEC(".maps");
+
 static __always_inline int enabled(void)
 {
 	__u32 k = 0;
@@ -106,7 +116,17 @@ int BPF_PROG(file_open, struct file *file)
 	if (n < 0)
 		e->path[0] = 0;
 
-	__u64 key = cgroup_id ^ hash_path(e->path, sizeof(e->path));
+	__u64 phash = hash_path(e->path, sizeof(e->path));
+
+	/* Enforcement: if this path is on the block list, DENY the open in-kernel. */
+	if (bpf_map_lookup_elem(&file_blocked, &phash)) {
+		e->flags |= 0x80000000; /* mark as a denied event for userspace */
+		bpf_ringbuf_submit(e, 0);
+		return -1; /* -EPERM: the open fails; the process never gets the fd */
+	}
+
+	/* Observation: emit the first open of each (cgroup, path). */
+	__u64 key = cgroup_id ^ phash;
 	if (bpf_map_lookup_elem(&file_seen, &key)) {
 		bpf_ringbuf_discard(e, 0);
 		return 0;
@@ -115,5 +135,5 @@ int BPF_PROG(file_open, struct file *file)
 	bpf_map_update_elem(&file_seen, &key, &one, BPF_ANY);
 
 	bpf_ringbuf_submit(e, 0);
-	return 0; /* observe only; enforcement returns -EPERM in a later phase */
+	return 0;
 }

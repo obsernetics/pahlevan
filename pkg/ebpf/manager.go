@@ -893,3 +893,15 @@ func (fp *FilePolicy) Validate() error {
 	}
 	return nil
 }
+
+// FnvPathHash computes the FNV-1a hash that bpf/file_monitor.c uses to key its
+// in-kernel file block list. Userspace inserts this hash into the file_blocked
+// map to DENY opens of the given path in-kernel.
+func FnvPathHash(path string) uint64 {
+	var h uint64 = 1469598103934665603
+	for i := 0; i < len(path); i++ {
+		h ^= uint64(path[i])
+		h *= 1099511628211
+	}
+	return h
+}

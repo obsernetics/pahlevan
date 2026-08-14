@@ -2,7 +2,9 @@ package ebpf
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -167,4 +169,66 @@ func TestVMLoadFileMonitor(t *testing.T) {
 	}
 	t.Logf("observed file event: path=%q comm=%q pid=%d cgroup=%d flags=%#x",
 		ev.Path, ev.Comm, ev.PID, ev.CgroupID, ev.Flags)
+}
+
+// TestVMFileEnforcement proves in-kernel DENY: after inserting a path's hash into
+// the file_blocked map, opening that path fails with EPERM, while other opens
+// succeed. This is the capability Falco (alert-only) fundamentally lacks. VM-only.
+func TestVMFileEnforcement(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+
+	spec, err := LoadFileMonitor()
+	if err != nil {
+		t.Fatalf("LoadFileMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(file_open): %v", err)
+	}
+	defer l.Close()
+
+	blocked := fmt.Sprintf("/tmp/pahlevan-blocked-%d", os.Getpid())
+	allowed := fmt.Sprintf("/tmp/pahlevan-allowed-%d", os.Getpid())
+	for _, p := range []string{blocked, allowed} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", p, err)
+		}
+		defer os.Remove(p)
+	}
+
+	// Insert the blocked path's hash into the in-kernel block list.
+	h := FnvPathHash(blocked)
+	one := uint8(1)
+	if err := coll.Maps["file_blocked"].Put(h, one); err != nil {
+		t.Fatalf("populate file_blocked: %v", err)
+	}
+
+	// The blocked path must now fail to open with EPERM.
+	if f, err := os.Open(blocked); err == nil {
+		f.Close()
+		t.Fatalf("expected open(%s) to be DENIED, but it succeeded", blocked)
+	} else if !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("expected EPERM opening %s, got: %v", blocked, err)
+	} else {
+		t.Logf("DENIED in-kernel as expected: open(%s) -> %v", blocked, err)
+	}
+
+	// A non-blocked path must still open fine.
+	if f, err := os.Open(allowed); err != nil {
+		t.Fatalf("expected open(%s) to succeed, got: %v", allowed, err)
+	} else {
+		f.Close()
+		t.Logf("allowed open(%s) succeeded", allowed)
+	}
 }
