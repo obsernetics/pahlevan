@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pahlevan - Releases, Changelog and Packages</title>
+    <meta name="description" content="Pahlevan releases and changelog, plus the published packages: the ghcr.io container image, the Helm chart, and the single-file Kubernetes manifest.">
+    <meta name="theme-color" content="#0b1020">
+
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:title" content="Pahlevan - Releases, Changelog and Packages">
+    <meta property="og:description" content="What changed in each Pahlevan release, and how to install it: container image, Helm chart, or a single kubectl apply.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://obsernetics.github.io/pahlevan/changelog.html">
+    <meta property="og:image" content="https://obsernetics.github.io/pahlevan/assets/demo.gif">
+
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Pahlevan - Releases, Changelog and Packages">
+    <meta name="twitter:description" content="What changed in each Pahlevan release, and how to install it.">
+    <meta name="twitter:image" content="https://obsernetics.github.io/pahlevan/assets/demo.gif">
+
+    <link rel="icon" type="image/svg+xml" href="assets/pahlevan-icon.svg">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="assets/css/main.css?v=5">
+
+    <!-- Prism.js for code highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+</head>
+<body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <nav class="navbar">
+        <div class="container">
+            <a href="index.html" class="nav-brand">
+                <img src="assets/pahlevan-icon.svg" alt="" class="nav-logo" aria-hidden="true">
+                <span>Pahlevan</span>
+            </a>
+            <div class="nav-links">
+                <a href="index.html#why" class="nav-link">Why</a>
+                <a href="index.html#compare" class="nav-link">Compare</a>
+                <a href="index.html#architecture" class="nav-link">Architecture</a>
+                <a href="index.html#benchmarks" class="nav-link">Benchmarks</a>
+                <a href="index.html#install" class="nav-link">Install</a>
+                <a href="changelog.html" class="nav-link" aria-current="page">Changelog</a>
+                <a href="https://github.com/obsernetics/pahlevan" class="nav-link nav-github" target="_blank" rel="noopener">GitHub &#8599;</a>
+            </div>
+            <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <main id="main">
+    <header class="page-head" id="top">
+        <div class="container">
+            <span class="eyebrow">Releases</span>
+            <h1>Changelog and packages</h1>
+            <p>
+                What changed in each Pahlevan release, and every artifact you can install:
+                a distroless container image on GHCR, a Helm chart, and a single-file
+                Kubernetes manifest. The current release is <strong>v2.0.0</strong>.
+            </p>
+            <div class="hero-actions">
+                <a href="#changelog" class="btn btn-primary">Read the changelog</a>
+                <a href="https://github.com/obsernetics/pahlevan/releases" class="btn btn-outline" target="_blank" rel="noopener">GitHub releases &#8599;</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- PACKAGES -->
+    <section id="packages" class="section quickstart">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Packages</span>
+                <h2>Three ways to install v2.0.0</h2>
+                <p>
+                    One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
+                    <code>pahlevan-operator</code> (the leader-elected Deployment), and the
+                    <code>pahlevan</code> CLI. No shell, no package manager, nothing but the binaries.
+                </p>
+            </div>
+            <div class="qs-grid">
+                <div class="qs-col">
+                    <h3>Helm chart</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
+helm repo update
+helm install pahlevan pahlevan/pahlevan-operator \
+  -n pahlevan-system --create-namespace</code></pre>
+                    </div>
+                    <h3>Raw manifest</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml</code></pre>
+                    </div>
+                    <p class="qs-note">
+                        The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
+                        DaemonSet. Swap <code>latest</code> for <code>v2.0.0</code> to pin a release.
+                    </p>
+                </div>
+                <div class="qs-col">
+                    <h3>Container image</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v2.0.0</code></pre>
+                    </div>
+                    <h3>Verifying the image</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v2.0.0
+docker inspect ghcr.io/obsernetics/pahlevan:v2.0.0
+
+# Digest to pin in air-gapped or regulated environments
+docker inspect --format '{{index .RepoDigests 0}}' \
+  ghcr.io/obsernetics/pahlevan:v2.0.0</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-wrap packages-table">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Image tag</th>
+                            <th scope="col">Meaning</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row"><code>latest</code></th>
+                            <td>Most recent build of the default branch</td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><code>v2.0.0</code></th>
+                            <td>Immutable release tag, recommended for production</td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><code>main</code></th>
+                            <td>Rolling tag for the default branch</td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><code>main-&lt;sha&gt;</code></th>
+                            <td>Per-commit build of the default branch, useful for bisecting</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="qs-note">
+                Full package reference, including chart values and CRD cleanup, is in
+                <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/packages.md" target="_blank" rel="noopener">docs/packages.md</a>.
+            </p>
+        </div>
+    </section>
+
+    <!-- CHANGELOG -->
+    <section id="changelog" class="section">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Changelog</span>
+                <h2>What changed, release by release</h2>
+                <p>
+                    Following <a href="https://keepachangelog.com/en/1.1.0/" target="_blank" rel="noopener">Keep a Changelog</a>
+                    and semantic versioning. The canonical file is
+                    <a href="https://github.com/obsernetics/pahlevan/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a>.
+                </p>
+            </div>
+
+            <div class="release-list">
+                <article class="release">
+                    <div class="release-head">
+                        <h3 class="release-version">Unreleased</h3>
+                        <span class="release-pill">In progress</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li>Refreshed benchmark run to cover the <code>lsm/socket_connect</code> egress and <code>lsm/bprm_check_security</code> exec enforcement paths, which landed after the 2026-08-14 measurement.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
+                        <h3 class="release-version">2.0.0</h3>
+                        <span class="release-date">2026-08-14</span>
+                        <span class="release-pill">Current</span>
+                    </div>
+                    <p class="release-summary">
+                        Pahlevan 2.0.0 is a redesign. The single all-in-one operator is replaced by a
+                        privileged per-node agent plus an unprivileged, leader-elected control plane,
+                        and the eBPF data plane moved from placeholder code to real CO-RE programs that
+                        observe and deny in the kernel.
+                    </p>
+
+                    <div class="change-group">
+                        <h4 class="added">Added</h4>
+                        <ul>
+                            <li><strong>Two-workload architecture</strong>: <code>pahlevan-agent</code> (privileged DaemonSet, owns the eBPF data plane) and <code>pahlevan-operator</code> (leader-elected Deployment, no host access, runs with <code>hostUsers: false</code>).</li>
+                            <li><strong>CO-RE syscall monitor</strong>: <code>raw_tracepoint/sys_enter</code> with a ring buffer and in-kernel deduplication per <code>(cgroup, syscall)</code>.</li>
+                            <li><strong>CO-RE file monitor</strong> on <code>lsm/file_open</code> with path resolution via <code>bpf_d_path()</code> and graceful degradation when the BPF LSM is unavailable.</li>
+                            <li><strong>In-kernel file enforcement</strong>: unlearned opens are denied with <code>EPERM</code>.</li>
+                            <li><strong>In-kernel network egress enforcement</strong> via <code>lsm/socket_connect</code>, preceded by a CO-RE <code>kprobe/tcp_connect</code> network monitor for observation.</li>
+                            <li><strong>Process and exec monitoring and enforcement</strong> via <code>lsm/bprm_check_security</code>.</li>
+                            <li><strong>Adaptive learn to enforce loop</strong>: per-cgroup allow-sets are built during the learning window and the agent transitions to enforcement autonomously.</li>
+                            <li><strong>Seccomp profile generation</strong> from the learned syscall set.</li>
+                            <li><strong>CEL <code>ValidatingAdmissionPolicy</code></strong> hardening for <code>PahlevanPolicy</code> resources.</li>
+                            <li><strong><code>ContainerProfile</code> CRD</strong> with profile persistence, a metrics endpoint, and an enforcement counter.</li>
+                            <li><strong><code>AttackSurface</code> CRD</strong> for cluster-wide posture aggregation.</li>
+                            <li><strong>Container attribution</strong>: cgroup id to Kubernetes pod and container resolver.</li>
+                            <li><strong><code>hack/vm/</code></strong>: reproducible QEMU/KVM harness that provisions a kernel with the BPF LSM enabled for eBPF load, attach, observe, and enforce tests.</li>
+                            <li><strong>Competitive benchmark harness</strong> and the first measured results against Falco and Tetragon.</li>
+                            <li><strong>GitHub Pages site</strong> with a deploy workflow, published Helm chart, install and benchmark sections.</li>
+                            <li><strong>Committed bpf2go bindings and eBPF objects</strong> so the tree builds from a clean checkout without clang on the build host.</li>
+                            <li><strong>Documentation and demo</strong>: README with badges, an animated demo GIF, and an architecture diagram.</li>
+                        </ul>
+                    </div>
+
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li>Helm chart and <code>install.yaml</code> rewritten for the agent plus operator split.</li>
+                            <li>Build produces three binaries (<code>pahlevan-agent</code>, <code>pahlevan-operator</code>, <code>pahlevan</code>); the container image is a minimal distroless runtime.</li>
+                            <li>Go toolchain moved to 1.25 across <code>go.mod</code>, the Makefile, and the Dockerfile.</li>
+                            <li>Dependency bumps, including Kubernetes libraries to 0.35.0, <code>controller-runtime</code> to 0.22.4, <code>cilium/ebpf</code> to 0.20.0, <code>spf13/cobra</code> to 1.10.1, Ginkgo/Gomega, OpenTelemetry, <code>go-logr</code>, and <code>prometheus/client_golang</code>.</li>
+                            <li>Substantially expanded test coverage across the controller, learner, policies, CLI, APIs, observability, metrics, attribution, and visualization packages, plus decode round-trip tests and benchmarks for the eBPF event parsers.</li>
+                            <li>CI restructured into a build, push, then test flow with dependency caching; security workflows consolidated.</li>
+                            <li>Documentation cleaned of em dashes project-wide and the architecture SVG redrawn with clean connectors.</li>
+                        </ul>
+                    </div>
+
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li>Agent crash loop caused by a double eBPF attach and a duplicate controller name.</li>
+                            <li>Syscall monitor silently disabled by default because of ARRAY map zero initialization.</li>
+                            <li>Panic in the metrics path.</li>
+                            <li><code>go.sum</code> inconsistency from an unused <code>golang.org/x/exp</code> dependency.</li>
+                            <li>Site layout overflow and horizontal scrolling in long code blocks.</li>
+                            <li>CodeQL and vulnerability workflows failing because eBPF bindings were not generated before the build.</li>
+                            <li>Reachable CVEs patched; <code>govulncheck</code> clean.</li>
+                        </ul>
+                    </div>
+
+                    <div class="change-group">
+                        <h4 class="removed">Removed</h4>
+                        <ul>
+                            <li>Admission webhook package and its integration wiring, replaced by the CEL <code>ValidatingAdmissionPolicy</code>.</li>
+                            <li>Dead code: the <code>pkg/events</code> package, an orphaned eBPF <code>mock.go</code>, and an unused eBPF manager.</li>
+                            <li>Placeholder and stubbed subsystems, replaced by working implementations.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
+                        <h3 class="release-version">1.0.0</h3>
+                        <span class="release-date">2025-09-25</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="added">Added</h4>
+                        <ul>
+                            <li>First public release of Pahlevan: an eBPF-based Kubernetes security operator with the <code>PahlevanPolicy</code> CRD, a learning phase, enforcement modes, self-healing, observability, and Helm plus manifest based installation.</li>
+                        </ul>
+                    </div>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="section cta">
+        <div class="container">
+            <div class="cta-box">
+                <h2>Ready to install?</h2>
+                <p>Apply the manifest, label a workload, and let the learning window do the rest.</p>
+                <div class="hero-actions">
+                    <a href="index.html#quickstart" class="btn btn-primary">Read the quick start</a>
+                    <a href="https://github.com/obsernetics/pahlevan/releases" class="btn btn-outline" target="_blank" rel="noopener">All releases &#8599;</a>
+                </div>
+            </div>
+        </div>
+    </section>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <a href="index.html" class="nav-brand">
+                        <img src="assets/pahlevan-icon.svg" alt="" class="footer-logo" aria-hidden="true">
+                        <span>Pahlevan</span>
+                    </a>
+                    <p>eBPF-powered runtime security for Kubernetes. Self-learning workload baselines, enforced in-kernel - no hand-written rules.</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-section">
+                        <h4>Project</h4>
+                        <a href="https://github.com/obsernetics/pahlevan" target="_blank" rel="noopener">GitHub</a>
+                        <a href="https://github.com/obsernetics/pahlevan/releases" target="_blank" rel="noopener">Releases</a>
+                        <a href="changelog.html">Changelog</a>
+                        <a href="https://github.com/obsernetics/pahlevan/blob/main/LICENSE" target="_blank" rel="noopener">License (Apache 2.0)</a>
+                    </div>
+                    <div class="footer-section">
+                        <h4>Docs</h4>
+                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs" target="_blank" rel="noopener">Documentation</a>
+                        <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/architecture.md" target="_blank" rel="noopener">Architecture</a>
+                        <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/packages.md" target="_blank" rel="noopener">Packages</a>
+                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs/benchmarks" target="_blank" rel="noopener">Benchmarks</a>
+                    </div>
+                    <div class="footer-section">
+                        <h4>Community</h4>
+                        <a href="https://github.com/obsernetics/pahlevan/issues" target="_blank" rel="noopener">Issues</a>
+                        <a href="https://github.com/obsernetics/pahlevan/discussions" target="_blank" rel="noopener">Discussions</a>
+                        <a href="https://github.com/obsernetics/pahlevan/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; <span id="year">2026</span> Pahlevan &middot; Licensed under Apache 2.0</p>
+                <p class="footer-tagline">Learn the baseline. Block the deviation.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="assets/js/main.js?v=5"></script>
+</body>
+</html>
