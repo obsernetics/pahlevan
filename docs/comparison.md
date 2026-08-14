@@ -103,7 +103,7 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | Hook | `lsm/file_open` (`bpf/file_monitor.c`) | Syscall-level (`open`, `openat`, and friends) with userspace path resolution | kprobes such as `security_file_permission`, or LSM hooks, per policy |
 | Path resolution | In-kernel via `bpf_d_path()`, so the path is the resolved one | Userspace, using the process fd table | In-kernel |
 | Operations covered | **Open only.** There is no separate write, rename, unlink, chmod, or truncate hook | Broad coverage across file syscalls | Whatever hooks your policy attaches |
-| Read versus write distinction in enforcement | **No.** The allow-set is a set of paths, not paths plus modes. `readOnlyPaths` and `writeAllowedPaths` exist in the CRD schema but the agent does not act on them | Rules can distinguish by flags | Policies can match on flags and modes |
+| Read versus write distinction in enforcement | **Yes.** The allow-set keys on the path and the access mode taken from `f_mode`, so a path learned for reading is not writable. `readOnlyPaths` and `writeAllowedPaths` are enforced. Finer modes (append, truncate, exec-of-a-mapping) are not distinguished | Rules can distinguish by flags | Policies can match on flags and modes |
 | Blocking | **Yes**, `EPERM` for a path not in the learned set | No | Yes, with a policy |
 | Allow-set key | `cgroup_id` combined with a hash of the path. Hash collisions are possible and would allow an unintended path | n/a | n/a |
 
@@ -176,8 +176,7 @@ the generated seccomp profile.
 
 What a rule cannot express, it says so rather than being dropped. A CIDR wider
 than a single host, a port range past 1024 entries, a label-selected peer, a
-DNS name, an ingress rule, a glob, `readOnlyPaths` is enforced, since the allow-set
-keys on the access mode. `processFilter` and the rest each produce a warning
+DNS name, an ingress rule, a glob and `processFilter` each produce a warning
 naming the field and the reason. A path must also be fully resolved: the
 kernel hashes what `bpf_d_path` returns, so an exception for a symlink grants
 nothing.
