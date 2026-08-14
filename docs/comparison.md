@@ -113,7 +113,7 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 |---|---|---|---|
 | Hook | `lsm/socket_connect` (`bpf/network_monitor.c`) | Socket syscalls through the driver | kprobes on the TCP stack, plus socket LSM hooks, per policy |
 | Direction | **Egress only.** There is no ingress hook at all | Both, as observed at the syscall layer | Both, depending on the policy |
-| Address family | **IPv4 only.** The program returns early for anything that is not `AF_INET`, which means **IPv6 egress is allowed even in blocking mode**. This is a known gap, not a design choice | IPv4 and IPv6 | IPv4 and IPv6 |
+| Address family | IPv4 and IPv6. `socket_connect` governs both families and folds the full 16-byte v6 address into the allow-set key, so a v6 destination cannot be smuggled past a v4 entry | IPv4 and IPv6 | IPv4 and IPv6 |
 | Protocol | The allow-set key is destination address and destination port. **Protocol is not part of the key**, and events report TCP unconditionally | Distinguishes protocols | Distinguishes protocols |
 | DNS visibility | **No** DNS parsing or name-based policy | Available through rules and fields | Available, including a DNS-oriented policy library |
 | L7 visibility | **No** | Limited, through plugins | Limited natively. Cilium and Hubble cover L7 alongside it |
@@ -230,14 +230,14 @@ This is the largest gap, so it gets the most detail.
 
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
-| gRPC streaming API | **No. Planned.** There is no gRPC anywhere in the repository | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
-| JSON event output | **In progress.** `pkg/export` defines a versioned envelope with stdout and file sinks and a bounded drop-rather-than-block queue, and it is **not yet wired into the agent**. Today the only event output is log lines | Yes, mature | Yes, including JSON export to file with rotation |
-| Webhook or HTTP output | **No.** Planned | Yes | Via the export pipeline |
-| Syslog, file, program outputs | File sink exists in `pkg/export` but is unwired. No syslog | Yes, all of them | File yes |
+| gRPC streaming API | **No. Planned.** Events leave the process over a JSON-lines file and an HTTP webhook instead | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
+| JSON event output | Yes. `pkg/export` provides a versioned envelope covering all five event types with Kubernetes attribution, wired into the agent behind `--export-file`. Size-based rotation, and a bounded queue that drops rather than blocking the ring-buffer readers, with the drops counted | Yes, mature | Yes, including JSON export to file with rotation |
+| Webhook or HTTP output | Yes, `--export-webhook`. Batched POSTs, retries on 5xx/408/429 with capped backoff, no retry on other 4xx | Yes | Via the export pipeline |
+| Syslog, file, program outputs | File and stdout sinks are wired. No syslog or program output yet | Yes, all of them | File yes |
 | Fan-out to third-party destinations | **None** | [falcosidekick](https://github.com/falcosecurity/falcosidekick) forwards to dozens of destinations: Slack, Elasticsearch, Loki, Kafka, S3, PagerDuty, and many more | Via the JSON stream into your own pipeline, plus Hubble and Cilium tooling |
 | Kubernetes audit log ingestion | **No.** Planned. Pahlevan sees kernel events only | Yes, the `k8saudit` plugin | No |
 | Plugin framework | **No, and none planned** | Yes. Source and extractor plugins, including cloudtrail, gcpaudit, github, okta | No formal plugin framework, but hooks are policy-defined |
-| Event filtering before export | No | Yes, in rule conditions | Yes, export filters and field filters |
+| Event filtering before export | Yes, by event type and a denials-only mode, applied before conversion | Yes, in rule conditions | Yes, export filters and field filters |
 | Output field stability | The envelope declares a schema version, but nothing emits it yet | Stable and documented | Stable protobuf schema |
 
 If your requirement is "get these events into our SIEM today", Falco is the
@@ -251,7 +251,7 @@ which is not a story.
 | CLI binary | `pahlevan` | `falco`, plus `falcoctl` for rule and plugin management | `tetra` |
 | What works | `policy` (list, get, describe, create, delete, update, status), `status`, `version`, `completion` | Running the engine, validating rules, listing fields, plus full artifact management in `falcoctl` | `getevents` streaming, `status`, `tracingpolicy` management, `bugtool` |
 | What is a stub | **`attack-surface`, `logs`, `metrics`, and `debug` print "to be implemented" and exit successfully.** Four of eight top-level subcommands | n/a | n/a |
-| Live event streaming | **No** in `v2.0.0`. A `pahlevan events` consumer for the new JSON envelope is in progress on `main` and depends on the export path landing first | Yes | Yes, `tetra getevents` is the standard workflow |
+| Live event streaming | Yes, `pahlevan events` with `--follow`, `--type`, `--denials-only`, `--pod`, and `--tail`. It tails the JSON-lines log rather than a gRPC stream, so it handles rotation and partial lines | Yes | Yes, `tetra getevents` is the standard workflow |
 | Troubleshooting bundle | **No** | Yes, through supportability tooling | Yes, `tetra bugtool` |
 
 ## Metrics and observability
@@ -259,11 +259,11 @@ which is not a story.
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | Prometheus endpoint | Yes, `:8080`, served by controller-runtime | Yes, native | Yes, native and extensive |
-| Metrics that actually work | **Four counters**: syscall, network, and file event totals, and enforcement actions. Plus export counters that are unreachable until the export path is wired | A broad set, including rule hit counts, drops, and engine internals | A broad set: per-policy, per-sensor, event counts, map pressure, and overhead |
-| Metrics that exist but are not served | `pkg/metrics` defines more than thirty metric names on a **private registry that is never served, and whose recording methods are never called**. They are invisible and would read zero even if served | n/a | n/a |
+| Metrics that actually work | **Six**: syscall, network, file, and capability event totals, enforcement actions (in-kernel denials), plus export sent and dropped counters. All served on the endpoint the agent exposes | A broad set, including rule hit counts, drops, and engine internals | A broad set: per-policy, per-sensor, event counts, map pressure, and overhead |
+| Metrics that exist but read zero | `pkg/metrics` defines more than thirty metric names. They now register with the served registry, but **39 record methods are still called from nowhere**, so those series read zero. A dashboard of zeros is worse than an absent metric, so wiring the recording calls is tracked as an open gap | n/a | n/a |
 | Policy status counters | `status.enforcementStatus.blocked*` fields exist and **are not incremented** | n/a | n/a |
 | Health probes | Yes, `:8081` | Yes | Yes |
-| OpenTelemetry tracing | **Structurally wired, functionally dead.** A `TracerProvider` is created with **zero span processors**, every exporter branch logs "temporarily disabled", and no span is ever started | Not a tracing tool, but the ecosystem covers it | Metrics focused |
+| OpenTelemetry tracing | Real OTLP/gRPC and console span exporters, plus a `StartSpan` API proven by tests to record spans and nest them. Instrumentation coverage of the codebase is still thin | Not a tracing tool, but the ecosystem covers it | Metrics focused |
 | Grafana dashboards | Types exist in code, nothing is exported | Community dashboards | Published dashboards |
 
 ## Multi-architecture support
@@ -271,7 +271,7 @@ which is not a story.
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | amd64 | Yes, built, tested, and benchmarked | Yes | Yes |
-| arm64 | **No.** Not built and not tested. Three concrete blockers: the eBPF objects are compiled with `-D__TARGET_ARCH_x86` and `vmlinux.h` came from an x86_64 kernel; `pkg/seccomp` has only `syscalls_linux_amd64.go`, so an arm64 build of the agent **fails to compile**; and the published image is single-arch. The Makefile lists arm64 in `PLATFORMS` for `docker-buildx`, but CI never invokes it | Yes, officially supported and released | Yes, officially supported and released |
+| arm64 | **Partial.** The Go side now cross-compiles: `pkg/seccomp` ships per-arch syscall tables behind build tags and CI runs a `GOOS=linux GOARCH=arm64` build on every PR. Still outstanding: the eBPF objects are compiled `-D__TARGET_ARCH_x86` against an x86_64 `vmlinux.h`, and the published image is single-arch, so arm64 is not yet a shippable target | Yes, officially supported and released | Yes, officially supported and released |
 | s390x, ppc64le | No | Falco publishes additional architectures | No |
 | Endianness bindings | Both little and big endian bpf2go bindings are committed, which is necessary but nowhere near sufficient | n/a | n/a |
 
@@ -302,7 +302,7 @@ Measured in the same VM, one tool at a time. Full method in
 
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
-| Agent resident memory | **~327 MiB**, the worst of the three | ~106 MiB | ~67 MiB |
+| Agent resident memory | BPF map memory is **17 to 19 MiB measured** across all five programs, down from 399 MiB before the maps were right-sized. The end-to-end agent RSS has not been re-measured since; the 327 MiB benchmark figure predates this fix | ~106 MiB | ~67 MiB |
 | CPU idle | ~0.4 percent of a core | ~0.34 percent | ~0.07 percent |
 | CPU under load | ~10.4 percent | ~10.4 percent | ~7.0 percent |
 | Caveats | The measured build logs a line **per observed syscall** at debug level, which inflates the CPU figure. The memory figure is dominated by the Go runtime plus pre-allocated LRU maps and is a genuine tuning target | Defaults, stable ruleset | Defaults, observe only |
@@ -333,20 +333,24 @@ Listed plainly, worst first. Every item here is real and current.
    `v1alpha1` API, and a security process that has never been used. Falco is
    CNCF Graduated. Tetragon sits under a Graduated project. Nothing in this
    document changes that gap.
-2. **No event API and no integrations.** No gRPC, no webhook output, no SIEM
-   path, nothing like falcosidekick. Structured JSON export exists in
-   `pkg/export` but is not yet wired to the agent, so the current answer for
-   getting events out is "read the logs".
+2. **No gRPC event API, and no integration ecosystem.** JSON-lines file and
+   HTTP webhook export are wired into the agent, and `pahlevan events` streams
+   them, so events do leave the process. What is still missing is a streaming
+   gRPC API and anything resembling falcosidekick's fan-out to Slack, S3, or a
+   SIEM. Integrating means consuming the file or the webhook yourself.
 3. **No rule or content ecosystem.** By design there are no rules to share, but
    the consequence is real: there is no community content, no detection
    coverage you can adopt, and nothing to compare against MITRE ATT&CK coverage.
 4. **Process ancestry is one hop, on exec only.** No ancestor chain, no process
    cache, no lineage on file or network events. Tetragon is far ahead here and
    this is not close.
-5. **amd64 only.** arm64 does not build, let alone run. Falco and Tetragon both
-   ship arm64.
-6. **Memory footprint.** Roughly three times Falco and five times Tetragon in
-   the measured run.
+5. **arm64 is not shippable yet.** The Go binaries cross-compile and CI proves
+   it on every PR, but the eBPF objects are still built for x86_64 and the
+   published image is single-arch. Falco and Tetragon both ship arm64.
+6. **Memory footprint is unproven since the fix.** BPF map preallocation, which
+   dominated the old 327 MiB figure, is down to 17 to 19 MiB measured. The
+   end-to-end agent RSS has not been re-measured against Falco and Tetragon, so
+   no comparative claim is made here until the benchmark is re-run.
 7. **Enforcement requires `lsm=bpf` on the kernel command line**, which most
    distributions do not set. Without it Pahlevan degrades to a weaker
    observability tool than either comparator.
