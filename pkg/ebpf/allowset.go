@@ -112,6 +112,12 @@ func setAllowEntry(mp *ebpf.Map, key uint64, allowed bool) error {
 // AllowFilePath seeds the file allow-set so opens of path are permitted once the
 // cgroup is enforcing. Pass allowed=false to revoke, which denies the path even
 // if it was learned.
+//
+// The path must be the fully resolved one. The kernel hashes what bpf_d_path
+// returns, which follows symlinks to the real dentry, so seeding
+// "/etc/os-release" grants nothing on a distro where it links to
+// /usr/lib/os-release - the entry is written and simply never matches.
+// TestVMSeededSymlinkPathDoesNotMatch pins both halves of that behaviour.
 func (m *Manager) AllowFilePath(cgroupID uint64, path string, allowed bool) error {
 	if path == "" {
 		return fmt.Errorf("empty path")
