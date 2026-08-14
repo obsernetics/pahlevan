@@ -8,19 +8,9 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
-	"structs"
 
 	"github.com/cilium/ebpf"
 )
-
-type NetworkMonitorConnectionPolicy struct {
-	_                   structs.HostLayout
-	ContainerId         uint32
-	AllowedDestinations [256]uint32
-	AllowedPorts        [64]uint16
-	LearningMode        uint32
-	LastUpdateNs        uint64
-}
 
 // LoadNetworkMonitor returns the embedded CollectionSpec for NetworkMonitor.
 func LoadNetworkMonitor() (*ebpf.CollectionSpec, error) {
@@ -64,16 +54,15 @@ type NetworkMonitorSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetworkMonitorProgramSpecs struct {
-	TcMonitorEgress   *ebpf.ProgramSpec `ebpf:"tc_monitor_egress"`
-	XdpMonitorNetwork *ebpf.ProgramSpec `ebpf:"xdp_monitor_network"`
+	TcpConnect *ebpf.ProgramSpec `ebpf:"tcp_connect"`
 }
 
 // NetworkMonitorMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NetworkMonitorMapSpecs struct {
-	ConnectionPolicies *ebpf.MapSpec `ebpf:"connection_policies"`
-	NetworkEvents      *ebpf.MapSpec `ebpf:"network_events"`
+	NetworkEvents *ebpf.MapSpec `ebpf:"network_events"`
+	NetworkSeen   *ebpf.MapSpec `ebpf:"network_seen"`
 }
 
 // NetworkMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -102,14 +91,14 @@ func (o *NetworkMonitorObjects) Close() error {
 //
 // It can be passed to LoadNetworkMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetworkMonitorMaps struct {
-	ConnectionPolicies *ebpf.Map `ebpf:"connection_policies"`
-	NetworkEvents      *ebpf.Map `ebpf:"network_events"`
+	NetworkEvents *ebpf.Map `ebpf:"network_events"`
+	NetworkSeen   *ebpf.Map `ebpf:"network_seen"`
 }
 
 func (m *NetworkMonitorMaps) Close() error {
 	return _NetworkMonitorClose(
-		m.ConnectionPolicies,
 		m.NetworkEvents,
+		m.NetworkSeen,
 	)
 }
 
@@ -123,14 +112,12 @@ type NetworkMonitorVariables struct {
 //
 // It can be passed to LoadNetworkMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NetworkMonitorPrograms struct {
-	TcMonitorEgress   *ebpf.Program `ebpf:"tc_monitor_egress"`
-	XdpMonitorNetwork *ebpf.Program `ebpf:"xdp_monitor_network"`
+	TcpConnect *ebpf.Program `ebpf:"tcp_connect"`
 }
 
 func (p *NetworkMonitorPrograms) Close() error {
 	return _NetworkMonitorClose(
-		p.TcMonitorEgress,
-		p.XdpMonitorNetwork,
+		p.TcpConnect,
 	)
 }
 

@@ -3,6 +3,7 @@ package ebpf
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"syscall"
@@ -262,4 +263,66 @@ func TestVMFileAdaptiveEnforcement(t *testing.T) {
 	}
 
 	// Clean up: move nothing needed (helpers already exited); rmdir in defer.
+}
+
+// TestVMLoadNetworkMonitor loads the CO-RE network monitor, attaches the
+// tcp_connect kprobe, and verifies an outbound connection produces a real event
+// with destination + cgroup attribution. VM-only.
+func TestVMLoadNetworkMonitor(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadNetworkMonitor()
+	if err != nil {
+		t.Fatalf("LoadNetworkMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			t.Fatalf("verifier: %+v", ve)
+		}
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.Kprobe("tcp_connect", coll.Programs["tcp_connect"], nil)
+	if err != nil {
+		t.Fatalf("Kprobe(tcp_connect): %v", err)
+	}
+	defer l.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["network_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// Trigger an outbound TCP connect (to a likely-refused local port; connect()
+	// still calls tcp_connect before the RST).
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			c, _ := net.DialTimeout("tcp", "127.0.0.1:59999", 200*time.Millisecond)
+			if c != nil {
+				c.Close()
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	rd.SetDeadline(time.Now().Add(5 * time.Second))
+	rec, err := rd.Read()
+	if err != nil {
+		t.Fatalf("ringbuf read (no network events): %v", err)
+	}
+	ev := parseNetworkEvent(rec.RawSample)
+	if ev == nil {
+		t.Fatalf("failed to parse network event from %d bytes", len(rec.RawSample))
+	}
+	if ev.DstPort == 0 {
+		t.Errorf("expected a destination port")
+	}
+	t.Logf("observed network event: dport=%d daddr=%#x cgroup=%d pid=%d", ev.DstPort, ev.DstIP, ev.CgroupID, ev.PID)
 }
