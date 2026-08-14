@@ -105,7 +105,7 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | Operations covered | **Open only.** There is no separate write, rename, unlink, chmod, or truncate hook | Broad coverage across file syscalls | Whatever hooks your policy attaches |
 | Read versus write distinction in enforcement | **Yes.** The allow-set keys on the path and the access mode taken from `f_mode`, so a path learned for reading is not writable. `readOnlyPaths` and `writeAllowedPaths` are enforced. Finer modes (append, truncate, exec-of-a-mapping) are not distinguished | Rules can distinguish by flags | Policies can match on flags and modes |
 | Blocking | **Yes**, `EPERM` for a path not in the learned set | No | Yes, with a policy |
-| Allow-set key | `cgroup_id` combined with a hash of the path. Hash collisions are possible and would allow an unintended path | n/a | n/a |
+| Allow-set key | `cgroup_id` combined with a hash of the path and the access mode. Hash collisions are possible and would allow an unintended path | n/a | n/a |
 
 ## Network monitoring
 
