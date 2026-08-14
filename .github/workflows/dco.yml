@@ -1,0 +1,102 @@
+name: DCO
+
+on:
+  pull_request:
+    branches: [main, develop]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  dco-check:
+    name: Signed-off-by
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # The whole history of the branch, so every commit in the PR range is
+          # available to inspect. A shallow clone would hide the older ones.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Fetch base branch
+        run: git fetch --no-tags origin "${BASE_SHA}"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
+      - name: Verify every commit is signed off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Merge commits are exempt: they are generated, not authored, and
+          # carry no new contribution to certify.
+          commits="$(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}")"
+
+          if [ -z "${commits}" ]; then
+            echo "No non-merge commits in this pull request. Nothing to check."
+            exit 0
+          fi
+
+          failed=0
+
+          for sha in ${commits}; do
+            subject="$(git log -1 --format='%s' "${sha}")"
+            author_name="$(git log -1 --format='%an' "${sha}")"
+            author_email="$(git log -1 --format='%ae' "${sha}")"
+            expected="Signed-off-by: ${author_name} <${author_email}>"
+
+            # All Signed-off-by trailers on the commit, whitespace normalized.
+            signoffs="$(git log -1 --format='%B' "${sha}" \
+              | grep -i '^ *Signed-off-by:' \
+              | sed -e 's/^ *//' -e 's/ *$//' -e 's/  */ /g' || true)"
+
+            if [ -z "${signoffs}" ]; then
+              echo "::error::${sha} (${subject}): missing a Signed-off-by trailer."
+              echo "  Expected: ${expected}"
+              failed=1
+              continue
+            fi
+
+            # The author's own sign-off must be present. Extra trailers from
+            # co-authors or from a rebase are fine and are ignored.
+            if printf '%s\n' "${signoffs}" \
+              | grep -qiFx "${expected}"; then
+              echo "ok  ${sha}  ${subject}"
+            else
+              echo "::error::${sha} (${subject}): Signed-off-by does not match the commit author."
+              echo "  Expected: ${expected}"
+              echo "  Found:"
+              printf '%s\n' "${signoffs}" | sed 's/^/    /'
+              failed=1
+            fi
+          done
+
+          if [ "${failed}" -ne 0 ]; then
+            echo ""
+            echo "-----------------------------------------------------------"
+            echo "This project requires the Developer Certificate of Origin"
+            echo "(DCO) on every commit. See https://developercertificate.org/"
+            echo "and CONTRIBUTING.md."
+            echo ""
+            echo "Sign off new commits with:"
+            echo "    git commit -s"
+            echo ""
+            echo "Fix the most recent commit:"
+            echo "    git commit --amend -s --no-edit"
+            echo "    git push --force-with-lease"
+            echo ""
+            echo "Fix every commit on this branch:"
+            echo "    git rebase --signoff main"
+            echo "    git push --force-with-lease"
+            echo ""
+            echo "The sign-off name and email must match the commit author."
+            echo "-----------------------------------------------------------"
+            exit 1
+          fi
+
+          echo "All commits are signed off."
