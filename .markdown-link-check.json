@@ -16,6 +16,9 @@
       "pattern": "^https://github.com/pahlevan/operator"
     },
     {
+      "pattern": "^https://obsernetics.github.io/pahlevan"
+    },
+    {
       "pattern": "^CONTRIBUTING.md$"
     },
     {
