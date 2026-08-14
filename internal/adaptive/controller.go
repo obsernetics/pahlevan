@@ -58,16 +58,12 @@ type PolicyResolver interface {
 	PodMeta(podUID string) (namespace, name string, ok bool)
 }
 
-// Denial markers set by the eBPF data plane. See bpf/*.c and pkg/ebpf/manager.go:
-// the LSM hooks re-publish the event with these bits set when they returned
-// -EPERM, which is the only in-band signal that enforcement actually bit.
+// Denial markers set by the eBPF data plane. The contract is defined once, next
+// to the wire format it describes, and aliased here so this package keeps
+// reading naturally. Duplicating the literals invited the two halves to drift.
 const (
-	// DeniedFlag is set on FileEvent.Flags, ProcessEvent.Flags and
-	// CapabilityEvent.Flags when the operation was denied in-kernel.
-	DeniedFlag uint32 = 0x80000000
-	// DeniedDirection is set on NetworkEvent.Direction when the connect was
-	// denied in-kernel.
-	DeniedDirection uint8 = 0x80
+	DeniedFlag      = ebpf.DeniedFlag
+	DeniedDirection = ebpf.DeniedDirection
 )
 
 // RollbackConfig tunes health-driven rollback out of enforcement. A container
