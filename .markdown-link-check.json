@@ -19,6 +19,9 @@
       "pattern": "^https://obsernetics.github.io/pahlevan"
     },
     {
+      "pattern": "slack.com"
+    },
+    {
       "pattern": "^CONTRIBUTING.md$"
     },
     {
