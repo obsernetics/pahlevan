@@ -266,7 +266,7 @@ func TestVMFileAdaptiveEnforcement(t *testing.T) {
 }
 
 // TestVMLoadNetworkMonitor loads the CO-RE network monitor, attaches the
-// tcp_connect kprobe, and verifies an outbound connection produces a real event
+// lsm/socket_connect hook, and verifies an outbound connection produces a real event
 // with destination + cgroup attribution. VM-only.
 func TestVMLoadNetworkMonitor(t *testing.T) {
 	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
@@ -288,9 +288,13 @@ func TestVMLoadNetworkMonitor(t *testing.T) {
 		t.Fatalf("NewCollection: %v", err)
 	}
 	defer coll.Close()
-	l, err := link.Kprobe("tcp_connect", coll.Programs["tcp_connect"], nil)
+	prog := coll.Programs["socket_connect"]
+	if prog == nil {
+		t.Fatal("program socket_connect not found")
+	}
+	l, err := link.AttachLSM(link.LSMOptions{Program: prog})
 	if err != nil {
-		t.Fatalf("Kprobe(tcp_connect): %v", err)
+		t.Fatalf("AttachLSM(socket_connect): %v (is lsm=...,bpf active?)", err)
 	}
 	defer l.Close()
 	rd, err := ringbuf.NewReader(coll.Maps["network_events"])

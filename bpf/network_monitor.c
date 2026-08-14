@@ -1,13 +1,13 @@
 //go:build ignore
 
 /*
- * Network monitoring (CO-RE).
+ * Network monitoring + enforcement (CO-RE) via the BPF LSM socket_connect hook.
  *
- * A kprobe on tcp_connect captures outbound TCP connection attempts with the
- * destination address/port and cgroup attribution. This is the security-relevant
- * signal (egress to C2/exfil) and works per-cgroup like the other monitors, which
- * XDP/TC (per-interface, no cgroup context) does not. Events are deduped in-kernel
- * per (cgroup, daddr, dport) so learning sees each destination once.
+ * socket_connect sees every outbound connect() with the destination sockaddr and
+ * can DENY by returning -EPERM — so, exactly like the file monitor, the same
+ * program learns a per-cgroup allow-set of destinations during the learning
+ * window and then blocks connections to unlearned destinations in-kernel. This is
+ * network egress control with zero hand-written rules. Requires bpf LSM.
  *
  * Copyright 2025. Licensed under the Apache License, Version 2.0.
  */
@@ -20,6 +20,8 @@
 char LICENSE[] SEC("license") = "GPL";
 
 #define AF_INET 2
+#define MODE_LEARN 0
+#define MODE_ENFORCE 1
 
 struct network_event {
 	__u64 cgroup_id;
@@ -39,55 +41,82 @@ struct {
 	__uint(max_entries, 1 << 24);
 } network_events SEC(".maps");
 
+/* Learned allow-set of destinations: key = cgroup_id ^ (daddr<<16) ^ dport. */
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, __u64);
 	__type(value, __u8);
 	__uint(max_entries, 1 << 20);
-} network_seen SEC(".maps");
+} network_allowed SEC(".maps");
 
-SEC("kprobe/tcp_connect")
-int BPF_KPROBE(tcp_connect, struct sock *sk)
+/* Per-cgroup mode: absent/0 = learning, 1 = enforcing. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 1 << 16);
+} network_mode SEC(".maps");
+
+SEC("lsm/socket_connect")
+int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
 {
-	__u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	__u16 family = BPF_CORE_READ(address, sa_family);
 	if (family != AF_INET)
-		return 0; /* IPv4 only for now */
+		return 0; /* only IPv4 egress is governed for now; allow others */
 
 	__u64 pid_tgid = bpf_get_current_pid_tgid();
 	__u32 tgid = pid_tgid >> 32;
 	if (tgid == 0)
 		return 0;
 
-	__u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
-	__u16 dport_be = BPF_CORE_READ(sk, __sk_common.skc_dport);
+	struct sockaddr_in *sin = (struct sockaddr_in *)address;
+	__u32 daddr = BPF_CORE_READ(sin, sin_addr.s_addr);
+	__u16 dport_be = BPF_CORE_READ(sin, sin_port);
 	__u16 dport = (dport_be >> 8) | (dport_be << 8); /* ntohs */
-	__u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-	__u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num); /* host order */
 
 	__u64 cgroup_id = bpf_get_current_cgroup_id();
-
-	/* Dedup per (cgroup, daddr, dport). */
 	__u64 key = cgroup_id ^ ((__u64)daddr << 16) ^ (__u64)dport;
-	if (bpf_map_lookup_elem(&network_seen, &key))
+
+	__u8 *modep = bpf_map_lookup_elem(&network_mode, &cgroup_id);
+	__u8 mode = modep ? *modep : MODE_LEARN;
+	__u8 *known = bpf_map_lookup_elem(&network_allowed, &key);
+
+	if (mode == MODE_ENFORCE) {
+		if (known)
+			return 0; /* learned destination: allow */
+		/* Unlearned destination: report + DENY. */
+		struct network_event *e = bpf_ringbuf_reserve(&network_events, sizeof(*e), 0);
+		if (e) {
+			e->cgroup_id = cgroup_id;
+			e->timestamp_ns = bpf_ktime_get_ns();
+			e->pid = tgid;
+			e->daddr = daddr;
+			e->dport = dport;
+			e->protocol = 6;
+			e->direction = 0x80; /* denied marker */
+			bpf_get_current_comm(&e->comm, sizeof(e->comm));
+			bpf_ringbuf_submit(e, 0);
+		}
+		return -1; /* -EPERM: connect() fails */
+	}
+
+	/* Learning: record the destination; emit the first time it is seen. */
+	if (known)
 		return 0;
 	__u8 one = 1;
-	bpf_map_update_elem(&network_seen, &key, &one, BPF_ANY);
+	bpf_map_update_elem(&network_allowed, &key, &one, BPF_ANY);
 
 	struct network_event *e = bpf_ringbuf_reserve(&network_events, sizeof(*e), 0);
 	if (!e)
 		return 0;
-
 	e->cgroup_id = cgroup_id;
 	e->timestamp_ns = bpf_ktime_get_ns();
 	e->pid = tgid;
-	e->saddr = saddr;
 	e->daddr = daddr;
-	e->sport = sport;
 	e->dport = dport;
-	e->protocol = 6; /* IPPROTO_TCP */
-	e->direction = 0; /* egress */
+	e->protocol = 6;
+	e->direction = 0;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-
 	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
