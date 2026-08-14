@@ -18,7 +18,7 @@ import (
 )
 
 // Package-level counters, registered exactly once (in init) with the
-// controller-runtime metrics registry — which is what the agent's metrics server
+// controller-runtime metrics registry - which is what the agent's metrics server
 // actually exposes on :8080/metrics. (The previous code registered per-Manager on
 // the DEFAULT registry, which both panicked on a second Manager AND meant the
 // pahlevan_* metrics never appeared on the served endpoint.)
@@ -53,6 +53,7 @@ func init() {
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" SyscallMonitor ../../bpf/syscall_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" NetworkMonitor ../../bpf/network_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" FileMonitor ../../bpf/file_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" ExecMonitor ../../bpf/exec_monitor.c
 
 type Manager struct {
 	mu                  sync.RWMutex
@@ -62,12 +63,15 @@ type Manager struct {
 	syscallCollection   *ebpf.Collection
 	networkCollection   *ebpf.Collection
 	fileCollection      *ebpf.Collection
+	execCollection      *ebpf.Collection
 	syscallLinks        []link.Link
 	networkLinks        []link.Link
 	fileLinks           []link.Link
+	execLinks           []link.Link
 	eventReader         *ringbuf.Reader
 	networkEventReader  *ringbuf.Reader
 	fileEventReader     *ringbuf.Reader
+	execEventReader     *ringbuf.Reader
 	eventHandlers       []EventHandler
 	running             bool
 	stopCh              chan struct{}
@@ -86,6 +90,19 @@ type EventHandler interface {
 	HandleSyscallEvent(event *SyscallEvent) error
 	HandleNetworkEvent(event *NetworkEvent) error
 	HandleFileEvent(event *FileEvent) error
+	HandleProcessEvent(event *ProcessEvent) error
+}
+
+// ProcessEvent is an execve observed by the LSM bprm_check_security hook.
+type ProcessEvent struct {
+	PID         uint32
+	UID         uint32
+	Flags       uint32 // bit 0x80000000 => denied in-kernel
+	Timestamp   uint64
+	CgroupID    uint64
+	Comm        string
+	Filename    string
+	ContainerID string
 }
 
 type SyscallEvent struct {
@@ -198,7 +215,7 @@ func (m *Manager) LoadPrograms() error {
 		return fmt.Errorf("eBPF support check failed: %v", err)
 	}
 
-	// The syscall monitor is REQUIRED — it is the core observation program.
+	// The syscall monitor is REQUIRED - it is the core observation program.
 	if !m.capabilities.HasTracepointSupport {
 		return fmt.Errorf("syscall monitoring requires tracepoint support which is not available on this system. Please ensure debugfs is mounted and kernel has tracepoint support")
 	}
@@ -238,6 +255,16 @@ func (m *Manager) LoadPrograms() error {
 		log.Log.V(0).Info("network monitor spec unavailable; continuing without network observation", "error", nerr.Error())
 	}
 
+	if execSpecs, eerr := LoadExecMonitor(); eerr == nil {
+		if execColl, cerr := ebpf.NewCollection(execSpecs); cerr == nil {
+			m.execCollection = execColl
+		} else {
+			log.Log.V(0).Info("exec monitor unavailable; continuing without exec observation", "error", cerr.Error())
+		}
+	} else {
+		log.Log.V(0).Info("exec monitor spec unavailable; continuing without exec observation", "error", eerr.Error())
+	}
+
 	return nil
 }
 
@@ -252,7 +279,7 @@ func (m *Manager) AttachPrograms() error {
 	}
 	// Idempotent: if programs are already attached, do nothing. Start() calls this
 	// too, so a caller doing LoadPrograms+AttachPrograms+Start must not double-attach.
-	if len(m.syscallLinks) > 0 || len(m.fileLinks) > 0 || len(m.networkLinks) > 0 {
+	if len(m.syscallLinks) > 0 || len(m.fileLinks) > 0 || len(m.networkLinks) > 0 || len(m.execLinks) > 0 {
 		return nil
 	}
 
@@ -272,7 +299,7 @@ func (m *Manager) AttachPrograms() error {
 
 	// Attach the file monitor via the BPF LSM file_open hook. This sees the
 	// resolved struct file (full path via bpf_d_path) and, in a later phase, can
-	// DENY by returning -EPERM — something tracepoints cannot do. Requires a
+	// DENY by returning -EPERM - something tracepoints cannot do. Requires a
 	// kernel booted with the bpf LSM active (lsm=...,bpf).
 	if m.fileCollection != nil {
 		if prog := m.fileCollection.Programs["file_open"]; prog != nil {
@@ -296,6 +323,19 @@ func (m *Manager) AttachPrograms() error {
 				log.Log.V(0).Info("lsm/socket_connect attach failed; network observation/enforcement disabled", "error", err.Error())
 			} else {
 				m.networkLinks = append(m.networkLinks, l)
+			}
+		}
+	}
+
+	// Attach the exec monitor via the LSM bprm_check_security hook (best-effort);
+	// denies unlearned executables in enforce mode.
+	if m.execCollection != nil {
+		if prog := m.execCollection.Programs["bprm_check"]; prog != nil {
+			l, err := link.AttachLSM(link.LSMOptions{Program: prog})
+			if err != nil {
+				log.Log.V(0).Info("lsm/bprm_check_security attach failed; exec observation/enforcement disabled", "error", err.Error())
+			} else {
+				m.execLinks = append(m.execLinks, l)
 			}
 		}
 	}
@@ -342,6 +382,18 @@ func (m *Manager) setupEventReaders() error {
 		}
 	}
 
+	// Exec events (best-effort; nil in degraded mode).
+	if m.execCollection != nil {
+		if execEventsMap := m.execCollection.Maps["exec_events"]; execEventsMap != nil {
+			reader, err := ringbuf.NewReader(execEventsMap)
+			if err != nil {
+				log.Log.V(0).Info("exec event reader unavailable", "error", err.Error())
+			} else {
+				m.execEventReader = reader
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -363,6 +415,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	go m.processSyscallEvents(ctx)
 	go m.processNetworkEvents(ctx)
 	go m.processFileEvents(ctx)
+	go m.processExecEvents(ctx)
 
 	return nil
 }
@@ -549,6 +602,16 @@ func (m *Manager) processEvents(ctx context.Context, eventType string) {
 				}
 				rawSample = record.RawSample
 				err = e
+			case "exec":
+				if m.execEventReader == nil {
+					return
+				}
+				record, e := m.execEventReader.Read()
+				if e != nil {
+					continue
+				}
+				rawSample = record.RawSample
+				err = e
 			default:
 				return
 			}
@@ -597,6 +660,14 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 			}
 			m.notifyHandlers(func(h EventHandler) { _ = h.HandleFileEvent(event) })
 		}
+	case "exec":
+		if event := parseProcessEvent(rawSample); event != nil {
+			// Flag bit 0x80000000 marks an in-kernel denied execve (see exec_monitor.c).
+			if event.Flags&0x80000000 != 0 {
+				m.enforcementCounter.Inc()
+			}
+			m.notifyHandlers(func(h EventHandler) { _ = h.HandleProcessEvent(event) })
+		}
 	}
 }
 
@@ -623,6 +694,10 @@ func (m *Manager) processNetworkEvents(ctx context.Context) {
 
 func (m *Manager) processFileEvents(ctx context.Context) {
 	m.processEvents(ctx, "file")
+}
+
+func (m *Manager) processExecEvents(ctx context.Context) {
+	m.processEvents(ctx, "exec")
 }
 
 // Helper functions for converting between Go and eBPF data structures
@@ -959,5 +1034,55 @@ func (m *Manager) SetNetworkEnforcement(cgroupID uint64, enforce bool) error {
 		return nm.Put(cgroupID, uint8(1))
 	}
 	_ = nm.Delete(cgroupID)
+	return nil
+}
+
+// parseProcessEvent decodes the CO-RE `struct exec_event` from bpf/exec_monitor.c:
+//
+//	__u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 uid; __u32 flags;
+//	__u8 comm[16]; __u8 filename[128];  // 172 bytes
+func parseProcessEvent(data []byte) *ProcessEvent {
+	const size = 8 + 8 + 4 + 4 + 4 + 16 + 128
+	if len(data) < size {
+		return nil
+	}
+	ev := &ProcessEvent{
+		CgroupID:  binary.LittleEndian.Uint64(data[0:8]),
+		Timestamp: binary.LittleEndian.Uint64(data[8:16]),
+		PID:       binary.LittleEndian.Uint32(data[16:20]),
+		UID:       binary.LittleEndian.Uint32(data[20:24]),
+		Flags:     binary.LittleEndian.Uint32(data[24:28]),
+	}
+	comm := data[28:44]
+	if i := indexZero(comm); i >= 0 {
+		comm = comm[:i]
+	}
+	ev.Comm = string(comm)
+	fn := data[44:172]
+	if i := indexZero(fn); i >= 0 {
+		fn = fn[:i]
+	}
+	ev.Filename = string(fn)
+	ev.ContainerID = fmt.Sprintf("cgroup:%d", ev.CgroupID)
+	return ev
+}
+
+// SetExecEnforcement flips a cgroup between learning and enforcing for the exec
+// allow-list. In enforcing mode, execve of a binary not in the learned set is
+// denied in-kernel.
+func (m *Manager) SetExecEnforcement(cgroupID uint64, enforce bool) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.execCollection == nil {
+		return fmt.Errorf("exec monitor not loaded (bpf LSM unavailable?)")
+	}
+	em := m.execCollection.Maps["exec_mode"]
+	if em == nil {
+		return fmt.Errorf("exec_mode map not found")
+	}
+	if enforce {
+		return em.Put(cgroupID, uint8(1))
+	}
+	_ = em.Delete(cgroupID)
 	return nil
 }

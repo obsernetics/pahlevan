@@ -3,7 +3,7 @@
 //
 // It consumes the eBPF event stream, attributes each event to a Kubernetes pod
 // via the cgroup id, and drives each matched container through a learning window
-// and then into in-kernel enforcement — with no hand-written rules. This is the
+// and then into in-kernel enforcement - with no hand-written rules. This is the
 // behaviour that distinguishes Pahlevan from Falco (alert-only, manual rules) and
 // Tetragon (manual TracingPolicy).
 package adaptive
@@ -40,6 +40,7 @@ const (
 type Enforcer interface {
 	SetFileEnforcement(cgroupID uint64, enforce bool) error
 	SetNetworkEnforcement(cgroupID uint64, enforce bool) error
+	SetExecEnforcement(cgroupID uint64, enforce bool) error
 }
 
 // PolicyResolver decides, for a given cgroup, whether a policy applies and how
@@ -61,6 +62,7 @@ type cgState struct {
 	syscalls  map[uint64]struct{}
 	files     map[string]struct{}
 	dests     map[string]struct{}
+	execs     map[string]struct{}
 }
 
 // Controller tracks per-cgroup learning state and flips cgroups to enforcement
@@ -115,6 +117,7 @@ func (c *Controller) track(cgroupID uint64) *cgState {
 			syscalls:  make(map[uint64]struct{}),
 			files:     make(map[string]struct{}),
 			dests:     make(map[string]struct{}),
+			execs:     make(map[string]struct{}),
 		}
 		c.state[cgroupID] = st
 	}
@@ -165,6 +168,20 @@ func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 
 func netKey(ip uint32, port uint16) string {
 	return fmt.Sprintf("%d:%d", ip, port)
+}
+
+// HandleProcessEvent records an observed executable for the cgroup's learning set.
+func (c *Controller) HandleProcessEvent(e *ebpf.ProcessEvent) error {
+	if e.CgroupID == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.track(e.CgroupID)
+	if st.phase == PhaseLearning && e.Filename != "" {
+		st.execs[e.Filename] = struct{}{}
+	}
+	return nil
 }
 
 // Profile is a snapshot of what a container learned.
@@ -220,11 +237,14 @@ func (c *Controller) Reconcile() {
 			// File enforcement is on; network is best-effort (needs bpf LSM too).
 			c.log.V(1).Info("network enforcement unavailable", "cgroup", id, "error", err.Error())
 		}
+		if err := c.enforcer.SetExecEnforcement(id, true); err != nil {
+			c.log.V(1).Info("exec enforcement unavailable", "cgroup", id, "error", err.Error())
+		}
 		st.phase = PhaseEnforcing
 		c.writeSeccompProfile(st)
 		c.log.Info("container transitioned to enforcing",
 			"cgroup", id, "pod", st.ref.PodUID,
-			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests))
+			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs))
 	}
 	// Persist/refresh the inspectable ContainerProfile for every tracked container.
 	for _, st := range c.state {
@@ -291,6 +311,11 @@ func (c *Controller) persistProfile(st *cgState) {
 		dests = append(dests, d)
 	}
 	sort.Strings(dests)
+	execs := make([]string, 0, len(st.execs))
+	for e := range st.execs {
+		execs = append(execs, e)
+	}
+	sort.Strings(execs)
 
 	now := metav1.Now()
 	cp := &policyv1alpha1.ContainerProfile{
@@ -318,6 +343,7 @@ func (c *Controller) persistProfile(st *cgState) {
 			LearnedSyscalls:            syscalls,
 			LearnedFiles:               files,
 			LearnedNetworkDestinations: dests,
+			LearnedExecutables:         execs,
 			SyscallCount:               int32(len(syscalls)),
 			FileCount:                  int32(len(files)),
 			NetworkCount:               int32(len(dests)),

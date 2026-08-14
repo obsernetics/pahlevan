@@ -166,6 +166,10 @@ func (m *mockEventHandler) HandleFileEvent(event *FileEvent) error {
 	return nil
 }
 
+func (m *mockEventHandler) HandleProcessEvent(event *ProcessEvent) error {
+	return nil
+}
+
 func TestEventStructures(t *testing.T) {
 	// Test SyscallEvent
 	syscallEvent := &SyscallEvent{
