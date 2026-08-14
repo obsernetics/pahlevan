@@ -3,7 +3,8 @@ kind: Kustomization
 
 resources:
 - namespace.yaml
-- ../../config/crd/pahlevanpolicy_crd.yaml
+- ../../config/crd/policy.pahlevan.io_pahlevanpolicies.yaml
+- ../../config/crd/policy.pahlevan.io_containerprofiles.yaml
 - serviceaccount.yaml
 - rbac.yaml
 - daemonset-agent.yaml

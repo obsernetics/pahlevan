@@ -1,3 +1,4 @@
+// +groupName=policy.pahlevan.io
 package v1alpha1
 
 import (
