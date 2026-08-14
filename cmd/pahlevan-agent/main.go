@@ -22,6 +22,7 @@ import (
 	"github.com/obsernetics/pahlevan/internal/controller"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/export"
 	"github.com/obsernetics/pahlevan/pkg/metrics"
 	"github.com/obsernetics/pahlevan/pkg/observability"
 
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
@@ -58,6 +60,9 @@ func main() {
 		observabilityExports string
 		nodeName             string
 		seccompDir           string
+		exportFile           string
+		exportWebhook        string
+		exportDenialsOnly    bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -72,6 +77,12 @@ func main() {
 		"Name of the node this agent runs on (defaults to $PAHLEVAN_NODE_NAME).")
 	flag.StringVar(&seccompDir, "seccomp-dir", os.Getenv("PAHLEVAN_SECCOMP_DIR"),
 		"Directory to write learned seccomp profiles for use as pod localhostProfiles (empty disables).")
+	flag.StringVar(&exportFile, "export-file", os.Getenv("PAHLEVAN_EXPORT_FILE"),
+		"Write JSON-lines security events to this file for `pahlevan events` and log shippers (empty disables).")
+	flag.StringVar(&exportWebhook, "export-webhook", os.Getenv("PAHLEVAN_EXPORT_WEBHOOK"),
+		"POST batched JSON security events to this URL (empty disables).")
+	flag.BoolVar(&exportDenialsOnly, "export-denials-only", true,
+		"Export only in-kernel denials rather than every observation.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -91,7 +102,10 @@ func main() {
 	}
 	defer observabilityManager.Shutdown()
 
-	metricsManager := metrics.NewManager()
+	// Register metrics with the controller-runtime registry, which is the one
+	// actually served on the metrics endpoint. A private registry would mean the
+	// metrics exist but are never scrapeable.
+	metricsManager := metrics.NewManagerWithRegisterer(ctrlmetrics.Registry, ctrlmetrics.Registry)
 
 	// Data plane: initialize the eBPF manager. Program load/attach happens inside
 	// the manager and requires a privileged, eBPF-capable kernel (the DaemonSet
@@ -143,6 +157,39 @@ func main() {
 	adaptiveCtl.SeccompDir = seccompDir
 	adaptiveCtl.Client = mgr.GetClient()
 	adaptiveCtl.Node = nodeName
+
+	// Event export: JSON-lines file and/or webhook, so events leave the process
+	// for `pahlevan events`, log shippers, and SIEMs.
+	exportPipeline, err := export.New(export.Config{
+		FilePath:      exportFile,
+		WebhookURL:    exportWebhook,
+		QueueCapacity: 8192,
+		BatchSize:     256,
+		FlushInterval: time.Second,
+		DenialsOnly:   exportDenialsOnly,
+		Source:        nodeName,
+		Attribution: func(id uint64) (export.KubernetesRef, bool) {
+			ref, ok := attrResolver.Lookup(id)
+			if !ok {
+				return export.KubernetesRef{}, false
+			}
+			ns, pod, _ := polResolver.PodMeta(ref.PodUID)
+			return export.KubernetesRef{
+				Namespace: ns, Pod: pod, PodUID: ref.PodUID,
+				ContainerID: ref.ContainerID, Runtime: ref.Runtime, QoSClass: ref.QoSClass,
+			}, true
+		},
+		OnError: func(err error) { setupLog.Error(err, "event export failed") },
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to configure event export")
+		os.Exit(1)
+	}
+	if exportPipeline != nil {
+		defer exportPipeline.Close()
+		ebpfManager.AddEventHandler(exportPipeline.Handler)
+		setupLog.Info("event export enabled", "file", exportFile, "webhook", exportWebhook != "", "denialsOnly", exportDenialsOnly)
+	}
 
 	// Register event handlers BEFORE starting readers so no events are missed.
 	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})
