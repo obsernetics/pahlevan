@@ -93,17 +93,27 @@ Flip the mode to `Blocking` once you trust the baseline. More in [`examples/`](e
 ## Benchmarks
 
 Measured head-to-head against Falco and Tetragon in a kernel-isolated k3s VM: one
-tool at a time, same `nginx:1.27` workload, same four attack scenarios, defaults.
+tool at a time, same `nginx:1.27` workload, 26 ATT&CK-mapped attack scenarios plus
+3 benign controls, vendor defaults, with a no-tool control run for attribution.
 
 | | **Pahlevan** | Falco | Tetragon |
 | --- | :---: | :---: | :---: |
-| Attacks blocked | **4 / 4** (in-kernel `EPERM`) | 0 / 4 (alert-only) | 0 / 4 (no blocking by default) |
-| Attacks detected | 3 / 4 | 2 / 4 (default rules) | 4 / 4 (exec telemetry) |
+| Attacks blocked | **25 / 26** (in-kernel `EPERM`) | 0 / 26 (alert-only) | 0 / 26 (no blocking by default) |
+| Attacks detected | 25 / 26 | 9 / 26 (default rules) | 25 / 26 (exec telemetry) |
+| Benign controls blocked | **3 / 3** | 0 / 3 | 0 / 3 |
+| Agent memory | **66.7 MiB** | 195.3 MiB | 78.2 MiB |
+| Agent CPU under load | 11.3 % | 10.7 % | **7.8 %** |
 
-Tetragon can block with a hand-written `TracingPolicy`, but an unscoped node-wide kill policy
-froze process creation on the node. Methodology, environment, resource measurements, and honest
-caveats: [`docs/benchmarks/results.md`](docs/benchmarks/results.md). Every number comes from
-`test/benchmark/run.sh`.
+Read the third row before the first. Blocking everything outside a learned baseline
+also blocks `curl`, `cat` and `getent`: nginx itself never broke (HTTP 200 throughout,
+zero restarts), but anything an operator might type into the container is refused.
+That is the tradeoff, not a footnote.
+
+Falco is alert-only by design and Tetragon blocks only with a hand-written
+`TracingPolicy`, so their zeros are posture, not incapability. Methodology,
+environment, per-scenario results, the one attack that got through, and the rest of
+the caveats: [`docs/benchmarks/results.md`](docs/benchmarks/results.md). Every number
+comes from `test/benchmark/run.sh`.
 
 ## Requirements
 

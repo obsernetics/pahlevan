@@ -341,6 +341,16 @@ write to `/etc/sudoers` was denied (nginx never opened it), which is why a
 landed. This is the one attack in the suite that Pahlevan detected and did not
 stop.
 
+> **Fixed after this run.** `lsm/file_open` now folds write intent, taken from
+> `f_mode`, into the allow-set key, so a path learned for reading is not
+> writable. `filePolicy.readOnlyPaths` became enforceable at the same time.
+> `TestVMWriteIsNotGrantedByALearnedRead` in `pkg/ebpf/vmload_test.go` pins the
+> behaviour against a real kernel: the learned read still works, the write is
+> refused and the file is verified unchanged, an explicitly seeded write is
+> allowed, and revoking it closes the door again. **The matrix above is left as
+> it was measured**; re-running the suite would be needed to claim 26/26, and
+> that has not been done.
+
 **Anything that needs no new binary and no new path is invisible.**
 `24-write-sys-procsys` (writing `/proc/sys/kernel/core_pattern` and friends by
 shell redirection) produced **no Pahlevan signal at all** and was not blocked. It
