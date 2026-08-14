@@ -101,7 +101,7 @@ func TestFromFileEventObserve(t *testing.T) {
 
 func TestFromNetworkEvent(t *testing.T) {
 	ev := FromNetworkEvent(&ebpf.NetworkEvent{
-		PID:       11,
+		PID: 11,
 		// Network byte order, as the kernel writes sin_addr.s_addr and the
 		// decoder reads it: 192.168.1.1 and 8.8.8.8.
 		SrcIP:     0x0101a8c0,
