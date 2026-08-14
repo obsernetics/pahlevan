@@ -134,3 +134,13 @@ func contains(vals []string, v string) bool {
 	}
 	return false
 }
+
+// PodMeta resolves a pod UID to its namespace and name from the cached pods.
+func (r *policyResolver) PodMeta(podUID string) (string, string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if p, ok := r.podsByUID[podUID]; ok {
+		return p.Namespace, p.Name, true
+	}
+	return "", "", false
+}

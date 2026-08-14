@@ -28,7 +28,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="assets/css/main.css?v=3">
+    <link rel="stylesheet" href="assets/css/main.css?v=4">
 
     <!-- Prism.js for code highlighting -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
@@ -47,7 +47,8 @@
                 <a href="#compare" class="nav-link">Compare</a>
                 <a href="#architecture" class="nav-link">Architecture</a>
                 <a href="#features" class="nav-link">Features</a>
-                <a href="#quickstart" class="nav-link">Quick Start</a>
+                <a href="#benchmarks" class="nav-link">Benchmarks</a>
+                <a href="#install" class="nav-link">Install</a>
                 <a href="https://github.com/obsernetics/pahlevan" class="nav-link nav-github" target="_blank" rel="noopener">GitHub &#8599;</a>
             </div>
             <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
@@ -414,7 +415,8 @@
                     </div>
                     <h3>Or with Helm</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">helm repo add pahlevan https://obsernetics.github.io/pahlevan
+                        <pre><code class="language-bash">helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
+helm repo update
 helm install pahlevan pahlevan/pahlevan-operator \
   -n pahlevan-system --create-namespace</code></pre>
                     </div>
@@ -452,7 +454,119 @@ spec:
         </div>
     </section>
 
-    <!-- REQUIREMENTS / BENCHMARKS -->
+    <!-- BENCHMARKS -->
+    <section id="benchmarks" class="section compare">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Measured, not marketing</span>
+                <h2>Blocks what the others only watch</h2>
+                <p>
+                    Head-to-head against Falco and Tetragon on four real attack scenarios, run one tool
+                    at a time inside an eBPF-capable VM with each vendor's <strong>default</strong> ruleset.
+                    Every number here is produced by <code>test/benchmark/run.sh</code> &mdash; nothing is hand-tuned.
+                </p>
+            </div>
+            <div class="table-wrap">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Attack scenario (default config)</th>
+                            <th scope="col" class="col-highlight">Pahlevan</th>
+                            <th scope="col">Falco</th>
+                            <th scope="col">Tetragon</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">Read <code>/etc/shadow</code></th>
+                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
+                            <td>Alert only</td>
+                            <td>Telemetry only</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Reverse shell</th>
+                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
+                            <td>Not detected</td>
+                            <td>Telemetry only</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Crypto-miner exec from <code>/tmp</code></th>
+                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
+                            <td>Alert only</td>
+                            <td>Telemetry only</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Unexpected egress</th>
+                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
+                            <td>Not detected</td>
+                            <td>Telemetry only</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Attacks blocked</th>
+                            <td class="col-highlight"><strong>4 / 4</strong></td>
+                            <td>0 / 4</td>
+                            <td>0 / 4</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="qs-note">
+                With vendor defaults, Falco alerts on 2/4 (never blocks), Tetragon streams exec telemetry on
+                all 4 (never blocks by default), and Pahlevan blocks all 4 from an <strong>auto-learned</strong>
+                allow-list &mdash; enforced in-kernel via the LSM <code>file_open</code> hook. See the full report
+                for environment details, resource-use measurements, and honest limitations.
+            </p>
+            <a class="btn btn-outline btn-sm" href="https://github.com/obsernetics/pahlevan/blob/main/docs/benchmarks/results.md" target="_blank" rel="noopener">Full benchmark report &#8599;</a>
+        </div>
+    </section>
+
+    <!-- INSTALL -->
+    <section id="install" class="section quickstart">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Install</span>
+                <h2>Three ways to get Pahlevan running</h2>
+                <p>
+                    The container image ships the agent, operator, and CLI in one distroless image on GHCR.
+                    Pick Helm, the single-file manifest, or pull the image directly.
+                </p>
+            </div>
+            <div class="qs-grid">
+                <div class="qs-col">
+                    <h3>Helm (recommended)</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
+helm repo update
+helm install pahlevan pahlevan/pahlevan-operator \
+  -n pahlevan-system --create-namespace</code></pre>
+                    </div>
+                    <h3>kubectl (single manifest)</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml</code></pre>
+                    </div>
+                </div>
+                <div class="qs-col">
+                    <h3>Container image (GHCR)</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:latest
+# or pin a version
+docker pull ghcr.io/obsernetics/pahlevan:v0.1.0</code></pre>
+                    </div>
+                    <p class="qs-note">
+                        One distroless image contains <code>pahlevan-agent</code> (privileged DaemonSet),
+                        <code>pahlevan-operator</code> (leader-elected Deployment), and the <code>pahlevan</code> CLI.
+                        The Helm chart defaults its image to <code>ghcr.io/obsernetics/pahlevan</code>.
+                    </p>
+                    <p class="qs-note">
+                        After installing, apply a <a href="#quickstart">PahlevanPolicy</a> to start the
+                        learn&nbsp;&rarr;&nbsp;enforce loop.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- REQUIREMENTS -->
     <section id="requirements" class="section requirements">
         <div class="container">
             <div class="req-grid">
@@ -537,6 +651,6 @@ spec:
     <!-- Scripts -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    <script src="assets/js/main.js?v=3"></script>
+    <script src="assets/js/main.js?v=4"></script>
 </body>
 </html>
