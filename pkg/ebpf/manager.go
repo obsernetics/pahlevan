@@ -1112,15 +1112,26 @@ func parseNetworkEvent(data []byte) *NetworkEvent {
 	return event
 }
 
+// IPv4String renders a NetworkEvent.DstIP or SrcIP as dotted quad.
+//
+// The field holds sin_addr.s_addr, which is the address already in network
+// byte order, decoded from the wire with binary.LittleEndian. Writing it back
+// out little-endian therefore restores the original byte order; treating the
+// uint32 as a host-order number and shifting it produces the address
+// backwards, which is how 127.0.0.1 was being exported as 1.0.0.127.
+func IPv4String(addr uint32) string {
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], addr)
+	return net.IP(b[:]).String()
+}
+
 // DestinationString renders the event destination for either address family.
 func (e *NetworkEvent) DestinationString() string {
 	if e.Family == 10 { // AF_INET6
 		ip := net.IP(e.DstIP6[:])
 		return fmt.Sprintf("[%s]:%d", ip.String(), e.DstPort)
 	}
-	var b [4]byte
-	binary.LittleEndian.PutUint32(b[:], e.DstIP)
-	return fmt.Sprintf("%s:%d", net.IP(b[:]).String(), e.DstPort)
+	return fmt.Sprintf("%s:%d", IPv4String(e.DstIP), e.DstPort)
 }
 
 func parseFileEvent(data []byte) *FileEvent {

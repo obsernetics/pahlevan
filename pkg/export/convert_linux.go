@@ -184,3 +184,14 @@ func FromCapabilityEvent(e *ebpf.CapabilityEvent, now time.Time) *Event {
 		},
 	}
 }
+
+// ipv4String renders a NetworkEvent address field as a dotted quad.
+//
+// It defers to pkg/ebpf, the one owner of this conversion. The local version
+// shifted the uint32 as if it held a host-order number, but the field holds
+// sin_addr.s_addr decoded little-endian, which is already in network byte
+// order. Every exported destination came out backwards: 127.0.0.1 as
+// 1.0.0.127.
+func ipv4String(addr uint32) string {
+	return ebpf.IPv4String(addr)
+}

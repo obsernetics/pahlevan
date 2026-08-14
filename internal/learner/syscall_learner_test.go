@@ -392,8 +392,15 @@ func TestDetectFileType(t *testing.T) {
 func TestUtilityConversions(t *testing.T) {
 	sl := newTestLearner()
 
-	if got := sl.ipToString(0x01020304); got != "1.2.3.4" {
-		t.Errorf("ipToString=%s", got)
+	// The uint32 holds sin_addr.s_addr decoded little-endian, so its bytes are
+	// already in network order: 0x04030201 is 1.2.3.4 on the wire. The old
+	// implementation shifted it as a host-order number and rendered every
+	// address backwards.
+	if got := sl.ipToString(0x04030201); got != "1.2.3.4" {
+		t.Errorf("ipToString=%s, want 1.2.3.4", got)
+	}
+	if got := sl.ipToString(0x0100007f); got != "127.0.0.1" {
+		t.Errorf("ipToString(loopback)=%s, want 127.0.0.1", got)
 	}
 	if got := sl.protocolToString(6); got != "tcp" {
 		t.Errorf("protocol tcp=%s", got)
