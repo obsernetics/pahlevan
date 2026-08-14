@@ -27,6 +27,7 @@ import (
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/metrics"
 	"github.com/obsernetics/pahlevan/pkg/seccomp"
 )
 
@@ -231,6 +232,11 @@ type Controller struct {
 	// installs DefaultRollbackConfig; set ObservationWindow to zero to disable.
 	Rollback RollbackConfig
 
+	// Metrics, when set, receives the policy-plane series: transitions,
+	// rollbacks, denials, learning progress and the learned attack surface.
+	// Nil disables recording entirely, which is what the unit tests use.
+	Metrics *metrics.Manager
+
 	mu    sync.Mutex
 	state map[uint64]*cgState
 }
@@ -298,7 +304,7 @@ func (c *Controller) HandleFileEvent(e *ebpf.FileEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Flags&DeniedFlag != 0 {
-		st.noteDenial()
+		c.recordDenial(st)
 		return nil
 	}
 	if st.phase == PhaseLearning && e.Path != "" {
@@ -316,7 +322,7 @@ func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Direction&DeniedDirection != 0 {
-		st.noteDenial()
+		c.recordDenial(st)
 		return nil
 	}
 	if st.phase == PhaseLearning {
@@ -338,7 +344,7 @@ func (c *Controller) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Flags&DeniedFlag != 0 {
-		st.noteDenial()
+		c.recordDenial(st)
 		return nil
 	}
 	if st.phase == PhaseLearning && e.Filename != "" {
@@ -356,13 +362,36 @@ func (c *Controller) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Flags&DeniedFlag != 0 {
-		st.noteDenial()
+		c.recordDenial(st)
 		return nil
 	}
 	if st.phase == PhaseLearning {
 		st.caps[e.Capability] = struct{}{}
 	}
 	return nil
+}
+
+// metricLabels builds the label set for a tracked container. PodMeta is
+// consulted only when a recorder is actually attached, so the nil-Metrics path
+// stays free. Callers must hold c.mu.
+func (c *Controller) metricLabels(st *cgState) metrics.MetricLabels {
+	l := metrics.MetricLabels{
+		ContainerID: st.ref.ContainerID,
+		Phase:       string(st.phase),
+	}
+	if ns, name, ok := c.policies.PodMeta(st.ref.PodUID); ok {
+		l.Namespace, l.PodName = ns, name
+	}
+	return l
+}
+
+// recordDenial notes an in-kernel denial on both the container state and the
+// policy-plane metrics. Callers must hold c.mu.
+func (c *Controller) recordDenial(st *cgState) {
+	st.noteDenial()
+	if c.Metrics != nil && st.phase == PhaseEnforcing {
+		c.Metrics.RecordPolicyViolation(c.metricLabels(st))
+	}
 }
 
 // Profile is a snapshot of what a container learned, plus how its enforcement
@@ -437,6 +466,59 @@ func (c *Controller) Reconcile() {
 	for _, st := range c.state {
 		c.persistProfile(st)
 	}
+	c.recordFleetMetrics()
+}
+
+// recordEnforceTransition publishes what a container learned at the moment the
+// kernel starts enforcing it. This is the only point where the learned set is
+// final, so it is where the attack-surface gauges are meaningful. Callers must
+// hold c.mu.
+func (c *Controller) recordEnforceTransition(st *cgState, learned time.Duration) {
+	if c.Metrics == nil {
+		return
+	}
+	labels := c.metricLabels(st)
+	c.Metrics.RecordEnforcementAction(labels, "enforce")
+	c.Metrics.RecordContainerLearningDuration(labels, learned)
+
+	// The privilege reduction is the point of the tool: the fraction of the
+	// syscall table the workload will no longer be permitted to call. Reported
+	// against the generated seccomp allow-list, which is the enforced artifact.
+	if total := seccomp.KnownSyscallCount(); total > 0 {
+		allowed := float64(len(st.syscalls))
+		c.Metrics.UpdatePrivilegeReductionRatio(labels, 1-allowed/float64(total))
+	}
+	c.Metrics.UpdateExposedSyscalls(labels, "learned", float64(len(st.syscalls)))
+	c.Metrics.UpdateWritablePaths(labels, "learned", float64(len(st.files)))
+	c.Metrics.UpdateCapabilities(labels, "learned", float64(len(st.caps)))
+}
+
+// recordFleetMetrics publishes the per-node aggregates. Called once per
+// reconcile rather than per event, so the cost is bounded by the tick.
+// Callers must hold c.mu.
+func (c *Controller) recordFleetMetrics() {
+	if c.Metrics == nil {
+		return
+	}
+	var learning, enforcing float64
+	for _, st := range c.state {
+		switch st.phase {
+		case PhaseLearning:
+			learning++
+		case PhaseEnforcing:
+			enforcing++
+		}
+	}
+	c.Metrics.UpdateContainerCounts(float64(len(c.state)), learning, enforcing)
+
+	// Learning progress is the share of tracked containers that have made it
+	// all the way to enforcing. A fleet stuck at 0 means learning windows are
+	// not elapsing or no policy is blocking, which is worth alerting on.
+	progress := float64(0)
+	if len(c.state) > 0 {
+		progress = enforcing / float64(len(c.state))
+	}
+	c.Metrics.UpdateLearningProgress(metrics.MetricLabels{}, progress)
 }
 
 // maybeEnforce flips a learning container to enforcing when its window has
@@ -484,6 +566,7 @@ func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 	st.denials = 0
 	st.baseline = CaptureBaseline(c.fetchPod(st))
 	c.writeSeccompProfile(st)
+	c.recordEnforceTransition(st, now.Sub(st.learningSince))
 	c.log.Info("container transitioned to enforcing",
 		"cgroup", id, "pod", st.ref.PodUID, "attempt", st.attempts,
 		"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs), "caps", len(st.caps))
@@ -554,6 +637,15 @@ func (c *Controller) rollback(id uint64, st *cgState, reason string) {
 	st.learningSince = now
 	if c.Rollback.Cooldown > 0 {
 		st.holdUntil = now.Add(time.Duration(st.rollbacks) * c.Rollback.Cooldown)
+	}
+
+	if c.Metrics != nil {
+		labels := c.metricLabels(st)
+		c.Metrics.RecordRollbackAction(labels)
+		// A rollback IS the self-healing action; they are counted separately
+		// because the second is the headline number and the first is the
+		// mechanism, and a future healing action may not be a rollback.
+		c.Metrics.RecordSelfHealingAction(labels)
 	}
 
 	c.log.Info("rolled back enforcement to learning",

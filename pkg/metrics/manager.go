@@ -103,7 +103,52 @@ type Manager struct {
 
 	// Custom metrics registry
 	customMetrics map[string]prometheus.Collector
+
+	// detail selects whether the per-container series are collected. See
+	// DetailLevel.
+	detail DetailLevel
 }
+
+// DetailLevel selects how much per-container detail the manager collects.
+//
+// Roughly half of these series are keyed by container_id crossed with a syscall
+// number, a file path, or a destination address. On a busy node that is
+// unbounded cardinality: a few hundred containers times a few hundred syscalls
+// is six figures of series from a single agent, which will take down the
+// Prometheus scraping it long before it inconveniences the agent. So the
+// detailed series are off unless an operator asks for them, and the Record
+// methods that feed them return early rather than accumulating children in a
+// vector nobody scrapes.
+type DetailLevel string
+
+const (
+	// DetailBasic collects only bounded-cardinality series. This is the default
+	// and is what the aggregate dashboards need.
+	DetailBasic DetailLevel = "basic"
+	// DetailHigh additionally collects the per-container, per-syscall and
+	// per-path series. Useful for debugging a single workload; not something to
+	// leave on across a fleet.
+	DetailHigh DetailLevel = "high"
+)
+
+// ParseDetailLevel maps a flag value to a DetailLevel, defaulting to basic for
+// anything unrecognised so a typo cannot silently enable the expensive path.
+func ParseDetailLevel(s string) DetailLevel {
+	if DetailLevel(s) == DetailHigh {
+		return DetailHigh
+	}
+	return DetailBasic
+}
+
+// highDetail reports whether the per-container series are being collected.
+func (m *Manager) highDetail() bool { return m.detail == DetailHigh }
+
+// HighDetail lets callers skip building expensive labels (a syscall name, a
+// resolved path) for series that would be discarded anyway.
+func (m *Manager) HighDetail() bool { return m != nil && m.highDetail() }
+
+// Detail reports the configured level.
+func (m *Manager) Detail() DetailLevel { return m.detail }
 
 // MetricLabels defines common metric labels
 type MetricLabels struct {
@@ -128,9 +173,11 @@ func NewManager() *Manager {
 		gatherer:      registry,
 		registerer:    registry,
 		customMetrics: make(map[string]prometheus.Collector),
+		detail:        DetailBasic,
 	}
 
 	m.initializePrometheusMetrics()
+	m.registerAllMetrics()
 
 	return m
 }
@@ -376,18 +423,31 @@ func (m *Manager) initializePrometheusMetrics() {
 // operator; the 30+ metrics defined here were previously only ever registered on
 // a private registry that nothing exposed.
 func NewManagerWithRegisterer(reg prometheus.Registerer, gath prometheus.Gatherer) *Manager {
+	return NewManagerWithDetail(reg, gath, DetailBasic)
+}
+
+// NewManagerWithDetail is NewManagerWithRegisterer with an explicit detail
+// level. Nothing was ever registered before: initializePrometheusMetrics built
+// every collector and registerAllMetrics was dead code, so the whole package
+// was inert and every pahlevan_* policy-plane series was missing from
+// /metrics.
+func NewManagerWithDetail(reg prometheus.Registerer, gath prometheus.Gatherer, detail DetailLevel) *Manager {
 	m := &Manager{
 		registry:      prometheus.NewRegistry(),
 		gatherer:      gath,
 		registerer:    reg,
 		customMetrics: make(map[string]prometheus.Collector),
+		detail:        detail,
 	}
 	m.initializePrometheusMetrics()
+	m.registerAllMetrics()
 	return m
 }
 
-func (m *Manager) registerAllMetrics() {
-	metrics := []prometheus.Collector{
+// boundedCollectors are always registered: their label sets are either empty or
+// drawn from a small fixed vocabulary (component name, map name, workload kind).
+func (m *Manager) boundedCollectors() []prometheus.Collector {
+	return []prometheus.Collector{
 		m.policyViolationsTotal,
 		m.enforcementActionsTotal,
 		m.selfHealingActionsTotal,
@@ -398,6 +458,27 @@ func (m *Manager) registerAllMetrics() {
 		m.rollbackActionsTotal,
 		m.healthCheckScore,
 		m.privilegeReductionRatio,
+		m.policiesActive,
+		m.policiesLearning,
+		m.policiesEnforcing,
+		m.policiesFailed,
+		m.containersTracked,
+		m.containersLearning,
+		m.containersEnforced,
+		m.containerStartupTime,
+		m.exposedPortsTotal,
+		m.ebpfProgramLoad,
+		m.ebpfMapOperations,
+		m.memoryUsageBytes,
+		m.cpuUsagePercent,
+		m.processingLatency,
+	}
+}
+
+// perContainerCollectors are keyed by container_id crossed with a syscall, a
+// path, or a destination. They are registered only at DetailHigh.
+func (m *Manager) perContainerCollectors() []prometheus.Collector {
+	return []prometheus.Collector{
 		m.syscallEventsTotal,
 		m.blockedSyscallsTotal,
 		m.allowedSyscallsTotal,
@@ -412,28 +493,21 @@ func (m *Manager) registerAllMetrics() {
 		m.blockedFileAccessTotal,
 		m.allowedFileAccessTotal,
 		m.fileSystemLatencyHistogram,
-		m.policiesActive,
-		m.policiesLearning,
-		m.policiesEnforcing,
-		m.policiesFailed,
 		m.policyQualityScore,
-		m.containersTracked,
-		m.containersLearning,
-		m.containersEnforced,
-		m.containerStartupTime,
 		m.exposedSyscallsTotal,
-		m.exposedPortsTotal,
 		m.writablePathsTotal,
 		m.capabilitiesTotal,
 		m.vulnerabilityScore,
-		m.ebpfProgramLoad,
-		m.ebpfMapOperations,
-		m.memoryUsageBytes,
-		m.cpuUsagePercent,
-		m.processingLatency,
+	}
+}
+
+func (m *Manager) registerAllMetrics() {
+	collectors := m.boundedCollectors()
+	if m.highDetail() {
+		collectors = append(collectors, m.perContainerCollectors()...)
 	}
 
-	for _, metric := range metrics {
+	for _, metric := range collectors {
 		// Register may legitimately fail with AlreadyRegisteredError when the
 		// caller supplied a shared registry (for example the controller-runtime
 		// one) and a second Manager is constructed. That is not fatal.
@@ -545,58 +619,100 @@ func (m *Manager) UpdatePrivilegeReductionRatio(labels MetricLabels, ratio float
 }
 
 func (m *Manager) RecordSyscallEvent(labels MetricLabels, syscall string, action string) {
+	if !m.highDetail() {
+		return
+	}
 	m.syscallEventsTotal.WithLabelValues(labels.ContainerID, syscall, action).Inc()
 }
 
 func (m *Manager) RecordBlockedSyscall(labels MetricLabels, syscall string, reason string) {
+	if !m.highDetail() {
+		return
+	}
 	m.blockedSyscallsTotal.WithLabelValues(labels.ContainerID, syscall, reason).Inc()
 }
 
 func (m *Manager) RecordAllowedSyscall(labels MetricLabels, syscall string) {
+	if !m.highDetail() {
+		return
+	}
 	m.allowedSyscallsTotal.WithLabelValues(labels.ContainerID, syscall).Inc()
 }
 
 func (m *Manager) RecordUnknownSyscall(labels MetricLabels, syscall string) {
+	if !m.highDetail() {
+		return
+	}
 	m.unknownSyscallsTotal.WithLabelValues(labels.ContainerID, syscall).Inc()
 }
 
 func (m *Manager) RecordSyscallLatency(labels MetricLabels, syscall string, latency time.Duration) {
+	if !m.highDetail() {
+		return
+	}
 	m.syscallLatencyHistogram.WithLabelValues(labels.ContainerID, syscall).Observe(latency.Seconds())
 }
 
 func (m *Manager) RecordNetworkEvent(labels MetricLabels, protocol string, direction string, action string) {
+	if !m.highDetail() {
+		return
+	}
 	m.networkEventsTotal.WithLabelValues(labels.ContainerID, protocol, direction, action).Inc()
 }
 
 func (m *Manager) RecordBlockedConnection(labels MetricLabels, protocol string, destination string) {
+	if !m.highDetail() {
+		return
+	}
 	m.blockedConnectionsTotal.WithLabelValues(labels.ContainerID, protocol, destination).Inc()
 }
 
 func (m *Manager) RecordAllowedConnection(labels MetricLabels, protocol string, destination string) {
+	if !m.highDetail() {
+		return
+	}
 	m.allowedConnectionsTotal.WithLabelValues(labels.ContainerID, protocol, destination).Inc()
 }
 
 func (m *Manager) UpdateActiveNetworkFlows(labels MetricLabels, protocol string, count float64) {
+	if !m.highDetail() {
+		return
+	}
 	m.networkFlowsActive.WithLabelValues(labels.ContainerID, protocol).Set(count)
 }
 
 func (m *Manager) RecordNetworkBandwidth(labels MetricLabels, direction string, bytes float64) {
+	if !m.highDetail() {
+		return
+	}
 	m.networkBandwidthBytes.WithLabelValues(labels.ContainerID, direction).Add(bytes)
 }
 
 func (m *Manager) RecordFileEvent(labels MetricLabels, operation string, action string) {
+	if !m.highDetail() {
+		return
+	}
 	m.fileEventsTotal.WithLabelValues(labels.ContainerID, operation, action).Inc()
 }
 
 func (m *Manager) RecordBlockedFileAccess(labels MetricLabels, path string, operation string) {
+	if !m.highDetail() {
+		return
+	}
 	m.blockedFileAccessTotal.WithLabelValues(labels.ContainerID, path, operation).Inc()
 }
 
 func (m *Manager) RecordAllowedFileAccess(labels MetricLabels, path string, operation string) {
+	if !m.highDetail() {
+		return
+	}
 	m.allowedFileAccessTotal.WithLabelValues(labels.ContainerID, path, operation).Inc()
 }
 
 func (m *Manager) RecordFileLatency(labels MetricLabels, operation string, latency time.Duration) {
+	if !m.highDetail() {
+		return
+	}
 	m.fileSystemLatencyHistogram.WithLabelValues(labels.ContainerID, operation).Observe(latency.Seconds())
 }
 
@@ -608,6 +724,9 @@ func (m *Manager) UpdatePolicyCounts(active, learning, enforcing, failed float64
 }
 
 func (m *Manager) UpdatePolicyQualityScore(labels MetricLabels, score float64) {
+	if !m.highDetail() {
+		return
+	}
 	m.policyQualityScore.WithLabelValues(labels.PolicyName, labels.ContainerID).Set(score)
 }
 
@@ -622,6 +741,9 @@ func (m *Manager) RecordContainerStartupTime(workloadKind, namespace string, dur
 }
 
 func (m *Manager) UpdateExposedSyscalls(labels MetricLabels, criticality string, count float64) {
+	if !m.highDetail() {
+		return
+	}
 	m.exposedSyscallsTotal.WithLabelValues(labels.ContainerID, criticality).Set(count)
 }
 
@@ -630,14 +752,23 @@ func (m *Manager) UpdateExposedPorts(workloadName, namespace, protocol string, c
 }
 
 func (m *Manager) UpdateWritablePaths(labels MetricLabels, pathType string, count float64) {
+	if !m.highDetail() {
+		return
+	}
 	m.writablePathsTotal.WithLabelValues(labels.ContainerID, pathType).Set(count)
 }
 
 func (m *Manager) UpdateCapabilities(labels MetricLabels, capabilityType string, count float64) {
+	if !m.highDetail() {
+		return
+	}
 	m.capabilitiesTotal.WithLabelValues(labels.ContainerID, capabilityType).Set(count)
 }
 
 func (m *Manager) UpdateVulnerabilityScore(labels MetricLabels, severity string, score float64) {
+	if !m.highDetail() {
+		return
+	}
 	m.vulnerabilityScore.WithLabelValues(labels.ContainerID, severity).Set(score)
 }
 

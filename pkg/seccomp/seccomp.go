@@ -62,12 +62,24 @@ func Generate(allowed []uint64) (Profile, int) {
 
 	return Profile{
 		DefaultAction: "SCMP_ACT_ERRNO",
-		Architectures: []string{"SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"},
+		Architectures: seccompArchitectures,
 		Syscalls: []SyscallRule{{
 			Names:  list,
 			Action: "SCMP_ACT_ALLOW",
 		}},
 	}, skipped
+}
+
+// KnownSyscallCount is the size of the syscall table for the build
+// architecture. It is the denominator for "how much of the syscall surface did
+// this workload actually need", which is the number that justifies enforcing.
+func KnownSyscallCount() int { return len(SyscallName) }
+
+// Architectures reports the seccomp architectures generated profiles declare.
+func Architectures() []string {
+	out := make([]string, len(seccompArchitectures))
+	copy(out, seccompArchitectures)
+	return out
 }
 
 // JSON renders the profile as the JSON a localhostProfile file must contain.
