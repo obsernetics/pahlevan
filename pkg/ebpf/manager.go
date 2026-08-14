@@ -84,6 +84,7 @@ type Manager struct {
 	otelFileCounter     metric.Int64Counter
 	capabilities        *SystemCapabilities
 	capabilityChecker   *CapabilityChecker
+	mapSizing           MapSizing
 }
 
 type EventHandler interface {
@@ -223,6 +224,10 @@ func (m *Manager) LoadPrograms() error {
 	if err != nil {
 		return fmt.Errorf("failed to load syscall monitor specs: %v", err)
 	}
+	applyMapSizing(syscallSpecs, map[string]uint32{
+		"syscall_seen": m.mapSizing.SyscallSeen,
+		"events":       m.mapSizing.RingBufBytes,
+	})
 	m.syscallSpecs = syscallSpecs
 	syscallColl, err := ebpf.NewCollection(syscallSpecs)
 	if err != nil {
@@ -234,6 +239,10 @@ func (m *Manager) LoadPrograms() error {
 	// bpf LSM (file) or without the still-migrating network program should still
 	// run the agent in a degraded, syscall-only mode rather than fail outright.
 	if fileSpecs, ferr := LoadFileMonitor(); ferr == nil {
+		applyMapSizing(fileSpecs, map[string]uint32{
+			"file_allowed": m.mapSizing.FileAllowed,
+			"file_events":  m.mapSizing.RingBufBytes,
+		})
 		if fileColl, cerr := ebpf.NewCollection(fileSpecs); cerr == nil {
 			m.fileSpecs = fileSpecs
 			m.fileCollection = fileColl
@@ -245,6 +254,10 @@ func (m *Manager) LoadPrograms() error {
 	}
 
 	if netSpecs, nerr := LoadNetworkMonitor(); nerr == nil {
+		applyMapSizing(netSpecs, map[string]uint32{
+			"network_allowed": m.mapSizing.NetworkAllowed,
+			"network_events":  m.mapSizing.RingBufBytes,
+		})
 		if netColl, cerr := ebpf.NewCollection(netSpecs); cerr == nil {
 			m.networkSpecs = netSpecs
 			m.networkCollection = netColl
@@ -256,6 +269,10 @@ func (m *Manager) LoadPrograms() error {
 	}
 
 	if execSpecs, eerr := LoadExecMonitor(); eerr == nil {
+		applyMapSizing(execSpecs, map[string]uint32{
+			"exec_allowed": m.mapSizing.ExecAllowed,
+			"exec_events":  m.mapSizing.RingBufBytes,
+		})
 		if execColl, cerr := ebpf.NewCollection(execSpecs); cerr == nil {
 			m.execCollection = execColl
 		} else {
@@ -1085,4 +1102,42 @@ func (m *Manager) SetExecEnforcement(cgroupID uint64, enforce bool) error {
 	}
 	_ = em.Delete(cgroupID)
 	return nil
+}
+
+// MapSizing overrides the max_entries of the learned-state BPF maps at load
+// time. The compiled defaults are sized for a typical node; dense nodes (many
+// pods, many distinct paths) can raise them, and small edge nodes can lower
+// them. Zero means "keep the compiled default".
+//
+// These maps are preallocated by the kernel, so the values directly determine
+// the agent's resident memory: an LRU hash costs roughly 60 bytes per entry.
+type MapSizing struct {
+	FileAllowed    uint32 // (cgroup, path) allow-set
+	NetworkAllowed uint32 // (cgroup, dst) allow-set
+	ExecAllowed    uint32 // (cgroup, binary) allow-set
+	SyscallSeen    uint32 // (cgroup, syscall) dedup
+	RingBufBytes   uint32 // per-program ring buffer size in bytes
+}
+
+// applyMapSizing rewrites max_entries on a loaded CollectionSpec before the maps
+// are created in the kernel.
+func applyMapSizing(spec *ebpf.CollectionSpec, sizes map[string]uint32) {
+	if spec == nil {
+		return
+	}
+	for name, n := range sizes {
+		if n == 0 {
+			continue
+		}
+		if m, ok := spec.Maps[name]; ok && m != nil {
+			m.MaxEntries = n
+		}
+	}
+}
+
+// SetMapSizing configures the overrides applied by the next LoadPrograms call.
+func (m *Manager) SetMapSizing(s MapSizing) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mapSizing = s
 }
