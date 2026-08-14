@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ type Manager struct {
 	mu            sync.RWMutex
 	registry      prometheus.Registerer
 	gatherer      prometheus.Gatherer
+	registerer    prometheus.Registerer
 	meterProvider metric.MeterProvider
 	meter         metric.Meter
 
@@ -114,13 +116,17 @@ type MetricLabels struct {
 	Phase        string
 }
 
+// NewManager builds a Manager on its own private registry. Prefer
+// NewManagerWithRegisterer in a running agent or operator so the metrics are
+// actually exposed on the served /metrics endpoint; a private registry is only
+// useful for tests, where isolation avoids duplicate-registration panics.
 func NewManager() *Manager {
-	// Create Prometheus registry
 	registry := prometheus.NewRegistry()
 
 	m := &Manager{
 		registry:      registry,
 		gatherer:      registry,
+		registerer:    registry,
 		customMetrics: make(map[string]prometheus.Collector),
 	}
 
@@ -364,6 +370,22 @@ func (m *Manager) initializePrometheusMetrics() {
 	m.registerAllMetrics()
 }
 
+// NewManagerWithRegisterer builds a Manager that registers its metrics with the
+// supplied Registerer, so they appear on an endpoint that is actually served.
+// Pass sigs.k8s.io/controller-runtime/pkg/metrics.Registry in the agent and
+// operator; the 30+ metrics defined here were previously only ever registered on
+// a private registry that nothing exposed.
+func NewManagerWithRegisterer(reg prometheus.Registerer, gath prometheus.Gatherer) *Manager {
+	m := &Manager{
+		registry:      prometheus.NewRegistry(),
+		gatherer:      gath,
+		registerer:    reg,
+		customMetrics: make(map[string]prometheus.Collector),
+	}
+	m.initializePrometheusMetrics()
+	return m
+}
+
 func (m *Manager) registerAllMetrics() {
 	metrics := []prometheus.Collector{
 		m.policyViolationsTotal,
@@ -412,7 +434,15 @@ func (m *Manager) registerAllMetrics() {
 	}
 
 	for _, metric := range metrics {
-		m.registry.MustRegister(metric)
+		// Register may legitimately fail with AlreadyRegisteredError when the
+		// caller supplied a shared registry (for example the controller-runtime
+		// one) and a second Manager is constructed. That is not fatal.
+		if err := m.registerer.Register(metric); err != nil {
+			var already prometheus.AlreadyRegisteredError
+			if !errors.As(err, &already) {
+				panic(err)
+			}
+		}
 	}
 }
 
