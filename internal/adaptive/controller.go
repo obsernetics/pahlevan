@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -221,6 +222,9 @@ type cgState struct {
 	overrides Overrides
 	// policyName is the governing policy at that transition.
 	policyName string
+	// seccomp describes the profile last written for this container, so the
+	// ContainerProfile can point an operator at it.
+	seccomp *policyv1alpha1.SeccompProfileRef
 }
 
 // noteDenial records an in-kernel denial. Only denials observed while the
@@ -252,6 +256,11 @@ type Controller struct {
 	resolver *attribution.Resolver
 	policies PolicyResolver
 	now      func() time.Time
+
+	// SeccompRoot is the kubelet's seccomp root, which localhostProfile paths
+	// are relative to. Used only to render the value an operator puts in a pod
+	// spec; the agent never reads it.
+	SeccompRoot string
 
 	// SeccompDir, when set, is where per-workload seccomp profiles generated from
 	// the learned syscall set are written on the enforce transition (for use as a
@@ -932,10 +941,39 @@ func (c *Controller) writeSeccompProfile(st *cgState) {
 		c.log.Error(err, "failed to write seccomp profile", "path", path)
 		return
 	}
+	now := metav1.NewTime(c.now())
+	st.seccomp = &policyv1alpha1.SeccompProfileRef{
+		LocalhostProfile: c.localhostProfile(path),
+		Path:             path,
+		Node:             c.Node,
+		AllowedSyscalls:  int32(len(prof.Syscalls[0].Names)),
+		TotalSyscalls:    int32(seccomp.KnownSyscallCount()),
+		SkippedUnknown:   int32(skipped),
+		GeneratedAt:      &now,
+	}
+
 	c.log.Info("wrote learned seccomp profile", "path", path,
-		"allowed", len(prof.Syscalls[0].Names), "skippedUnknown", skipped,
+		"localhostProfile", st.seccomp.LocalhostProfile,
+		"allowed", len(prof.Syscalls[0].Names), "of", seccomp.KnownSyscallCount(),
+		"skippedUnknown", skipped,
 		"policyAllowed", len(st.overrides.AllowedSyscalls),
 		"policyDenied", len(st.overrides.DeniedSyscalls))
+}
+
+// localhostProfile renders the value a pod's
+// securityContext.seccompProfile.localhostProfile needs, which is the path
+// relative to the kubelet's seccomp root. Returns "" when the profile is not
+// under that root, since a value the kubelet cannot resolve is worse than none.
+func (c *Controller) localhostProfile(path string) string {
+	root := c.SeccompRoot
+	if root == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return rel
 }
 
 // persistProfile upserts a ContainerProfile CR reflecting the container's learned
@@ -1005,6 +1043,7 @@ func (c *Controller) persistProfile(st *cgState) {
 			EnforcementAttempts:        int32(st.attempts),
 			RollbackCount:              int32(st.rollbacks),
 			LastRollbackReason:         st.lastRollbackReason,
+			Seccomp:                    st.seccomp,
 			DenialCount:                int32(st.denials),
 			DeniedFiles:                int32(st.denialsByKind[DenialKindFile]),
 			DeniedNetwork:              int32(st.denialsByKind[DenialKindNetwork]),

@@ -1264,6 +1264,47 @@ spec:
                   enforcing to learning because the learned baseline was breaking it.
                 format: int32
                 type: integer
+              seccomp:
+                description: |-
+                  Seccomp describes the profile generated from LearnedSyscalls, if the
+                  agent was configured to emit one.
+                properties:
+                  allowedSyscalls:
+                    description: |-
+                      AllowedSyscalls is how many syscalls the profile permits, including the
+                      safety baseline. TotalSyscalls is the size of the architecture's syscall
+                      table, so the pair states the privilege reduction without arithmetic.
+                    format: int32
+                    type: integer
+                  generatedAt:
+                    description: GeneratedAt is when the profile was last written.
+                    format: date-time
+                    type: string
+                  localhostProfile:
+                    description: |-
+                      LocalhostProfile is the value to put in the pod's
+                      securityContext.seccompProfile.localhostProfile. It is relative to the
+                      kubelet's seccomp root, which is what that field expects.
+                    type: string
+                  node:
+                    description: |-
+                      Node is the node the file lives on. The profile is written by each node's
+                      agent, so it exists only where that container ran.
+                    type: string
+                  path:
+                    description: Path is the absolute path on the node, for debugging.
+                    type: string
+                  skippedUnknown:
+                    description: |-
+                      SkippedUnknown counts learned syscall numbers with no name in this
+                      architecture's table. They cannot appear in a profile, so a non-zero
+                      value means the profile is narrower than what was observed.
+                    format: int32
+                    type: integer
+                  totalSyscalls:
+                    format: int32
+                    type: integer
+                type: object
               syscallCount:
                 description: Counts for quick inspection / printcolumns.
                 format: int32

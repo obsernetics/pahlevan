@@ -258,7 +258,7 @@ which is not a story.
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | CLI binary | `pahlevan` | `falco`, plus `falcoctl` for rule and plugin management | `tetra` |
-| What works | All eight top-level subcommands: `policy` (list, get, describe, create, delete, update, status), `status`, `events`, `attack-surface` (analyze, report), `logs`, `metrics`, `debug`, `version`, `completion` | Running the engine, validating rules, listing fields, plus full artifact management in `falcoctl` | `getevents` streaming, `status`, `tracingpolicy` management, `bugtool` |
+| What works | All nine top-level subcommands: `policy` (list, get, describe, create, delete, update, status), `status`, `events`, `attack-surface` (analyze, report), `profile` (list, get, patch), `logs`, `metrics`, `debug`, `version`, `completion` | Running the engine, validating rules, listing fields, plus full artifact management in `falcoctl` | `getevents` streaming, `status`, `tracingpolicy` management, `bugtool` |
 | What is a stub | **None.** `attack-surface`, `logs`, `metrics` and `debug` used to print "to be implemented" and exit 0; they are implemented | n/a | n/a |
 | Live event streaming | Yes, `pahlevan events` with `--follow`, `--type`, `--denials-only`, `--pod`, and `--tail`. It tails the JSON-lines log rather than a gRPC stream, so it handles rotation and partial lines | Yes | Yes, `tetra getevents` is the standard workflow |
 | Troubleshooting bundle | Yes, `pahlevan debug`: component pods, node kernels and BPF LSM verdict, CRD presence and object counts, recent events, metric highlights. It never reads Secrets, tokens or env vars, and the LSM verdict is labelled with how it was inferred | Yes, through supportability tooling | Yes, `tetra bugtool` |
@@ -369,12 +369,13 @@ Listed plainly, worst first. Every item here is real and current.
 8. **Only two enforcement actions.** `EPERM`, and `SIGKILL` on exec under
    enforcement mode 2. No audit action, no per-rule response. Tetragon offers a
    genuine action set.
-9. **The seccomp loop is open.** Profiles are generated from the learned
-   syscall set, honour the policy's syscall lists, and are written to disk, but
-   nothing applies them to a pod. A pod's `seccompProfile` cannot be changed
-   after admission, and the operator deliberately runs without a mutating
-   webhook, so today an operator has to reference the generated profile
-   themselves.
+9. **Applying a seccomp profile is still manual.** Profiles are generated,
+   honour the policy's syscall lists, are reported on `ContainerProfile` and
+   are rendered as a ready-to-apply patch by `pahlevan profile patch`, but
+   nothing applies them. A pod's `seccompProfile` cannot be changed after
+   admission and the operator deliberately runs without a mutating webhook, so
+   the last step is a rollout you perform. The file also lives only on the node
+   that wrote it, so a multi-node workload needs it distributed.
 10. **No integration with anything downstream.** Events reach a file, a
     webhook, and `pahlevan events`. There is nothing resembling
     falcosidekick's fan-out to Slack, S3, or a SIEM, so integrating means
