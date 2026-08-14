@@ -12,12 +12,36 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/metric"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror" SyscallMonitor ../../bpf/syscall_monitor.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror" NetworkMonitor ../../bpf/network_monitor.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -Werror" FileMonitor ../../bpf/file_monitor.c
+// Package-level counters are registered exactly once with the default registry.
+// Registering per-Manager (as the previous code did) panicked with
+// "duplicate metrics collector registration" whenever a second Manager was
+// constructed (e.g. across tests or multiple watchers).
+var (
+	syscallEventCounterVec = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pahlevan_syscall_events_total",
+		Help: "Total number of syscall events processed",
+	})
+	networkEventCounterVec = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pahlevan_network_events_total",
+		Help: "Total number of network events processed",
+	})
+	fileEventCounterVec = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pahlevan_file_events_total",
+		Help: "Total number of file events processed",
+	})
+	enforcementCounterVec = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "pahlevan_enforcement_actions_total",
+		Help: "Total number of enforcement actions taken",
+	})
+)
+
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" SyscallMonitor ../../bpf/syscall_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" NetworkMonitor ../../bpf/network_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" FileMonitor ../../bpf/file_monitor.c
 
 type Manager struct {
 	mu                  sync.RWMutex
@@ -127,28 +151,11 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("failed to remove memory limit: %v", err)
 	}
 
-	// Initialize Prometheus metrics
-	syscallEventCounter := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "pahlevan_syscall_events_total",
-		Help: "Total number of syscall events processed",
-	})
-
-	networkEventCounter := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "pahlevan_network_events_total",
-		Help: "Total number of network events processed",
-	})
-
-	fileEventCounter := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "pahlevan_file_events_total",
-		Help: "Total number of file events processed",
-	})
-
-	enforcementCounter := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "pahlevan_enforcement_actions_total",
-		Help: "Total number of enforcement actions taken",
-	})
-
-	prometheus.MustRegister(syscallEventCounter, networkEventCounter, fileEventCounter, enforcementCounter)
+	// Use the package-level, registered-once counters.
+	syscallEventCounter := syscallEventCounterVec
+	networkEventCounter := networkEventCounterVec
+	fileEventCounter := fileEventCounterVec
+	enforcementCounter := enforcementCounterVec
 
 	// Initialize capability checker and check system capabilities
 	capabilityChecker := NewCapabilityChecker()
@@ -236,6 +243,13 @@ func (m *Manager) LoadPrograms() error {
 func (m *Manager) AttachPrograms() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Programs must be loaded before they can be attached. Guard against nil
+	// collections so a misordered Start()/AttachPrograms() returns an error
+	// instead of panicking on a nil-map dereference.
+	if m.syscallCollection == nil || m.networkCollection == nil || m.fileCollection == nil {
+		return fmt.Errorf("cannot attach: eBPF programs not loaded (call LoadPrograms first)")
+	}
 
 	// Attach syscall tracepoints
 	syscallTracepoints := []string{
