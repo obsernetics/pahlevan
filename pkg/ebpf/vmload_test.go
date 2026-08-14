@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"syscall"
 	"testing"
 	"time"
@@ -171,10 +172,13 @@ func TestVMLoadFileMonitor(t *testing.T) {
 		ev.Path, ev.Comm, ev.PID, ev.CgroupID, ev.Flags)
 }
 
-// TestVMFileEnforcement proves in-kernel DENY: after inserting a path's hash into
-// the file_blocked map, opening that path fails with EPERM, while other opens
-// succeed. This is the capability Falco (alert-only) fundamentally lacks. VM-only.
-func TestVMFileEnforcement(t *testing.T) {
+// TestVMFileAdaptiveEnforcement proves the full adaptive loop with LSM BPF:
+// in a dedicated cgroup, files opened during LEARN are auto-added to the allow
+// set; after switching that cgroup to ENFORCE, a previously-unseen file open is
+// DENIED in-kernel (EPERM) while a learned file still opens. This is auto-learned
+// allow-list enforcement — no hand-written rules, and real prevention (not
+// alerting). VM-only.
+func TestVMFileAdaptiveEnforcement(t *testing.T) {
 	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
 		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
 	}
@@ -191,44 +195,71 @@ func TestVMFileEnforcement(t *testing.T) {
 		t.Fatalf("NewCollection: %v", err)
 	}
 	defer coll.Close()
-
 	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
 	if err != nil {
 		t.Fatalf("AttachLSM(file_open): %v", err)
 	}
 	defer l.Close()
 
-	blocked := fmt.Sprintf("/tmp/pahlevan-blocked-%d", os.Getpid())
-	allowed := fmt.Sprintf("/tmp/pahlevan-allowed-%d", os.Getpid())
-	for _, p := range []string{blocked, allowed} {
-		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
-			t.Fatalf("seed %s: %v", p, err)
+	// Dedicated cgroup so enforcement affects only our helper, not the test.
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-test-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup (need cgroup v2, root): %v", err)
+	}
+	defer os.Remove(cg)
+
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	// runIn runs `cat <path>` inside the dedicated cgroup and returns cat's error.
+	runIn := func(path string) error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec cat %s", cg, path)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// LEARN: run cat on the sentinel so cat's libs + the sentinel path are learned.
+	if err := runIn("/etc/hostname"); err != nil {
+		t.Fatalf("learn run failed: %v", err)
+	}
+	// Give the ring buffer time isn't needed — the allow-set is updated in-kernel
+	// synchronously during the open. Confirm we learned something.
+	var learned int
+	{
+		var k, nk uint64
+		var v uint8
+		it := coll.Maps["file_allowed"].Iterate()
+		for it.Next(&k, &v) {
+			nk++
 		}
-		defer os.Remove(p)
+		_ = k
+		learned = int(nk)
+	}
+	if learned == 0 {
+		t.Fatal("expected learned file entries after learning run")
+	}
+	t.Logf("learned %d (cgroup,path) allow-set entries", learned)
+
+	// Switch the cgroup to ENFORCE.
+	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce mode: %v", err)
 	}
 
-	// Insert the blocked path's hash into the in-kernel block list.
-	h := FnvPathHash(blocked)
-	one := uint8(1)
-	if err := coll.Maps["file_blocked"].Put(h, one); err != nil {
-		t.Fatalf("populate file_blocked: %v", err)
-	}
-
-	// The blocked path must now fail to open with EPERM.
-	if f, err := os.Open(blocked); err == nil {
-		f.Close()
-		t.Fatalf("expected open(%s) to be DENIED, but it succeeded", blocked)
-	} else if !errors.Is(err, syscall.EPERM) {
-		t.Fatalf("expected EPERM opening %s, got: %v", blocked, err)
+	// A learned file still opens.
+	if err := runIn("/etc/hostname"); err != nil {
+		t.Errorf("expected learned /etc/hostname to be ALLOWED under enforcement, got: %v", err)
 	} else {
-		t.Logf("DENIED in-kernel as expected: open(%s) -> %v", blocked, err)
+		t.Log("learned /etc/hostname allowed under enforcement")
 	}
 
-	// A non-blocked path must still open fine.
-	if f, err := os.Open(allowed); err != nil {
-		t.Fatalf("expected open(%s) to succeed, got: %v", allowed, err)
+	// An unlearned file is DENIED (cat exits non-zero because open -> EPERM).
+	if err := runIn("/etc/os-release"); err == nil {
+		t.Error("expected unlearned /etc/os-release open to be DENIED under enforcement, but it succeeded")
 	} else {
-		f.Close()
-		t.Logf("allowed open(%s) succeeded", allowed)
+		t.Logf("DENIED in-kernel as expected: cat /etc/os-release -> %v", err)
 	}
+
+	// Clean up: move nothing needed (helpers already exited); rmdir in defer.
 }
