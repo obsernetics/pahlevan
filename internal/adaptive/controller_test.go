@@ -1,6 +1,8 @@
 package adaptive
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,5 +90,37 @@ func TestController_NonBlockingPolicyStaysLearning(t *testing.T) {
 	c.Reconcile()
 	if enf.enforced[7] {
 		t.Fatal("monitor-only (non-blocking) policy must never enforce")
+	}
+}
+
+func TestController_WritesSeccompProfileOnEnforce(t *testing.T) {
+	dir := t.TempDir()
+	enf := &fakeEnforcer{}
+	c := NewController(logr.Discard(), enf, nil, fakePolicies{window: 0, blocking: true, ok: true})
+	c.SeccompDir = dir
+	base := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return base }
+
+	// Learn read(0)/write(1)/openat(257) for a cgroup with a pod UID.
+	c.mu.Lock()
+	st := c.track(99)
+	st.ref.PodUID = "pod-abc"
+	c.mu.Unlock()
+	_ = c.HandleSyscallEvent(&ebpf.SyscallEvent{CgroupID: 99, SyscallNr: 0})
+	_ = c.HandleSyscallEvent(&ebpf.SyscallEvent{CgroupID: 99, SyscallNr: 1})
+	_ = c.HandleSyscallEvent(&ebpf.SyscallEvent{CgroupID: 99, SyscallNr: 257})
+
+	c.now = func() time.Time { return base.Add(time.Minute) }
+	c.Reconcile()
+
+	path := dir + "/pahlevan-pod-abc.json"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected seccomp profile at %s: %v", path, err)
+	}
+	for _, want := range []string{"SCMP_ACT_ERRNO", "openat", "SCMP_ACT_ALLOW"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("profile missing %q", want)
+		}
 	}
 }

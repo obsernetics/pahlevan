@@ -11,6 +11,8 @@ package adaptive
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/seccomp"
 )
 
 // Phase is the lifecycle phase of a container under a policy.
@@ -61,6 +64,11 @@ type Controller struct {
 	resolver *attribution.Resolver
 	policies PolicyResolver
 	now      func() time.Time
+
+	// SeccompDir, when set, is where per-workload seccomp profiles generated from
+	// the learned syscall set are written on the enforce transition (for use as a
+	// pod localhostProfile). Empty disables seccomp profile emission.
+	SeccompDir string
 
 	mu    sync.Mutex
 	state map[uint64]*cgState
@@ -200,10 +208,44 @@ func (c *Controller) Reconcile() {
 			c.log.V(1).Info("network enforcement unavailable", "cgroup", id, "error", err.Error())
 		}
 		st.phase = PhaseEnforcing
+		c.writeSeccompProfile(st)
 		c.log.Info("container transitioned to enforcing",
 			"cgroup", id, "pod", st.ref.PodUID,
 			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests))
 	}
+}
+
+// writeSeccompProfile generates a seccomp profile from the container's learned
+// syscall set and writes it to SeccompDir (best-effort). The file can then be
+// referenced as a pod localhostProfile so future pods start already confined.
+func (c *Controller) writeSeccompProfile(st *cgState) {
+	if c.SeccompDir == "" || len(st.syscalls) == 0 {
+		return
+	}
+	syscalls := make([]uint64, 0, len(st.syscalls))
+	for s := range st.syscalls {
+		syscalls = append(syscalls, s)
+	}
+	prof, skipped := seccomp.Generate(syscalls)
+	data, err := prof.JSON()
+	if err != nil {
+		c.log.Error(err, "failed to render seccomp profile")
+		return
+	}
+	name := st.ref.PodUID
+	if name == "" {
+		name = fmt.Sprintf("cgroup-%d", st.firstSeen.UnixNano())
+	}
+	if err := os.MkdirAll(c.SeccompDir, 0o755); err != nil {
+		c.log.Error(err, "failed to create seccomp dir", "dir", c.SeccompDir)
+		return
+	}
+	path := filepath.Join(c.SeccompDir, "pahlevan-"+name+".json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		c.log.Error(err, "failed to write seccomp profile", "path", path)
+		return
+	}
+	c.log.Info("wrote learned seccomp profile", "path", path, "allowed", len(prof.Syscalls[0].Names), "skippedUnknown", skipped)
 }
 
 // Run drives Reconcile on an interval until ctx is cancelled.
