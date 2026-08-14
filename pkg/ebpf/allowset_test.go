@@ -1,12 +1,23 @@
 package ebpf
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mixProto reproduces the kernel's protocol term with explicit wraparound,
+// matching C's modular arithmetic on __u64.
+func mixProto(p uint8) uint64 {
+	var acc uint64
+	for i := uint8(0); i < p; i++ {
+		acc += 0x9E3779B97F4A7C15
+	}
+	return acc
+}
 
 // fnv is an independent reimplementation of FNV-1a, so these tests fail if
 // FnvPathHash is changed rather than agreeing with it by construction.
@@ -49,7 +60,7 @@ func TestNetworkAllowKeyIPv4(t *testing.T) {
 	require.NoError(t, err)
 
 	addrHash := uint64(0x04030201) // bytes 1,2,3,4 read little-endian
-	want := cgroup ^ (addrHash << 16) ^ 443 ^ 2
+	want := cgroup ^ (addrHash << 16) ^ 443 ^ 2 ^ mixProto(ProtocolTCP)
 	assert.Equal(t, want, key)
 }
 
@@ -59,7 +70,7 @@ func TestNetworkAllowKeyIPv6(t *testing.T) {
 	key, err := NetworkAllowKey(cgroup, ip, 443)
 	require.NoError(t, err)
 
-	want := cgroup ^ (fnv(ip.To16()) << 16) ^ 443 ^ 10
+	want := cgroup ^ (fnv(ip.To16()) << 16) ^ 443 ^ 10 ^ mixProto(ProtocolTCP)
 	assert.Equal(t, want, key)
 }
 
@@ -89,6 +100,43 @@ func TestNetworkAllowKeyDistinctPortsAndCgroups(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, a, b, "ports must not collide")
 	assert.NotEqual(t, a, c, "cgroups must not collide")
+}
+
+// A destination learned over TCP must not be permitted over UDP on the same
+// port. The protocol was absent from the key entirely, and the event reported a
+// hardcoded IPPROTO_TCP regardless of the real socket.
+func TestNetworkAllowKeySeparatesProtocols(t *testing.T) {
+	ip := net.ParseIP("10.0.0.1")
+	tcp, err := NetworkAllowKeyProto(1, ip, 53, ProtocolTCP)
+	require.NoError(t, err)
+	udp, err := NetworkAllowKeyProto(1, ip, 53, ProtocolUDP)
+	require.NoError(t, err)
+	assert.NotEqual(t, tcp, udp)
+
+	// The convenience wrapper is the TCP case.
+	viaWrapper, err := NetworkAllowKey(1, ip, 53)
+	require.NoError(t, err)
+	assert.Equal(t, tcp, viaWrapper)
+}
+
+// Distinct (port, protocol) pairs must not collide. The port list deliberately
+// includes 1536 (6<<8) and 4352 (17<<8), which are exactly the values that
+// would alias with TCP and UDP if the protocol were shifted into the port's
+// bits instead of mixed.
+func TestNetworkAllowKeyPortProtocolDoNotAlias(t *testing.T) {
+	ip := net.ParseIP("10.0.0.1")
+	seen := map[uint64]string{}
+	for _, proto := range []uint8{0, ProtocolTCP, ProtocolUDP, 1, 132} {
+		for _, port := range []uint16{0, 53, 80, 443, 1536, 4352, 65535} {
+			k, err := NetworkAllowKeyProto(1, ip, port, proto)
+			require.NoError(t, err)
+			label := fmt.Sprintf("port=%d proto=%d", port, proto)
+			if prev, dup := seen[k]; dup {
+				t.Fatalf("key collision between %s and %s", prev, label)
+			}
+			seen[k] = label
+		}
+	}
 }
 
 func TestNetworkAllowKeyRejectsBadAddress(t *testing.T) {
@@ -134,6 +182,10 @@ func TestAllowWritersWithoutLoadedPrograms(t *testing.T) {
 	assert.Contains(t, err.Error(), "capability monitor not loaded")
 
 	err = m.AllowNetworkDestination(1, net.ParseIP("1.2.3.4"), 80, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network monitor not loaded")
+
+	err = m.AllowNetworkDestinationProto(1, net.ParseIP("1.2.3.4"), 53, ProtocolUDP, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "network monitor not loaded")
 }

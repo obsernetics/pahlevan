@@ -53,14 +53,37 @@ func CapabilityAllowKey(cgroupID uint64, capability uint32) uint64 {
 	return (cgroupID << 8) | (uint64(capability) & 0xff)
 }
 
-// NetworkAllowKey derives the egress allow-set key for a destination.
-// Mirrors: __u64 key = cgroup_id ^ (addr_hash << 16) ^ (__u64)dport ^ (__u64)family;
+// Transport protocols the egress allow-set distinguishes. The key folds the
+// protocol in, so a destination learned over TCP is not thereby permitted over
+// UDP on the same port.
+const (
+	ProtocolTCP uint8 = 6
+	ProtocolUDP uint8 = 17
+)
+
+// protocolMix is the 64-bit golden ratio. The protocol is mixed
+// multiplicatively rather than shifted into the port's bits, because a plain
+// (protocol << 8) would alias port 1536 over protocol 0 with port 0 over
+// protocol 6, and a raw socket really does report protocol 0.
+const protocolMix uint64 = 0x9E3779B97F4A7C15
+
+// NetworkAllowKey derives the egress allow-set key for a TCP destination. Most
+// callers want this; use NetworkAllowKeyProto for anything else.
+func NetworkAllowKey(cgroupID uint64, ip net.IP, port uint16) (uint64, error) {
+	return NetworkAllowKeyProto(cgroupID, ip, port, ProtocolTCP)
+}
+
+// NetworkAllowKeyProto derives the egress allow-set key for a destination.
+// Mirrors:
+//
+//	__u64 key = cgroup_id ^ (addr_hash << 16) ^ (__u64)dport ^ (__u64)family ^
+//	            ((__u64)protocol * 0x9E3779B97F4A7C15ULL);
 //
 // For IPv4 the kernel folds in sin_addr.s_addr verbatim, which is the address in
 // network byte order reinterpreted as a host __u32. Reading the four bytes
 // little-endian reproduces that on the little-endian targets the BPF objects are
 // built for. For IPv6 it is an FNV-1a over the 16 address bytes in order.
-func NetworkAllowKey(cgroupID uint64, ip net.IP, port uint16) (uint64, error) {
+func NetworkAllowKeyProto(cgroupID uint64, ip net.IP, port uint16, protocol uint8) (uint64, error) {
 	if ip == nil {
 		return 0, fmt.Errorf("nil destination address")
 	}
@@ -81,7 +104,8 @@ func NetworkAllowKey(cgroupID uint64, ip net.IP, port uint16) (uint64, error) {
 		}
 		family = afInet6
 	}
-	return cgroupID ^ (addrHash << 16) ^ uint64(port) ^ family, nil
+	return cgroupID ^ (addrHash << 16) ^ uint64(port) ^ family ^
+		(uint64(protocol) * protocolMix), nil
 }
 
 // allowMap looks up one of the allow-set maps, returning a descriptive error
@@ -161,9 +185,15 @@ func (m *Manager) AllowCapability(cgroupID uint64, capability uint32, allowed bo
 	return setAllowEntry(mp, CapabilityAllowKey(cgroupID, capability), allowed)
 }
 
-// AllowNetworkDestination seeds the egress allow-set for one ip:port.
+// AllowNetworkDestination seeds the egress allow-set for one ip:port over TCP.
 func (m *Manager) AllowNetworkDestination(cgroupID uint64, ip net.IP, port uint16, allowed bool) error {
-	key, err := NetworkAllowKey(cgroupID, ip, port)
+	return m.AllowNetworkDestinationProto(cgroupID, ip, port, ProtocolTCP, allowed)
+}
+
+// AllowNetworkDestinationProto seeds the egress allow-set for one ip:port over a
+// specific transport protocol.
+func (m *Manager) AllowNetworkDestinationProto(cgroupID uint64, ip net.IP, port uint16, protocol uint8, allowed bool) error {
+	key, err := NetworkAllowKeyProto(cgroupID, ip, port, protocol)
 	if err != nil {
 		return err
 	}
