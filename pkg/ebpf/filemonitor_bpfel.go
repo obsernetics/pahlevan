@@ -13,14 +13,9 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type FileMonitorFileAccessPolicy struct {
-	_            structs.HostLayout
-	ContainerId  uint32
-	LearningMode uint32
-	AllowedPaths [1024][64]int8
-	PathCount    uint32
-	_            [4]byte
-	LastUpdateNs uint64
+type FileMonitorFconfig struct {
+	_        structs.HostLayout
+	Disabled uint8
 }
 
 // LoadFileMonitor returns the embedded CollectionSpec for FileMonitor.
@@ -65,20 +60,16 @@ type FileMonitorSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type FileMonitorProgramSpecs struct {
-	KprobeDoSysOpenat2 *ebpf.ProgramSpec `ebpf:"kprobe_do_sys_openat2"`
-	KprobeVfsRead      *ebpf.ProgramSpec `ebpf:"kprobe_vfs_read"`
-	KprobeVfsWrite     *ebpf.ProgramSpec `ebpf:"kprobe_vfs_write"`
-	LsmFileOpen        *ebpf.ProgramSpec `ebpf:"lsm_file_open"`
-	LsmFilePermission  *ebpf.ProgramSpec `ebpf:"lsm_file_permission"`
-	LsmInodePermission *ebpf.ProgramSpec `ebpf:"lsm_inode_permission"`
+	FileOpen *ebpf.ProgramSpec `ebpf:"file_open"`
 }
 
 // FileMonitorMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type FileMonitorMapSpecs struct {
-	FileEvents   *ebpf.MapSpec `ebpf:"file_events"`
-	FilePolicies *ebpf.MapSpec `ebpf:"file_policies"`
+	FileConfig *ebpf.MapSpec `ebpf:"file_config"`
+	FileEvents *ebpf.MapSpec `ebpf:"file_events"`
+	FileSeen   *ebpf.MapSpec `ebpf:"file_seen"`
 }
 
 // FileMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -107,14 +98,16 @@ func (o *FileMonitorObjects) Close() error {
 //
 // It can be passed to LoadFileMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type FileMonitorMaps struct {
-	FileEvents   *ebpf.Map `ebpf:"file_events"`
-	FilePolicies *ebpf.Map `ebpf:"file_policies"`
+	FileConfig *ebpf.Map `ebpf:"file_config"`
+	FileEvents *ebpf.Map `ebpf:"file_events"`
+	FileSeen   *ebpf.Map `ebpf:"file_seen"`
 }
 
 func (m *FileMonitorMaps) Close() error {
 	return _FileMonitorClose(
+		m.FileConfig,
 		m.FileEvents,
-		m.FilePolicies,
+		m.FileSeen,
 	)
 }
 
@@ -128,22 +121,12 @@ type FileMonitorVariables struct {
 //
 // It can be passed to LoadFileMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type FileMonitorPrograms struct {
-	KprobeDoSysOpenat2 *ebpf.Program `ebpf:"kprobe_do_sys_openat2"`
-	KprobeVfsRead      *ebpf.Program `ebpf:"kprobe_vfs_read"`
-	KprobeVfsWrite     *ebpf.Program `ebpf:"kprobe_vfs_write"`
-	LsmFileOpen        *ebpf.Program `ebpf:"lsm_file_open"`
-	LsmFilePermission  *ebpf.Program `ebpf:"lsm_file_permission"`
-	LsmInodePermission *ebpf.Program `ebpf:"lsm_inode_permission"`
+	FileOpen *ebpf.Program `ebpf:"file_open"`
 }
 
 func (p *FileMonitorPrograms) Close() error {
 	return _FileMonitorClose(
-		p.KprobeDoSysOpenat2,
-		p.KprobeVfsRead,
-		p.KprobeVfsWrite,
-		p.LsmFileOpen,
-		p.LsmFilePermission,
-		p.LsmInodePermission,
+		p.FileOpen,
 	)
 }
 
