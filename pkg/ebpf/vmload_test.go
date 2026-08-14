@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -665,52 +666,19 @@ func TestVMSeededAllowEntryIsHonoured(t *testing.T) {
 	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
 		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
 	}
-	if err := rlimit.RemoveMemlock(); err != nil {
-		t.Fatalf("RemoveMemlock: %v", err)
-	}
+	coll, cgID, runIn := seedTestFixture(t, "seed")
 
-	spec, err := LoadFileMonitor()
-	if err != nil {
-		t.Fatalf("LoadFileMonitor: %v", err)
-	}
-	coll, err := ebpf.NewCollection(spec)
-	if err != nil {
-		t.Fatalf("NewCollection: %v", err)
-	}
-	defer coll.Close()
-	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
-	if err != nil {
-		t.Fatalf("AttachLSM(file_open): %v", err)
-	}
-	defer l.Close()
-
-	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-seed-%d", os.Getpid())
-	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
-		t.Skipf("cannot create test cgroup (need cgroup v2, root): %v", err)
-	}
-	defer os.Remove(cg)
-
-	var st syscall.Stat_t
-	if err := syscall.Stat(cg, &st); err != nil {
-		t.Fatalf("stat cgroup: %v", err)
-	}
-	cgID := st.Ino
-
-	runIn := func(path string) error {
-		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec cat %s", cg, path)
-		return exec.Command("/bin/sh", "-c", script).Run()
-	}
-
-	// LEARN on one sentinel only. /etc/os-release is never opened here, so it
-	// cannot enter the allow-set by observation.
+	// LEARN on one sentinel only. The seeded paths are never opened here, so
+	// they cannot enter the allow-set by observation.
 	if err := runIn("/etc/hostname"); err != nil {
 		t.Fatalf("learn run failed: %v", err)
 	}
 
-	// Seed the never-observed path through the public writer, exactly as an
-	// operator's PahlevanPolicy exception would.
+	// Seed a never-observed path through the public writer, exactly as an
+	// operator's PahlevanPolicy exception would. /etc/fstab is a real file, not
+	// a symlink - see TestVMSeededSymlinkPathDoesNotMatch for why that matters.
 	m := &Manager{fileCollection: coll}
-	const seeded = "/etc/os-release"
+	const seeded = "/etc/fstab"
 	if err := m.AllowFilePath(cgID, seeded, true); err != nil {
 		t.Fatalf("AllowFilePath: %v", err)
 	}
@@ -728,10 +696,10 @@ func TestVMSeededAllowEntryIsHonoured(t *testing.T) {
 
 	// A different unseeded, unlearned path must still be denied, proving the
 	// seed granted exactly one path and did not disable enforcement.
-	if err := runIn("/etc/fstab"); err == nil {
-		t.Error("unseeded /etc/fstab should be DENIED under enforcement, but it succeeded")
+	if err := runIn("/etc/machine-id"); err == nil {
+		t.Error("unseeded /etc/machine-id should be DENIED under enforcement, but it succeeded")
 	} else {
-		t.Logf("unseeded /etc/fstab denied as expected: %v", err)
+		t.Logf("unseeded /etc/machine-id denied as expected: %v", err)
 	}
 
 	// Revoking must take the path back out, even though it is in the map.
@@ -743,4 +711,100 @@ func TestVMSeededAllowEntryIsHonoured(t *testing.T) {
 	} else {
 		t.Logf("revoked %s denied as expected: %v", seeded, err)
 	}
+}
+
+// TestVMSeededSymlinkPathDoesNotMatch pins a limitation an operator will
+// otherwise hit silently.
+//
+// bpf_d_path resolves to the real dentry, so the kernel hashes the target of a
+// symlink, not the name that was opened. Seeding "/etc/os-release" therefore
+// grants nothing on a distro where it links to /usr/lib/os-release, while
+// seeding the resolved path works. This is a real trap - the exception looks
+// applied and is not - so it is asserted rather than left to be rediscovered.
+// VM-only.
+func TestVMSeededSymlinkPathDoesNotMatch(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	const link = "/etc/os-release"
+	target, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Skipf("cannot resolve %s: %v", link, err)
+	}
+	if target == link {
+		t.Skipf("%s is not a symlink on this image; nothing to assert", link)
+	}
+
+	coll, cgID, runIn := seedTestFixture(t, "symlink")
+	if err := runIn("/etc/hostname"); err != nil {
+		t.Fatalf("learn run failed: %v", err)
+	}
+	m := &Manager{fileCollection: coll}
+
+	// Seed the link name. The kernel hashes the target, so this must NOT match.
+	if err := m.AllowFilePath(cgID, link, true); err != nil {
+		t.Fatalf("AllowFilePath: %v", err)
+	}
+	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce mode: %v", err)
+	}
+	if err := runIn(link); err == nil {
+		t.Errorf("seeding the symlink name %s unexpectedly worked; if bpf_d_path "+
+			"stopped resolving symlinks, the documented guidance can be relaxed", link)
+	} else {
+		t.Logf("seeding the link name %s does not match, as documented: %v", link, err)
+	}
+
+	// Seeding the resolved target does work, which is the guidance operators
+	// must follow.
+	if err := m.AllowFilePath(cgID, target, true); err != nil {
+		t.Fatalf("AllowFilePath(target): %v", err)
+	}
+	if err := runIn(link); err != nil {
+		t.Errorf("seeding the resolved target %s should allow opening %s, got: %v", target, link, err)
+	} else {
+		t.Logf("seeding the resolved target %s allows opening %s", target, link)
+	}
+}
+
+// seedTestFixture loads the file monitor, attaches it, and returns the
+// collection, a dedicated cgroup id, and a helper that opens a path inside that
+// cgroup so enforcement affects only the helper and never the test process.
+func seedTestFixture(t *testing.T, name string) (*ebpf.Collection, uint64, func(string) error) {
+	t.Helper()
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadFileMonitor()
+	if err != nil {
+		t.Fatalf("LoadFileMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	t.Cleanup(coll.Close)
+
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(file_open): %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-%s-%d", name, os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup (need cgroup v2, root): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(cg) })
+
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+
+	runIn := func(path string) error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec cat %s", cg, path)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+	return coll, st.Ino, runIn
 }

@@ -131,21 +131,76 @@ counted as attacks; the correct outcome for each is always `allowed`, and any
 1. `hack/vm/up.sh` - boot the kernel-isolated VM.
 2. Install k3s in the VM; deploy Falco, Tetragon, and Pahlevan (one at a time).
 3. Deploy a benign target workload (`nginx:1.27`); let Pahlevan learn its baseline.
-4. Switch Pahlevan to enforcing; stage the scenario scripts into the VM, then run
-   every attack scenario and every benign control in the target pod.
-5. Scrape each tool's signals + `kubectl top` / cgroup resource usage.
-6. Record a results matrix under `docs/benchmarks/`.
+4. Start the resident in-pod runner (see below) while the tool is still
+   learning/observing, switch Pahlevan to enforcing, then run every attack
+   scenario and every benign control inside the target pod.
+5. Scrape each tool's own signal stream and its cgroup v2 CPU/memory, plus the
+   BPF map memlock total for Pahlevan.
+6. Correlate signals to scenarios by timestamp and record a matrix under
+   `docs/benchmarks/`.
 
-Usage is unchanged:
+Usage:
 
 ```
 hack/vm/up.sh
 test/benchmark/run.sh setup       # cluster + target workload
+test/benchmark/run.sh control     # no tool installed: baseline outcome per scenario
 test/benchmark/run.sh pahlevan    # learn, enforce, attacks + benign controls
 test/benchmark/run.sh falco       # attacks + benign controls
 test/benchmark/run.sh tetragon    # attacks + benign controls
-test/benchmark/run.sh all         # setup + all three, sequentially
+test/benchmark/run.sh all         # setup + control + all three, sequentially
 ```
+
+Artifacts land in `/tmp/pahlevan-bench/results/<tool>/` on the host:
+`scenarios.txt` (raw, timestamped), `signals.raw` (the tool's own stream),
+`matrix.txt` / `matrix.json` (correlated), `resources.txt`, `meta.txt`.
+
+### The resident in-pod runner (`pod-runner.sh`)
+
+Scenarios are **not** run with one `kubectl exec` each. Once Pahlevan is
+enforcing, the `runc exec` setup itself opens unlearned paths, so every
+`kubectl exec` into the pod is refused and a per-scenario `exec` harness can only
+ever measure "exec was denied". That is what the 2026-08-14 run hit, and it is
+why that run could not say which mechanism stopped which action.
+
+Instead `run.sh` starts `pod-runner.sh` inside the target pod **while the tool
+under test is still learning/observing**. At that point the runner reads every
+scenario into memory, opens its output file (fd 9) and a fifo it uses as a
+builtin sleep (fd 8), and then waits. From the trigger onward it uses **only bash
+builtins**: no `exec` of a new binary and no `open` of a new path, so the harness
+itself cannot be blocked by the enforcement it is measuring. Each scenario body
+runs via `eval` inside a command substitution, which is a fork rather than an
+exec; the binaries the scenario itself invokes (`cat`, `curl`, `timeout`, ...) are
+the things under test.
+
+The node arms the run and reads the results through `/proc/<pid>/root/tmp/bench`,
+so no `kubectl exec` is needed after enforcement begins.
+
+Two consequences, both stated in the results:
+
+- The runner assumes the attacker **already has a shell** in the compromised pod,
+  so `bash` and its libraries end up in the learned allow-list. This makes the
+  tools' job harder, not easier.
+- Because every tool is driven the same way, the comparison stays apples to
+  apples.
+
+Whether `kubectl exec` is refused under enforcement is measured separately and
+reported as its own line rather than being allowed to swallow the matrix.
+
+### Correlating signals to scenarios (`correlate.py`)
+
+Every scenario records the wall-clock window `[t0, t1]` in which it ran. After
+the suite, each tool's own stream is pulled for the run window and bucketed into
+those windows (plus a settle margin, since userspace alerting is asynchronous):
+
+| Tool | Signal source | Attribution |
+|------|---------------|-------------|
+| Pahlevan | JSON-lines event export (`--export-file`) | `kubernetes.pod`, falling back to `cgroupId` |
+| Falco | `falco` container stdout with `json_output=true` | `k8s.pod.name` in `output_fields` |
+| Tetragon | `export-stdout` container JSON | `process.pod.name` |
+
+Signals that fall outside every window, or that belong to another workload, are
+counted and reported separately rather than being folded into a detection.
 
 ## Fairness: results are only comparable at equal configuration posture
 
