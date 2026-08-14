@@ -24,8 +24,49 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 )
+
+// ANSI color escape codes used by ColorizeStatus.
+const (
+	ansiReset  = "\033[0m"
+	ansiRed    = "\033[31m"
+	ansiGreen  = "\033[32m"
+	ansiYellow = "\033[33m"
+	ansiCyan   = "\033[36m"
+	ansiGray   = "\033[90m"
+)
+
+// colorEnabled reports whether ANSI colors should be emitted. Colors are
+// suppressed when the NO_COLOR environment variable is set (per the informal
+// https://no-color.org standard) or when stdout is not a terminal (e.g. piped
+// to a file or another process).
+func colorEnabled() bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// colorFor returns the ANSI color code appropriate for the given status, or an
+// empty string if no specific color applies.
+func colorFor(status string) string {
+	switch strings.ToLower(status) {
+	case "ready", "active", "running", "healthy", "completed", "enforcing":
+		return ansiGreen
+	case "pending", "initializing", "learning", "transitioning", "transition", "rollingback":
+		return ansiCyan
+	case "failed", "error", "unhealthy", "blocked", "not ready":
+		return ansiRed
+	case "warning", "degraded":
+		return ansiYellow
+	case "unknown", "":
+		return ansiGray
+	default:
+		return ""
+	}
+}
 
 // OutputFormat represents the output format type
 type OutputFormat string
@@ -217,11 +258,25 @@ func StatusIcon(status string) string {
 	}
 }
 
-// ColorizeStatus adds color to status strings (simplified for this example)
+// ColorizeStatus renders a status string with a leading icon and, when the
+// output is an interactive terminal (and NO_COLOR is unset), ANSI color.
 func ColorizeStatus(status string) string {
-	// In a real implementation, you might use a library like fatih/color
-	// For simplicity, we'll just return the status with an icon
-	return fmt.Sprintf("%s %s", StatusIcon(status), status)
+	return colorizeStatus(status, colorEnabled())
+}
+
+// colorizeStatus is the testable core of ColorizeStatus; the enableColor
+// parameter is decoupled from environment/tty detection so behavior can be
+// asserted deterministically in tests.
+func colorizeStatus(status string, enableColor bool) string {
+	label := fmt.Sprintf("%s %s", StatusIcon(status), status)
+	if !enableColor {
+		return label
+	}
+	color := colorFor(status)
+	if color == "" {
+		return label
+	}
+	return color + label + ansiReset
 }
 
 // TableRow represents a row in a table

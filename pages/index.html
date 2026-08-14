@@ -3,111 +3,540 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pahlevan - eBPF Kubernetes Security Operator</title>
-    <meta name="description" content="Pahlevan is a next-generation Kubernetes security operator that provides proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+    <title>Pahlevan - eBPF Runtime Security for Kubernetes</title>
+    <meta name="description" content="Pahlevan is an eBPF-powered Kubernetes runtime security tool. It self-learns per-workload baselines and enforces them in-kernel with LSM BPF - no hand-written rules.">
+    <meta name="theme-color" content="#0b1020">
 
     <!-- Open Graph Meta Tags -->
-    <meta property="og:title" content="Pahlevan - eBPF Kubernetes Security Operator">
-    <meta property="og:description" content="Proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
+    <meta property="og:title" content="Pahlevan - eBPF Runtime Security for Kubernetes">
+    <meta property="og:description" content="Self-learning workload baselines, enforced in-kernel with LSM BPF. Pahlevan learns what a workload does, then blocks the rest in the kernel with EPERM.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://obsernetics.github.io/pahlevan/">
-    <meta property="og:image" content="https://obsernetics.github.io/pahlevan/assets/pahlevan-logo.png">
+    <meta property="og:image" content="https://obsernetics.github.io/pahlevan/assets/demo.gif">
 
     <!-- Twitter Card Meta Tags -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Pahlevan - eBPF Kubernetes Security Operator">
-    <meta name="twitter:description" content="Proactive attack surface minimization through eBPF-powered adaptive learning and real-time enforcement.">
-    <meta name="twitter:image" content="https://obsernetics.github.io/pahlevan/assets/pahlevan-logo.png">
+    <meta name="twitter:title" content="Pahlevan - eBPF Runtime Security for Kubernetes">
+    <meta name="twitter:description" content="Self-learning workload baselines, enforced in-kernel with LSM BPF - no hand-written rules.">
+    <meta name="twitter:image" content="https://obsernetics.github.io/pahlevan/assets/demo.gif">
+
+    <link rel="icon" type="image/svg+xml" href="assets/pahlevan-icon.svg">
 
     <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="assets/css/main.css">
+    <link rel="stylesheet" href="assets/css/main.css?v=3">
 
     <!-- Prism.js for code highlighting -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
 </head>
 <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
     <nav class="navbar">
         <div class="container">
-            <div class="nav-brand">
-                <img src="assets/pahlevan-icon.svg" alt="Pahlevan" class="nav-logo">
-                <a href="https://obsernetics.github.io/pahlevan/" class="nav-link" target="_blank">Pahlevan</a>
+            <a href="#top" class="nav-brand">
+                <img src="assets/pahlevan-icon.svg" alt="" class="nav-logo" aria-hidden="true">
+                <span>Pahlevan</span>
+            </a>
+            <div class="nav-links">
+                <a href="#why" class="nav-link">Why</a>
+                <a href="#compare" class="nav-link">Compare</a>
+                <a href="#architecture" class="nav-link">Architecture</a>
+                <a href="#features" class="nav-link">Features</a>
+                <a href="#quickstart" class="nav-link">Quick Start</a>
+                <a href="https://github.com/obsernetics/pahlevan" class="nav-link nav-github" target="_blank" rel="noopener">GitHub &#8599;</a>
             </div>
-            <div class="nav-toggle">
+            <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
                 <span></span>
                 <span></span>
                 <span></span>
-            </div>
+            </button>
         </div>
     </nav>
 
-    <header class="hero">
+    <main id="main">
+    <header class="hero" id="top">
+        <div class="hero-glow" aria-hidden="true"></div>
         <div class="container">
             <div class="hero-content">
                 <div class="hero-badge">
-                    <span class="badge">eBPF Security</span>
+                    <span class="badge"><span class="badge-dot"></span> eBPF &middot; LSM BPF enforcement</span>
                 </div>
                 <h1 class="hero-title">
-                    Kubernetes Security <br>
-                    <span class="text-gradient">Operator</span>
+                    Runtime security that <span class="text-gradient">learns, then blocks</span> &mdash; in the kernel
                 </h1>
                 <p class="hero-description">
-                    Adaptive learning and real-time enforcement for Kubernetes workloads through kernel-level eBPF monitoring.
+                    Pahlevan is an eBPF-powered Kubernetes runtime security tool. It self-learns
+                    per-workload baselines during a learning window, then enforces them
+                    <em>in-kernel</em> with LSM BPF &mdash; no hand-written rules.
                 </p>
                 <div class="hero-actions">
-
-                    <a href="https://github.com/obsernetics/pahlevan" class="btn btn-outline" target="_blank">
-                        <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <a href="#quickstart" class="btn btn-primary">Quick Start</a>
+                    <a href="https://github.com/obsernetics/pahlevan" class="btn btn-outline" target="_blank" rel="noopener">
+                        <svg width="18" height="18" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
                             <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
                         </svg>
-                        GitHub
+                        View on GitHub
                     </a>
                 </div>
+                <ul class="hero-meta" aria-label="Requirements">
+                    <li>Kubernetes 1.24+</li>
+                    <li>eBPF CO-RE</li>
+                    <li>Linux 5.8+</li>
+                    <li>LSM BPF for enforcement</li>
+                </ul>
             </div>
             <div class="hero-visual">
-                <div class="terminal-window">
-                    <div class="terminal-header">
-                        <div class="terminal-buttons">
-                            <span class="btn-close"></span>
-                            <span class="btn-minimize"></span>
-                            <span class="btn-maximize"></span>
-                        </div>
-                        <div class="terminal-title">~/kubectl apply -f</div>
-                    </div>
-                    <div class="terminal-body">
-                        <div class="terminal-line">
-                            <span class="prompt">$</span>
-                            <span class="command">helm repo add pahlevan https://obsernetics.github.io/pahlevan/</span>
-                        </div>
-                        <div class="terminal-line">
-                            <span class="output">"pahlevan" has been added to your repositories</span>
-                        </div>
-                        <div class="terminal-line">
-                            <span class="prompt">$</span>
-                            <span class="command">helm install pahlevan pahlevan/pahlevan-operator</span>
-                        </div>
-                        <div class="terminal-line">
-                            <span class="output">Success eBPF programs loaded successfully</span>
-                        </div>
-                        <div class="terminal-line">
-                            <span class="output">Security Attack surface monitoring active</span>
-                        </div>
-                        <div class="terminal-line">
-                            <span class="output">Target Learning phase initiated</span>
-                        </div>
-                        <div class="terminal-cursor">_</div>
-                    </div>
-                </div>
+                <figure class="demo-figure">
+                    <img src="assets/demo.gif" alt="Pahlevan learn-then-enforce demo: a workload is profiled during a learning window, then an attacker's read of a sensitive file is denied in-kernel with EPERM" width="820" height="auto" loading="eager">
+                    <figcaption>Learn the baseline, then deny the deviation in-kernel with <code>EPERM</code>.</figcaption>
+                </figure>
             </div>
         </div>
     </header>
 
+    <!-- WHY -->
+    <section id="why" class="section why">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Why Pahlevan</span>
+                <h2>Most tools watch. Pahlevan closes the loop.</h2>
+                <p>
+                    Kubernetes workloads face runtime attacks that slip past image scanning and
+                    perimeter defenses. Runtime tools either <em>watch</em> (alert-only) or make you
+                    <em>write the rules yourself</em>. Pahlevan does neither.
+                </p>
+            </div>
+            <div class="why-grid">
+                <article class="why-card">
+                    <div class="why-icon">01</div>
+                    <h3>Auto-learning, not manual rules</h3>
+                    <p>
+                        Files a container opens and destinations it dials during a learning window
+                        are added to a per-cgroup allow-set automatically. No <code>TracingPolicy</code>,
+                        no Falco rule language.
+                    </p>
+                </article>
+                <article class="why-card">
+                    <div class="why-icon">02</div>
+                    <h3>Real in-kernel enforcement</h3>
+                    <p>
+                        Under enforcement, an open of an unlearned path or an egress to an unlearned
+                        destination is denied with <code>EPERM</code> by an LSM BPF program &mdash; the
+                        syscall never succeeds. Detection tools only tell you it already happened.
+                    </p>
+                </article>
+                <article class="why-card">
+                    <div class="why-icon">03</div>
+                    <h3>Accurate attribution</h3>
+                    <p>
+                        Events are tied to the real container via <code>bpf_get_current_cgroup_id()</code>,
+                        and file paths are resolved in-kernel with <code>bpf_d_path()</code>. A seccomp
+                        profile is generated from the learned syscall set.
+                    </p>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section id="compare" class="section compare">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">How it compares</span>
+                <h2>Learn and block, in one loop</h2>
+                <p>
+                    Falco and Tetragon are excellent observability tools. Pahlevan's distinct claim is
+                    closing the loop: learn the baseline, then <em>prevent</em> the deviation in the kernel.
+                </p>
+            </div>
+            <div class="table-wrap">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Capability</th>
+                            <th scope="col" class="col-highlight">Pahlevan</th>
+                            <th scope="col">Falco</th>
+                            <th scope="col">Tetragon</th>
+                            <th scope="col">Cilium</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">Primary model</th>
+                            <td class="col-highlight">Adaptive policy operator</td>
+                            <td>Threat detection</td>
+                            <td>Observability + tracing</td>
+                            <td>Network security</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Learns behavior</th>
+                            <td class="col-highlight"><strong>Auto (per-cgroup)</strong></td>
+                            <td>Manual rules</td>
+                            <td>Manual <code>TracingPolicy</code></td>
+                            <td>Static policy</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">File access enforcement</th>
+                            <td class="col-highlight"><strong>Blocks in-kernel (LSM BPF)</strong></td>
+                            <td>Alert only</td>
+                            <td>Possible, hand-written</td>
+                            <td>&mdash;</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Rules to author</th>
+                            <td class="col-highlight"><strong>None (learned)</strong></td>
+                            <td>Many</td>
+                            <td>Per-policy</td>
+                            <td>Network rules</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Attribution</th>
+                            <td class="col-highlight">cgroup id + <code>d_path</code></td>
+                            <td>container context</td>
+                            <td>cgroup / process</td>
+                            <td>endpoint / identity</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Coverage</th>
+                            <td class="col-highlight">Syscalls, files, egress <span class="muted">(seccomp gen)</span></td>
+                            <td>Runtime events</td>
+                            <td>Kernel tracing</td>
+                            <td>L3&ndash;L7 traffic</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- ARCHITECTURE -->
+    <section id="architecture" class="section architecture">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Architecture</span>
+                <h2>A privileged data plane, an unprivileged control plane</h2>
+                <p>
+                    Pahlevan splits the per-node eBPF data plane from a leader-elected control plane &mdash;
+                    the same node-instrumentation model as Falco and Tetragon, but with an operator driving policy.
+                </p>
+            </div>
+            <div class="arch-layout">
+                <div class="arch-diagram" role="img" aria-label="Architecture: a PahlevanPolicy CRD feeds a leader-elected operator Deployment running with hostUsers false; the operator pushes desired policy to a privileged DaemonSet agent on each node, which loads eBPF programs (raw_tracepoint/sys_enter, lsm/file_open, lsm/socket_connect) into the kernel and reports status back.">
+                    <svg viewBox="0 0 760 520" xmlns="http://www.w3.org/2000/svg" width="100%" height="auto">
+                        <defs>
+                            <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+                                <stop offset="0" stop-color="#38bdf8"/>
+                                <stop offset="1" stop-color="#818cf8"/>
+                            </linearGradient>
+                            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L8,3 L0,6 Z" fill="#64748b"/>
+                            </marker>
+                        </defs>
+
+                        <!-- Control plane -->
+                        <rect x="20" y="20" width="720" height="150" rx="14" fill="#111a30" stroke="#243049"/>
+                        <text x="40" y="46" fill="#7dd3fc" font-size="13" font-family="JetBrains Mono, monospace" letter-spacing="1">CONTROL PLANE</text>
+
+                        <rect x="44" y="60" width="180" height="90" rx="10" fill="#0f1830" stroke="#334155"/>
+                        <text x="134" y="92" fill="#e2e8f0" font-size="14" font-weight="600" text-anchor="middle" font-family="Inter, sans-serif">PahlevanPolicy</text>
+                        <text x="134" y="112" fill="#94a3b8" font-size="12" text-anchor="middle" font-family="Inter, sans-serif">CRD</text>
+                        <text x="134" y="130" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">CEL admission policy</text>
+
+                        <rect x="300" y="60" width="416" height="90" rx="10" fill="#0f1830" stroke="url(#accent)"/>
+                        <text x="508" y="88" fill="#e2e8f0" font-size="14" font-weight="600" text-anchor="middle" font-family="Inter, sans-serif">Operator &mdash; Deployment (leader-elected)</text>
+                        <text x="508" y="110" fill="#94a3b8" font-size="12" text-anchor="middle" font-family="Inter, sans-serif">hostUsers: false &middot; user namespace &middot; no host access</text>
+                        <text x="508" y="130" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">policy lifecycle &middot; status aggregation &middot; admission</text>
+
+                        <!-- Node -->
+                        <rect x="20" y="200" width="720" height="300" rx="14" fill="#111a30" stroke="#243049"/>
+                        <text x="40" y="226" fill="#7dd3fc" font-size="13" font-family="JetBrains Mono, monospace" letter-spacing="1">EACH NODE</text>
+
+                        <rect x="44" y="242" width="672" height="74" rx="10" fill="#0f1830" stroke="url(#accent)"/>
+                        <text x="380" y="272" fill="#e2e8f0" font-size="14" font-weight="600" text-anchor="middle" font-family="Inter, sans-serif">Agent &mdash; privileged DaemonSet</text>
+                        <text x="380" y="294" fill="#94a3b8" font-size="12" text-anchor="middle" font-family="Inter, sans-serif">loads &amp; attaches eBPF &middot; per-cgroup baselines &middot; local enforcement</text>
+
+                        <!-- Kernel -->
+                        <rect x="44" y="336" width="672" height="146" rx="10" fill="#0c1326" stroke="#334155" stroke-dasharray="4 4"/>
+                        <text x="64" y="360" fill="#a5b4fc" font-size="12" font-family="JetBrains Mono, monospace">Linux kernel &mdash; eBPF data plane</text>
+
+                        <rect x="64" y="374" width="200" height="92" rx="8" fill="#131f3d" stroke="#334155"/>
+                        <text x="164" y="400" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">raw_tracepoint/</text>
+                        <text x="164" y="416" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">sys_enter</text>
+                        <text x="164" y="440" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">observe all syscalls</text>
+                        <text x="164" y="456" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Inter, sans-serif">dedup per (cgroup, syscall)</text>
+
+                        <rect x="280" y="374" width="200" height="92" rx="8" fill="#131f3d" stroke="#334155"/>
+                        <text x="380" y="400" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/file_open</text>
+                        <text x="380" y="424" fill="#f0abfc" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">observe + DENY opens</text>
+                        <text x="380" y="440" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">bpf_d_path &middot; cgroup id</text>
+                        <text x="380" y="456" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Inter, sans-serif">EPERM on unlearned path</text>
+
+                        <rect x="496" y="374" width="200" height="92" rx="8" fill="#131f3d" stroke="#334155"/>
+                        <text x="596" y="400" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/socket_connect</text>
+                        <text x="596" y="424" fill="#f0abfc" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">observe + DENY egress</text>
+                        <text x="596" y="440" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">per-cgroup allow-set</text>
+                        <text x="596" y="456" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Inter, sans-serif">EPERM on unlearned dest</text>
+
+                        <!-- Connectors -->
+                        <line x1="224" y1="105" x2="298" y2="105" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+                        <line x1="508" y1="150" x2="508" y2="240" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+                        <text x="520" y="196" fill="#94a3b8" font-size="11" font-family="Inter, sans-serif">desired policy</text>
+                        <line x1="300" y1="230" x2="300" y2="150" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+                        <text x="150" y="196" fill="#64748b" font-size="11" font-family="Inter, sans-serif" text-anchor="end">learning / enforcement status</text>
+                    </svg>
+                </div>
+                <div class="arch-notes">
+                    <div class="arch-note">
+                        <h3>Agent &middot; DaemonSet (privileged)</h3>
+                        <p>
+                            Runs on every node and owns the eBPF data plane: loading and attaching CO-RE
+                            programs, building per-container baselines, and enforcing locally in the kernel.
+                        </p>
+                    </div>
+                    <div class="arch-note">
+                        <h3>Operator &middot; Deployment (leader-elected)</h3>
+                        <p>
+                            Requires no host access and runs in a user namespace (<code>hostUsers: false</code>),
+                            handling policy lifecycle, cluster-wide status aggregation, and CEL-based admission
+                            via a <code>ValidatingAdmissionPolicy</code> &mdash; no webhook.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section id="features" class="section features">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Features</span>
+                <h2>Built for enforcement, not just visibility</h2>
+            </div>
+            <div class="features-grid">
+                <article class="feature-card">
+                    <h3>Adaptive learning</h3>
+                    <p>Per-cgroup allow-sets built from observed file opens and egress destinations during a learning window.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>In-kernel file enforcement</h3>
+                    <p><code>lsm/file_open</code> denies unlearned opens with <code>EPERM</code>, resolving full paths via <code>bpf_d_path</code>.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>Egress enforcement</h3>
+                    <p><code>lsm/socket_connect</code> denies connections to destinations outside the learned allow-set.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>Full syscall observation</h3>
+                    <p>A <code>raw_tracepoint/sys_enter</code> sees every syscall, deduplicated in-kernel per <code>(cgroup, syscall)</code>.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>Generated seccomp profiles</h3>
+                    <p>A seccomp profile is generated from the learned syscall set &mdash; least privilege without hand-authoring.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>CO-RE eBPF</h3>
+                    <p>Compile-once / run-everywhere programs, portable across kernels without per-node compilation.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>Kubernetes-native</h3>
+                    <p>A <code>PahlevanPolicy</code> CRD drives a <code>selector &rarr; learn &rarr; enforce</code> lifecycle.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>Self-healing</h3>
+                    <p>Automatic policy rollback when enforcement disrupts a workload.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>Least-privilege control plane</h3>
+                    <p>The operator runs with <code>hostUsers: false</code> and needs no host access.</p>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <!-- HOW IT WORKS -->
+    <section id="how" class="section how">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Learn &rarr; enforce</span>
+                <h2>How it works</h2>
+            </div>
+            <ol class="steps">
+                <li class="step">
+                    <span class="step-num">1</span>
+                    <div>
+                        <h3>Select</h3>
+                        <p>A <code>PahlevanPolicy</code> selector matches target pods; the agent identifies their cgroups via <code>bpf_get_current_cgroup_id()</code>.</p>
+                    </div>
+                </li>
+                <li class="step">
+                    <span class="step-num">2</span>
+                    <div>
+                        <h3>Learn</h3>
+                        <p>During the learning window, every file a container opens (path resolved with <code>bpf_d_path</code>) and every egress destination is added to that cgroup's allow-set. Syscalls are observed in parallel.</p>
+                    </div>
+                </li>
+                <li class="step">
+                    <span class="step-num">3</span>
+                    <div>
+                        <h3>Transition</h3>
+                        <p>On <code>autoTransition</code> (or when you flip the mode), the policy moves to enforcement and a seccomp profile is generated from the learned syscalls.</p>
+                    </div>
+                </li>
+                <li class="step">
+                    <span class="step-num">4</span>
+                    <div>
+                        <h3>Enforce</h3>
+                        <p>An open of an unlearned path &mdash; or egress to an unlearned destination &mdash; is <strong>denied in-kernel with <code>EPERM</code></strong> before the operation completes.</p>
+                    </div>
+                </li>
+            </ol>
+        </div>
+    </section>
+
+    <!-- QUICK START -->
+    <section id="quickstart" class="section quickstart">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Quick Start</span>
+                <h2>Install, then apply an adaptive policy</h2>
+            </div>
+            <div class="qs-grid">
+                <div class="qs-col">
+                    <h3>1. Install the operator and node agents</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml</code></pre>
+                    </div>
+                    <h3>Or with Helm</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">helm repo add pahlevan https://obsernetics.github.io/pahlevan
+helm install pahlevan pahlevan/pahlevan-operator \
+  -n pahlevan-system --create-namespace</code></pre>
+                    </div>
+                    <h3>2. Watch it learn, then enforce</h3>
+                    <div class="code-block">
+                        <pre><code class="language-bash">kubectl get pahlevanpolicy nginx-security -w</code></pre>
+                    </div>
+                    <p class="qs-note">
+                        Start in <code>Monitoring</code>. Flip <code>enforcementConfig.mode</code> to
+                        <code>Blocking</code> once you trust the learned baseline to have denials enforced
+                        in the kernel.
+                    </p>
+                </div>
+                <div class="qs-col">
+                    <h3>Apply an adaptive policy</h3>
+                    <div class="code-block">
+                        <pre><code class="language-yaml">apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: nginx-security
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  learningConfig:
+    duration: 5m          # observe normal behavior
+    autoTransition: true  # then enforce automatically
+  enforcementConfig:
+    mode: Monitoring      # use Blocking to deny in-kernel
+  selfHealing:
+    enabled: true         # roll back if it breaks the workload</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- REQUIREMENTS / BENCHMARKS -->
+    <section id="requirements" class="section requirements">
+        <div class="container">
+            <div class="req-grid">
+                <div class="req-card">
+                    <h3>Requirements</h3>
+                    <ul>
+                        <li><strong>Kubernetes v1.24+</strong> &mdash; the user-namespace operator needs v1.30+.</li>
+                        <li><strong>Linux kernel 5.8+</strong> for observation (CO-RE, ring buffer, <code>CAP_BPF</code>).</li>
+                        <li><strong>Kernel 5.7+ with <code>CONFIG_BPF_LSM</code> and <code>lsm=bpf</code></strong> for in-kernel enforcement. Monitoring-only mode works without the BPF LSM.</li>
+                    </ul>
+                </div>
+                <div class="req-card">
+                    <h3>Benchmarks</h3>
+                    <p>
+                        Pahlevan ships a reproducible competitive benchmark harness (vs. Falco and Tetragon)
+                        built from real attack scenarios. Because enforcement requires the BPF LSM, the harness
+                        runs inside an eBPF-capable VM.
+                    </p>
+                    <p>
+                        Results are <strong>generated by the harness, not hand-written</strong> &mdash; no numbers
+                        are published until a run is committed.
+                    </p>
+                    <a class="btn btn-outline btn-sm" href="https://github.com/obsernetics/pahlevan/tree/main/docs/benchmarks" target="_blank" rel="noopener">Benchmark methodology &amp; results &#8599;</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="section cta">
+        <div class="container">
+            <div class="cta-box">
+                <h2>Stop watching. Start blocking.</h2>
+                <p>Learn what your workloads do, then enforce it in the kernel &mdash; without writing a single rule.</p>
+                <div class="hero-actions">
+                    <a href="https://github.com/obsernetics/pahlevan" class="btn btn-primary" target="_blank" rel="noopener">Get started on GitHub</a>
+                    <a href="#quickstart" class="btn btn-outline">Read the quick start</a>
+                </div>
+            </div>
+        </div>
+    </section>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <a href="#top" class="nav-brand">
+                        <img src="assets/pahlevan-icon.svg" alt="" class="footer-logo" aria-hidden="true">
+                        <span>Pahlevan</span>
+                    </a>
+                    <p>eBPF-powered runtime security for Kubernetes. Self-learning workload baselines, enforced in-kernel &mdash; no hand-written rules.</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-section">
+                        <h4>Project</h4>
+                        <a href="https://github.com/obsernetics/pahlevan" target="_blank" rel="noopener">GitHub</a>
+                        <a href="https://github.com/obsernetics/pahlevan/releases" target="_blank" rel="noopener">Releases</a>
+                        <a href="https://github.com/obsernetics/pahlevan/blob/main/LICENSE" target="_blank" rel="noopener">License (Apache 2.0)</a>
+                    </div>
+                    <div class="footer-section">
+                        <h4>Docs</h4>
+                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs" target="_blank" rel="noopener">Documentation</a>
+                        <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/architecture.md" target="_blank" rel="noopener">Architecture</a>
+                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs/benchmarks" target="_blank" rel="noopener">Benchmarks</a>
+                    </div>
+                    <div class="footer-section">
+                        <h4>Community</h4>
+                        <a href="https://github.com/obsernetics/pahlevan/issues" target="_blank" rel="noopener">Issues</a>
+                        <a href="https://github.com/obsernetics/pahlevan/discussions" target="_blank" rel="noopener">Discussions</a>
+                        <a href="https://github.com/obsernetics/pahlevan/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing</a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; <span id="year">2026</span> Pahlevan &middot; Licensed under Apache 2.0</p>
+                <p class="footer-tagline">Learn the baseline. Block the deviation.</p>
+            </div>
+        </div>
+    </footer>
 
     <!-- Scripts -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    <script src="assets/js/main.js"></script>
+    <script src="assets/js/main.js?v=3"></script>
 </body>
 </html>

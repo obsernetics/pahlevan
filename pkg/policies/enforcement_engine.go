@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -747,7 +748,7 @@ func (ee *EnforcementEngine) processEnforcementAction(action *EnforcementAction)
 	}
 }
 
-// Placeholder implementations for complex methods
+// Policy generation and enforcement helpers.
 func (ee *EnforcementEngine) generateSyscallPolicy(profile *learner.LearningProfile, policy *policyv1alpha1.PahlevanPolicy) *SyscallEnforcementPolicy {
 	log.Log.Info("Generating syscall policy", "containerID", profile.ContainerID)
 
@@ -907,14 +908,85 @@ func (ee *EnforcementEngine) generateFilePolicy(
 	profile *learner.LearningProfile,
 	policy *policyv1alpha1.PahlevanPolicy,
 ) (*FileEnforcementPolicy, error) {
+	allowedPaths := make(map[string]*FileRule)
+	deniedPaths := make(map[string]*FileRule)
+
+	// Build the allow-set from what was actually observed during learning.
+	if profile != nil {
+		for path, fp := range profile.AllowedFilePaths {
+			if path == "" {
+				continue
+			}
+			rule := &FileRule{
+				PathPattern: path,
+				AccessModes: append([]string(nil), fp.AllowedModes...),
+				Action:      PolicyActionAllow,
+				FileTypes:   append([]string(nil), fp.FileTypes...),
+			}
+			if fp.MaxSize > 0 {
+				maxSize := fp.MaxSize
+				rule.MaxSize = &maxSize
+			}
+			allowedPaths[path] = rule
+		}
+	}
+
+	// Overlay explicit policy rules.
+	if policy != nil && policy.Spec.FilePolicy != nil {
+		spec := policy.Spec.FilePolicy
+		for _, p := range spec.AllowedPaths {
+			ensureFileRule(allowedPaths, p, "read")
+		}
+		for _, p := range spec.ReadOnlyPaths {
+			ensureFileRule(allowedPaths, p, "read")
+		}
+		for _, p := range spec.WriteAllowedPaths {
+			ensureFileRule(allowedPaths, p, "read", "write")
+		}
+		for _, p := range spec.DeniedPaths {
+			delete(allowedPaths, p)
+			deniedPaths[p] = &FileRule{PathPattern: p, Action: PolicyActionDeny}
+		}
+	}
+
+	defaultAction := PolicyActionDeny
+	if policy != nil && policy.Spec.FilePolicy != nil && policy.Spec.FilePolicy.DefaultAction != "" {
+		defaultAction = PolicyAction(policy.Spec.FilePolicy.DefaultAction)
+	}
+
 	return &FileEnforcementPolicy{
-		AllowedPaths:     make(map[string]*FileRule),
-		DeniedPaths:      make(map[string]*FileRule),
-		DefaultAction:    PolicyActionDeny,
+		AllowedPaths:     allowedPaths,
+		DeniedPaths:      deniedPaths,
+		DefaultAction:    defaultAction,
 		PathPatterns:     make([]*PathPattern, 0),
 		AccessModeRules:  make(map[string]*AccessModeRule),
 		SizeRestrictions: make(map[string]*SizeRestriction),
 	}, nil
+}
+
+// ensureFileRule creates or augments an allow rule for a path with the given
+// access modes, avoiding duplicate modes.
+func ensureFileRule(paths map[string]*FileRule, path string, modes ...string) {
+	if path == "" {
+		return
+	}
+	rule, ok := paths[path]
+	if !ok {
+		rule = &FileRule{PathPattern: path, Action: PolicyActionAllow}
+		paths[path] = rule
+	}
+	for _, m := range modes {
+		found := false
+		for _, existing := range rule.AccessModes {
+			if existing == m {
+				found = true
+				break
+			}
+		}
+		if !found {
+			rule.AccessModes = append(rule.AccessModes, m)
+		}
+	}
 }
 
 func (ee *EnforcementEngine) calculatePolicyQuality(policy *GeneratedPolicy, profile *learner.LearningProfile) PolicyQuality {
@@ -1262,6 +1334,7 @@ func (ee *EnforcementEngine) updateExistingPolicy(containerID string) error {
 	}
 
 	ee.mu.Lock()
+	ee.rememberPreviousPolicy(state, newPolicy)
 	state.GeneratedPolicy = newPolicy
 	state.LastPolicyUpdate = time.Now()
 	state.Statistics.PolicyGenerationCount++
@@ -1364,8 +1437,10 @@ func (ee *EnforcementEngine) tightenPolicy(containerID string, violation *Policy
 		return fmt.Errorf("failed to apply tightened policy: %v", err)
 	}
 
-	// Update container state
+	// Update container state, preserving the prior policy so a subsequent
+	// self-healing rollback has a concrete target to restore.
 	ee.mu.Lock()
+	ee.rememberPreviousPolicy(state, tightenedPolicy)
 	state.GeneratedPolicy = tightenedPolicy
 	state.LastPolicyUpdate = time.Now()
 	state.Statistics.SelfHealingActionCount++
@@ -1373,6 +1448,18 @@ func (ee *EnforcementEngine) tightenPolicy(containerID string, violation *Policy
 
 	log.Log.Info("Policy tightened successfully", "containerID", containerID)
 	return nil
+}
+
+// rememberPreviousPolicy records the current policy as the rollback target
+// before a new policy replaces it. It is a no-op when self-healing is disabled.
+func (ee *EnforcementEngine) rememberPreviousPolicy(state *ContainerPolicyState, newPolicy *GeneratedPolicy) {
+	if state == nil || state.SelfHealingState == nil {
+		return
+	}
+	if state.GeneratedPolicy != nil && state.GeneratedPolicy != newPolicy {
+		state.SelfHealingState.PreviousPolicy = state.GeneratedPolicy
+	}
+	state.SelfHealingState.CurrentPolicy = newPolicy
 }
 
 func (ee *EnforcementEngine) createTightenedPolicy(original *GeneratedPolicy, violation *PolicyViolation) *GeneratedPolicy {
@@ -1385,74 +1472,183 @@ func (ee *EnforcementEngine) createTightenedPolicy(original *GeneratedPolicy, vi
 		Confidence:     original.Confidence * 0.9, // Reduce confidence after tightening
 	}
 
-	// Copy and tighten syscall policy
+	// Derive the learned baseline allow-sets so tightening narrows the current
+	// policy toward what was actually observed during learning, rather than
+	// copying it verbatim.
+	baselineSyscalls := map[uint64]bool{}
+	baselinePaths := map[string]bool{}
+	baselineFlows := map[string]bool{} // key: "<direction>/<protocol>"
+	if original.BasedOnProfile != nil {
+		for nr := range original.BasedOnProfile.AllowedSyscalls {
+			baselineSyscalls[nr] = true
+		}
+		for p := range original.BasedOnProfile.AllowedFilePaths {
+			baselinePaths[p] = true
+		}
+		for _, f := range original.BasedOnProfile.AllowedNetworkFlows {
+			baselineFlows[flowKey(f.Direction, f.Protocol)] = true
+		}
+	}
+
+	// --- Syscall tightening ---
 	if original.SyscallPolicy != nil {
-		tightened.SyscallPolicy = &SyscallEnforcementPolicy{
+		violatingSyscall, hasViolatingSyscall := ee.violationSyscallNr(violation)
+		newSyscall := &SyscallEnforcementPolicy{
 			AllowedSyscalls:      make(map[uint64]*SyscallRule),
 			DeniedSyscalls:       make(map[uint64]*SyscallRule),
-			DefaultAction:        PolicyActionDeny, // More restrictive default
-			ContextRules:         make(map[string]*ContextRule),
-			ArgumentValidation:   make(map[uint64]*ArgumentRule),
-			ReturnCodeValidation: make(map[uint64]*ReturnCodeRule),
+			DefaultAction:        PolicyActionDeny,
+			ContextRules:         original.SyscallPolicy.ContextRules,
+			ArgumentValidation:   original.SyscallPolicy.ArgumentValidation,
+			ReturnCodeValidation: original.SyscallPolicy.ReturnCodeValidation,
 		}
 
-		// Copy allowed syscalls, potentially removing the violating one
+		hasBaseline := len(baselineSyscalls) > 0
 		for syscall, rule := range original.SyscallPolicy.AllowedSyscalls {
-			if violation.ViolationType == ViolationTypeSyscall {
-				// Remove or restrict the violating syscall
+			// Drop the specific syscall that triggered the violation.
+			if hasViolatingSyscall && syscall == violatingSyscall {
 				continue
 			}
-			tightened.SyscallPolicy.AllowedSyscalls[syscall] = rule
+			// Narrow the allow-set to the learned baseline when one exists.
+			if hasBaseline && !baselineSyscalls[syscall] {
+				continue
+			}
+			newSyscall.AllowedSyscalls[syscall] = rule
 		}
 
-		// Copy denied syscalls and add the violating one if applicable
 		for syscall, rule := range original.SyscallPolicy.DeniedSyscalls {
-			tightened.SyscallPolicy.DeniedSyscalls[syscall] = rule
+			newSyscall.DeniedSyscalls[syscall] = rule
 		}
-
-		if violation.ViolationType == ViolationTypeSyscall {
-			// Parse syscall number from resource if available
-			syscallNr := uint64(999) // Default to unknown syscall
-			tightened.SyscallPolicy.DeniedSyscalls[syscallNr] = &SyscallRule{
-				SyscallNr: syscallNr,
-				Action:    PolicyActionDeny,
+		if hasViolatingSyscall {
+			newSyscall.DeniedSyscalls[violatingSyscall] = &SyscallRule{
+				SyscallNr:   violatingSyscall,
+				Action:      PolicyActionDeny,
+				Criticality: learner.CriticalityHigh,
 			}
 		}
+		tightened.SyscallPolicy = newSyscall
 	}
 
-	// Copy network policy (potentially tighten based on violation type)
+	// --- Network tightening ---
 	if original.NetworkPolicy != nil {
-		tightened.NetworkPolicy = &NetworkEnforcementPolicy{
-			EgressRules:          original.NetworkPolicy.EgressRules,
-			IngressRules:         original.NetworkPolicy.IngressRules,
-			DefaultEgressAction:  PolicyActionDeny, // More restrictive
-			DefaultIngressAction: PolicyActionDeny, // More restrictive
+		newNet := &NetworkEnforcementPolicy{
+			DefaultEgressAction:  PolicyActionDeny,
+			DefaultIngressAction: PolicyActionDeny,
+			FlowLimits:           original.NetworkPolicy.FlowLimits,
+			BandwidthLimits:      original.NetworkPolicy.BandwidthLimits,
 		}
+		hasFlowBaseline := len(baselineFlows) > 0
+		for _, rule := range original.NetworkPolicy.EgressRules {
+			if hasFlowBaseline && !baselineFlows[flowKey("outbound", rule.Protocol)] {
+				continue
+			}
+			newNet.EgressRules = append(newNet.EgressRules, rule)
+		}
+		for _, rule := range original.NetworkPolicy.IngressRules {
+			if hasFlowBaseline && !baselineFlows[flowKey("inbound", rule.Protocol)] {
+				continue
+			}
+			newNet.IngressRules = append(newNet.IngressRules, rule)
+		}
+		tightened.NetworkPolicy = newNet
 	}
 
-	// Copy file policy
+	// --- File tightening ---
 	if original.FilePolicy != nil {
-		tightened.FilePolicy = original.FilePolicy // Simple copy for now
+		violatingPath := ""
+		if violation != nil && violation.ViolationType == ViolationTypeFile {
+			violatingPath = violation.Details.Resource
+			if violatingPath == "" {
+				violatingPath = violation.Details.AttemptedAction
+			}
+		}
+		newFile := &FileEnforcementPolicy{
+			AllowedPaths:     make(map[string]*FileRule),
+			DeniedPaths:      make(map[string]*FileRule),
+			DefaultAction:    PolicyActionDeny,
+			PathPatterns:     original.FilePolicy.PathPatterns,
+			AccessModeRules:  original.FilePolicy.AccessModeRules,
+			SizeRestrictions: original.FilePolicy.SizeRestrictions,
+		}
+		hasPathBaseline := len(baselinePaths) > 0
+		for path, rule := range original.FilePolicy.AllowedPaths {
+			if violatingPath != "" && path == violatingPath {
+				continue
+			}
+			if hasPathBaseline && !baselinePaths[path] {
+				continue
+			}
+			newFile.AllowedPaths[path] = rule
+		}
+		for path, rule := range original.FilePolicy.DeniedPaths {
+			newFile.DeniedPaths[path] = rule
+		}
+		if violatingPath != "" {
+			newFile.DeniedPaths[violatingPath] = &FileRule{PathPattern: violatingPath, Action: PolicyActionDeny}
+		}
+		tightened.FilePolicy = newFile
 	}
 
 	return tightened
 }
 
-func (ee *EnforcementEngine) increaseMonitoring(containerID string) error {
-	log.Log.Info("Increasing monitoring for container", "containerID", containerID)
+// flowKey builds a normalized key for a network flow direction/protocol pair.
+func flowKey(direction, protocol string) string {
+	return strings.ToLower(direction) + "/" + strings.ToLower(protocol)
+}
 
-	// This would typically involve:
-	// 1. Increasing eBPF sampling rate
-	// 2. Enabling additional monitoring features
-	// 3. Setting up alerting for future violations
-
-	// For now, just update statistics
-	ee.mu.Lock()
-	if state, exists := ee.containerPolicies[containerID]; exists {
-		state.Statistics.EnforcementActionCount++
+// violationSyscallNr extracts the syscall number implicated by a syscall
+// violation, resolving either a decimal number or a known syscall name from the
+// violation details. The bool reports whether a syscall could be resolved.
+func (ee *EnforcementEngine) violationSyscallNr(v *PolicyViolation) (uint64, bool) {
+	if v == nil || v.ViolationType != ViolationTypeSyscall {
+		return 0, false
 	}
+	for _, candidate := range []string{v.Details.AttemptedAction, v.Details.Resource, v.Details.ExpectedAction} {
+		if nr, ok := knownSyscallNumber(candidate); ok {
+			return nr, true
+		}
+	}
+	return 0, false
+}
+
+func (ee *EnforcementEngine) increaseMonitoring(containerID string) error {
+	ee.mu.Lock()
+	state, exists := ee.containerPolicies[containerID]
+	if !exists {
+		ee.mu.Unlock()
+		return fmt.Errorf("container %s not found", containerID)
+	}
+
+	// Escalate the enforcement posture one notch toward blocking so repeated
+	// high-severity violations receive progressively stricter handling.
+	previousMode := state.EnforcementMode
+	switch state.EnforcementMode {
+	case EnforcementModeOff, EnforcementModeLearning, "":
+		state.EnforcementMode = EnforcementModeMonitoring
+	case EnforcementModeMonitoring:
+		state.EnforcementMode = EnforcementModeBlocking
+	}
+
+	state.Statistics.EnforcementActionCount++
+	state.Statistics.LastViolationTime = time.Now()
 	ee.mu.Unlock()
 
+	// Regenerate the policy so tightened enforcement reflects current behavior.
+	ee.queueEnforcementAction(&EnforcementAction{
+		Type:        ActionTypeUpdatePolicy,
+		ContainerID: containerID,
+		Timestamp:   time.Now(),
+		Priority:    ActionPriorityHigh,
+	})
+
+	if ee.enforcementActionCounter != nil {
+		ee.enforcementActionCounter.Add(context.Background(), 1)
+	}
+
+	log.Log.Info("Increased monitoring for container",
+		"containerID", containerID,
+		"previousMode", previousMode,
+		"newMode", state.EnforcementMode)
 	return nil
 }
 
@@ -1521,125 +1717,175 @@ func (ee *EnforcementEngine) adjustPolicyThresholds(containerID string) error {
 func (ee *EnforcementEngine) rollbackPolicy(containerID string) error {
 	log.Log.Info("Rolling back policy for self-healing", "containerID", containerID)
 
-	// This would typically restore a previous known-good policy version
-	// For now, just mark that a rollback occurred
 	ee.mu.Lock()
-	if state, exists := ee.containerPolicies[containerID]; exists {
-		state.Statistics.SelfHealingActionCount++
-		state.Statistics.SelfHealingActionCount++
-	}
-	ee.mu.Unlock()
+	defer ee.mu.Unlock()
 
+	state, exists := ee.containerPolicies[containerID]
+	if !exists {
+		return fmt.Errorf("container %s not found", containerID)
+	}
+	if state.SelfHealingState == nil {
+		return fmt.Errorf("self-healing not enabled for container %s", containerID)
+	}
+
+	previous := state.SelfHealingState.PreviousPolicy
+	if previous == nil {
+		return fmt.Errorf("no previous policy available to roll back to for container %s", containerID)
+	}
+
+	// Restore the previous policy in the data plane (best-effort when the eBPF
+	// manager is available).
+	if ee.ebpfManager != nil {
+		if err := ee.applyPolicyToEBPF(containerID, previous); err != nil {
+			return fmt.Errorf("failed to restore previous policy for container %s: %w", containerID, err)
+		}
+	}
+
+	// Swap current<->previous so state stays consistent, and record real
+	// self-healing statistics.
+	rolledBackFrom := state.GeneratedPolicy
+	state.GeneratedPolicy = previous
+	state.SelfHealingState.CurrentPolicy = previous
+	state.SelfHealingState.PreviousPolicy = rolledBackFrom
+	state.LastPolicyUpdate = time.Now()
+	state.SelfHealingState.RollbackCount++
+	state.SelfHealingState.LastRollbackTime = time.Now()
+	state.SelfHealingState.ViolationCount = 0 // reset the recovery window
+	state.Statistics.SelfHealingActionCount++
+
+	if ee.selfHealingCounter != nil {
+		ee.selfHealingCounter.Add(context.Background(), 1)
+	}
+
+	restoredVersion := 0
+	if previous != nil {
+		restoredVersion = previous.Version
+	}
+	log.Log.Info("Rolled back to previous policy",
+		"containerID", containerID,
+		"restoredVersion", restoredVersion,
+		"rollbackCount", state.SelfHealingState.RollbackCount)
 	return nil
+}
+
+// linuxSyscallNames is a comprehensive syscall name-to-number mapping (Linux x86_64).
+var linuxSyscallNames = map[string]uint64{
+	// File operations
+	"read":       0,
+	"write":      1,
+	"open":       2,
+	"close":      3,
+	"lseek":      8,
+	"mmap":       9,
+	"mprotect":   10,
+	"munmap":     11,
+	"ioctl":      16,
+	"pread64":    17,
+	"pwrite64":   18,
+	"readv":      19,
+	"writev":     20,
+	"access":     21,
+	"pipe":       22,
+	"sendfile":   40,
+	"openat":     257,
+	"mkdirat":    258,
+	"mknodat":    259,
+	"fchownat":   260,
+	"futimesat":  261,
+	"newfstatat": 262,
+	"unlinkat":   263,
+	"renameat":   264,
+	"linkat":     265,
+	"symlinkat":  266,
+	"readlinkat": 267,
+	"fchmodat":   268,
+	"faccessat":  269,
+
+	// Network operations
+	"socket":      41,
+	"connect":     42,
+	"accept":      43,
+	"sendto":      44,
+	"recvfrom":    45,
+	"sendmsg":     46,
+	"recvmsg":     47,
+	"shutdown":    48,
+	"bind":        49,
+	"listen":      50,
+	"getsockname": 51,
+	"getpeername": 52,
+	"socketpair":  53,
+	"setsockopt":  54,
+	"getsockopt":  55,
+	"accept4":     288,
+
+	// Process operations
+	"clone":   56,
+	"fork":    57,
+	"vfork":   58,
+	"execve":  59,
+	"exit":    60,
+	"wait4":   61,
+	"kill":    62,
+	"getpid":  39,
+	"getppid": 110,
+	"getpgrp": 111,
+	"setsid":  112,
+	"setpgid": 109,
+
+	// Memory management
+	"brk":     12,
+	"mremap":  25,
+	"msync":   26,
+	"mincore": 27,
+	"madvise": 28,
+
+	// Security/capabilities
+	"chown":    92,
+	"fchown":   93,
+	"lchown":   94,
+	"chmod":    90,
+	"fchmod":   91,
+	"umask":    95,
+	"setuid":   105,
+	"getuid":   102,
+	"setgid":   106,
+	"getgid":   104,
+	"setreuid": 113,
+	"setregid": 114,
+
+	// Dangerous syscalls
+	"ptrace":            101,
+	"mount":             165,
+	"umount2":           166,
+	"uselib":            134,
+	"init_module":       175,
+	"delete_module":     176,
+	"process_vm_readv":  310,
+	"process_vm_writev": 311,
+	"finit_module":      313,
+}
+
+// knownSyscallNumber resolves a syscall reference (a decimal number or a known
+// Linux x86_64 syscall name) to its number. The bool reports whether the value
+// could be resolved deterministically (i.e. without falling back to a hash).
+func knownSyscallNumber(ref string) (uint64, bool) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return 0, false
+	}
+	if val, err := strconv.ParseUint(ref, 10, 64); err == nil {
+		return val, true
+	}
+	if val, exists := linuxSyscallNames[strings.ToLower(ref)]; exists {
+		return val, true
+	}
+	return 0, false
 }
 
 // Helper method to parse syscall names (can be names or numbers)
 func (ee *EnforcementEngine) parseSyscallName(syscallName string) uint64 {
-	// Comprehensive syscall name-to-number mapping (Linux x86_64)
-	syscallMap := map[string]uint64{
-		// File operations
-		"read":       0,
-		"write":      1,
-		"open":       2,
-		"close":      3,
-		"lseek":      8,
-		"mmap":       9,
-		"mprotect":   10,
-		"munmap":     11,
-		"ioctl":      16,
-		"pread64":    17,
-		"pwrite64":   18,
-		"readv":      19,
-		"writev":     20,
-		"access":     21,
-		"pipe":       22,
-		"sendfile":   40,
-		"openat":     257,
-		"mkdirat":    258,
-		"mknodat":    259,
-		"fchownat":   260,
-		"futimesat":  261,
-		"newfstatat": 262,
-		"unlinkat":   263,
-		"renameat":   264,
-		"linkat":     265,
-		"symlinkat":  266,
-		"readlinkat": 267,
-		"fchmodat":   268,
-		"faccessat":  269,
-
-		// Network operations
-		"socket":      41,
-		"connect":     42,
-		"accept":      43,
-		"sendto":      44,
-		"recvfrom":    45,
-		"sendmsg":     46,
-		"recvmsg":     47,
-		"shutdown":    48,
-		"bind":        49,
-		"listen":      50,
-		"getsockname": 51,
-		"getpeername": 52,
-		"socketpair":  53,
-		"setsockopt":  54,
-		"getsockopt":  55,
-		"accept4":     288,
-
-		// Process operations
-		"clone":   56,
-		"fork":    57,
-		"vfork":   58,
-		"execve":  59,
-		"exit":    60,
-		"wait4":   61,
-		"kill":    62,
-		"getpid":  39,
-		"getppid": 110,
-		"getpgrp": 111,
-		"setsid":  112,
-		"setpgid": 109,
-
-		// Memory management
-		"brk":     12,
-		"mremap":  25,
-		"msync":   26,
-		"mincore": 27,
-		"madvise": 28,
-
-		// Security/capabilities
-		"chown":    92,
-		"fchown":   93,
-		"lchown":   94,
-		"chmod":    90,
-		"fchmod":   91,
-		"umask":    95,
-		"setuid":   105,
-		"getuid":   102,
-		"setgid":   106,
-		"getgid":   104,
-		"setreuid": 113,
-		"setregid": 114,
-
-		// Dangerous syscalls
-		"ptrace":            101,
-		"mount":             165,
-		"umount2":           166,
-		"uselib":            134,
-		"init_module":       175,
-		"delete_module":     176,
-		"process_vm_readv":  310,
-		"process_vm_writev": 311,
-		"finit_module":      313,
-	}
-
-	// Try parsing as a number first
-	if val, err := strconv.ParseUint(syscallName, 10, 64); err == nil {
-		return val
-	}
-
-	// Look up by name
-	if val, exists := syscallMap[syscallName]; exists {
+	if val, ok := knownSyscallNumber(syscallName); ok {
 		return val
 	}
 

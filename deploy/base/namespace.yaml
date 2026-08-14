@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan
+    app.kubernetes.io/part-of: pahlevan
+    # Pod Security Admission: the agent runs privileged (eBPF), so the namespace
+    # is labelled privileged. Workloads Pahlevan protects live in their own
+    # namespaces and are unaffected by this.
+    pod-security.kubernetes.io/enforce: privileged

@@ -1,0 +1,14 @@
+# Large / secret VM artifacts must never be committed.
+# The scripts regenerate everything from scratch. The default cache dir is the
+# repo-root .vmcache/ (ignored via the repo-root .gitignore); these patterns
+# additionally cover artifacts if the cache is ever pointed under hack/vm/.
+*.img
+*.qcow2
+*.iso
+*.pid
+*.log
+*.sock
+id_ed25519
+id_ed25519.pub
+user-data
+meta-data

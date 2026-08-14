@@ -1,309 +1,152 @@
 //go:build ignore
 
 /*
- * File Access Monitoring eBPF Program
+ * File access monitoring (CO-RE) via the BPF LSM file_open hook.
  *
- * Copyright 2025.
+ * The LSM hook sees every file open with the resolved struct file, which lets us
+ * capture the full path (bpf_d_path) and — in enforcement mode later — DENY by
+ * returning -EPERM. That is strictly stronger than tracepoints, which cannot
+ * block. Requires a kernel with BPF LSM active (lsm=...,bpf).
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions
- * and limitations under the License.
+ * Copyright 2025. Licensed under the Apache License, Version 2.0.
  */
 
-#include "types.h"
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-// File operation constants
-#define O_RDONLY  0x00000000
-#define O_WRONLY  0x00000001
-#define O_RDWR    0x00000002
+char LICENSE[] SEC("license") = "GPL";
 
-/* File access permission masks */
-#define MAY_EXEC    0x00000001
-#define MAY_WRITE   0x00000002
-#define MAY_READ    0x00000004
-#define MAY_APPEND  0x00000008
-#define MAY_ACCESS  0x00000010
-#define MAY_OPEN    0x00000020
-#define MAY_CHDIR   0x00000040
+#define PATH_MAX_LEN 128
 
-/* --------------------------------------------------------------------------
- * Data Structures
- * -------------------------------------------------------------------------- */
-
-/* File access event metadata */
-struct file_access_event {
-    __u32 pid;              /* Process ID */
-    __u32 tid;              /* Thread ID */
-    __u32 operation;        /* 0 = read, 1 = write, 2 = open, 3 = close */
-    char  filename[256];    /* Target filename (simplified) */
-    __u32 container_id;     /* Simplified container identifier */
-    __u64 timestamp_ns;     /* Nanosecond timestamp */
-    __u32 access_mode;      /* Access mode flags (if available) */
+struct file_event {
+	__u64 cgroup_id;
+	__u64 timestamp_ns;
+	__u32 pid; /* tgid */
+	__u32 uid;
+	__u32 gid;
+	__u32 flags; /* file->f_flags */
+	__u8  comm[16];
+	__u8  path[PATH_MAX_LEN];
 };
 
-/* File access policy per container */
-struct file_access_policy {
-    __u32 container_id;     /* Container identifier */
-    __u32 learning_mode;    /* 1 = learning mode, 0 = enforcement */
-    char  allowed_paths[1024][64]; /* Whitelisted paths (simplified) */
-    __u32 path_count;       /* Number of valid entries in allowed_paths */
-    __u64 last_update_ns;   /* Last update timestamp */
-};
-
-/* --------------------------------------------------------------------------
- * Maps
- * -------------------------------------------------------------------------- */
-
-/* Container → file access policy */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u32);
-    __type(value, struct file_access_policy);
-    __uint(max_entries, 10000);
-} file_policies SEC(".maps");
-
-/* Perf event array for user-space notification */
-struct {
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-    __type(key, __u32);
-    __type(value, __u32);
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1 << 24);
 } file_events SEC(".maps");
 
-/* --------------------------------------------------------------------------
- * Helper Functions
- * -------------------------------------------------------------------------- */
+/* The learned allow-set: key = cgroup_id ^ FNV(path). During learning this is
+ * auto-populated by the kernel; during enforcement, an open whose (cgroup, path)
+ * is absent is denied. This IS the adaptive policy — no hand-written rules. */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 1 << 20);
+} file_allowed SEC(".maps");
 
-/**
- * Resolve container identifier for the current process using cgroup information.
- * Uses a combination of PID namespace and cgroup hash for better uniqueness.
- */
-static __always_inline __u32 get_container_id(void) {
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    if (!task) {
-        return 0;
-    }
+/* Per-cgroup enforcement mode: absent/0 = learning, 1 = enforcing. Userspace
+ * flips a cgroup to enforcing when its learning window closes. */
+#define MODE_LEARN   0
+#define MODE_ENFORCE 1
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 1 << 16);
+} file_mode SEC(".maps");
 
-    // Simplified container identification using PID and TGID
-    __u32 pid_ns_inum = 0;
+struct fconfig {
+	__u8 disabled;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, struct fconfig);
+	__uint(max_entries, 1);
+} file_config SEC(".maps");
 
-    // If we can't get namespace info, fall back to PID-based approach
-    if (pid_ns_inum == 0) {
-        __u32 pid = bpf_get_current_pid_tgid() >> 32;
-        __u32 tgid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
-
-        // Create a better hash using both PID and TGID
-        __u32 hash = pid ^ (tgid << 16);
-        return hash % 65536;  // Expanded range for better distribution
-    }
-
-    // Use namespace inode number as container ID
-    return pid_ns_inum;
+static __always_inline int enabled(void)
+{
+	__u32 k = 0;
+	struct fconfig *c = bpf_map_lookup_elem(&file_config, &k);
+	return !c || c->disabled == 0;
 }
 
-/**
- * Determine whether a file access is permitted under the current policy.
- *
- * @param container_id Container identifier
- * @param path         Path being accessed
- * @return 1 if access is allowed, 0 if denied
- */
-static __always_inline int is_file_access_allowed(__u32 container_id, const char *path) {
-    struct file_access_policy *policy = bpf_map_lookup_elem(&file_policies, &container_id);
-    if (!policy) {
-        return 1; /* Allow when no policy is defined */
-    }
-
-    if (policy->learning_mode) {
-        /* Learning mode: record activity, always allow */
-        return 1;
-    }
-
-    /* Enforcement mode: check if file path is allowed */
-    /* Note: Path checking simplified due to complexity of bpf_d_path usage */
-
-    /* Simplified path checking - in a real implementation this would use bpf_d_path */
-    /* For now, allow all access in enforcement mode */
-
-    /* Default: allow access for now (simplified implementation) */
-    return 1;
+/* FNV-1a over the path for the dedup key. */
+static __always_inline __u64 hash_path(const __u8 *p, int n)
+{
+	__u64 h = 1469598103934665603ULL;
+	for (int i = 0; i < n; i++) {
+		if (p[i] == 0)
+			break;
+		h ^= p[i];
+		h *= 1099511628211ULL;
+	}
+	return h;
 }
 
-/* --------------------------------------------------------------------------
- * LSM Hooks (Linux Security Module)
- * -------------------------------------------------------------------------- */
-
-/**
- * LSM hook: file_open
- * Monitors file open operations at the security layer
- */
 SEC("lsm/file_open")
-int BPF_PROG(lsm_file_open, struct file *file) {
-    struct file_access_event evt = {};
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
+int BPF_PROG(file_open, struct file *file)
+{
+	if (!enabled())
+		return 0;
 
-    evt.pid          = pid_tgid >> 32;
-    evt.tid          = pid_tgid & 0xffffffff;
-    evt.operation    = 2; /* open */
-    evt.timestamp_ns = bpf_ktime_get_ns();
-    evt.container_id = get_container_id();
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 tgid = pid_tgid >> 32;
+	if (tgid == 0)
+		return 0;
 
-    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
-    /* Simplified filename handling - in real implementation would use bpf_d_path */
-    bpf_probe_read_str(evt.filename, sizeof(evt.filename), "file_open");
+	__u64 cgroup_id = bpf_get_current_cgroup_id();
 
-    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
-        bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-        return -EACCES; /* Access denied */
-    }
+	struct file_event *e = bpf_ringbuf_reserve(&file_events, sizeof(*e), 0);
+	if (!e)
+		return 0;
 
-    /* Record file access for learning */
-    bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-    return 0;
+	e->cgroup_id = cgroup_id;
+	e->timestamp_ns = bpf_ktime_get_ns();
+	e->pid = tgid;
+	__u64 uid_gid = bpf_get_current_uid_gid();
+	e->uid = (__u32)uid_gid;
+	e->gid = (__u32)(uid_gid >> 32);
+	e->flags = BPF_CORE_READ(file, f_flags);
+	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+	/* Resolve the path. bpf_d_path is permitted on security_file_open. */
+	long n = bpf_d_path((struct path *)&file->f_path, (char *)e->path, sizeof(e->path));
+	if (n < 0)
+		e->path[0] = 0;
+
+	__u64 phash = hash_path(e->path, sizeof(e->path));
+	__u64 key = cgroup_id ^ phash;
+
+	/* Enforcement mode for this cgroup (default: learning). */
+	__u8 *modep = bpf_map_lookup_elem(&file_mode, &cgroup_id);
+	__u8 mode = modep ? *modep : MODE_LEARN;
+
+	__u8 *known = bpf_map_lookup_elem(&file_allowed, &key);
+
+	if (mode == MODE_ENFORCE) {
+		if (known) {
+			/* In the learned allow-set: permit silently. */
+			bpf_ringbuf_discard(e, 0);
+			return 0;
+		}
+		/* Not learned -> DENY in-kernel and report the violation. */
+		e->flags |= 0x80000000; /* denied marker for userspace */
+		bpf_ringbuf_submit(e, 0);
+		return -1; /* -EPERM: the open fails */
+	}
+
+	/* Learning mode: record the path in the allow-set; emit only the first time
+	 * each (cgroup, path) is seen so userspace learns the file set cheaply. */
+	if (known) {
+		bpf_ringbuf_discard(e, 0);
+		return 0;
+	}
+	__u8 one = 1;
+	bpf_map_update_elem(&file_allowed, &key, &one, BPF_ANY);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
 }
-
-/**
- * LSM hook: file_permission
- * Monitors file permission checks
- */
-SEC("lsm/file_permission")
-int BPF_PROG(lsm_file_permission, struct file *file, int mask) {
-    struct file_access_event evt = {};
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-
-    evt.pid          = pid_tgid >> 32;
-    evt.tid          = pid_tgid & 0xffffffff;
-    evt.operation    = (mask & MAY_WRITE) ? 1 : 0; /* write : read */
-    evt.timestamp_ns = bpf_ktime_get_ns();
-    evt.container_id = get_container_id();
-    evt.access_mode  = mask;
-
-    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
-    /* Simplified filename handling - in real implementation would use bpf_d_path */
-    bpf_probe_read_str(evt.filename, sizeof(evt.filename), "file_open");
-
-    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
-        bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-        return -EACCES;
-    }
-
-    /* Record permission check for learning */
-    bpf_perf_event_output(file, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-    return 0;
-}
-
-/**
- * LSM hook: inode_permission
- * Monitors inode-level permission checks
- */
-SEC("lsm/inode_permission")
-int BPF_PROG(lsm_inode_permission, struct inode *inode, int mask) {
-    struct file_access_event evt = {};
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-
-    evt.pid          = pid_tgid >> 32;
-    evt.tid          = pid_tgid & 0xffffffff;
-    evt.operation    = (mask & MAY_WRITE) ? 1 : 0;
-    evt.timestamp_ns = bpf_ktime_get_ns();
-    evt.container_id = get_container_id();
-    evt.access_mode  = mask;
-
-    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
-    bpf_probe_read_str(evt.filename, sizeof(evt.filename), "inode");
-
-    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
-        bpf_perf_event_output(inode, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-        return -EACCES;
-    }
-
-    return 0;
-}
-
-/* --------------------------------------------------------------------------
- * Kprobe Fallback Probes (for compatibility)
- * -------------------------------------------------------------------------- */
-
-/* Kprobe: file open */
-SEC("kprobe/do_sys_openat2")
-int kprobe_do_sys_openat2(struct pt_regs *ctx) {
-    struct file_access_event evt = {};
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-
-    evt.pid          = pid_tgid >> 32;
-    evt.tid          = pid_tgid & 0xffffffff;
-    evt.operation    = 2; /* open */
-    evt.timestamp_ns = bpf_ktime_get_ns();
-    evt.container_id = get_container_id();
-
-    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
-    bpf_probe_read_str(evt.filename, sizeof(evt.filename), "unknown");
-
-    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
-        bpf_perf_event_output(ctx, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-        return -1; /* Block */
-    }
-
-    return 0;
-}
-
-/* Kprobe: file read */
-SEC("kprobe/vfs_read")
-int kprobe_vfs_read(struct pt_regs *ctx) {
-    struct file_access_event evt = {};
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-
-    evt.pid          = pid_tgid >> 32;
-    evt.tid          = pid_tgid & 0xffffffff;
-    evt.operation    = 0; /* read */
-    evt.timestamp_ns = bpf_ktime_get_ns();
-    evt.container_id = get_container_id();
-
-    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
-    bpf_probe_read_str(evt.filename, sizeof(evt.filename), "file");
-
-    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
-        bpf_perf_event_output(ctx, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-        return -1;
-    }
-
-    return 0;
-}
-
-/* Kprobe: file write */
-SEC("kprobe/vfs_write")
-int kprobe_vfs_write(struct pt_regs *ctx) {
-    struct file_access_event evt = {};
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-
-    evt.pid          = pid_tgid >> 32;
-    evt.tid          = pid_tgid & 0xffffffff;
-    evt.operation    = 1; /* write */
-    evt.timestamp_ns = bpf_ktime_get_ns();
-    evt.container_id = get_container_id();
-
-    __builtin_memset(evt.filename, 0, sizeof(evt.filename));
-    bpf_probe_read_str(evt.filename, sizeof(evt.filename), "file");
-
-    if (!is_file_access_allowed(evt.container_id, evt.filename)) {
-        bpf_perf_event_output(ctx, &file_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-        return -1;
-    }
-
-    return 0;
-}
-
-/* --------------------------------------------------------------------------
- * License
- * -------------------------------------------------------------------------- */
-
-char _license[] SEC("license") = "GPL";

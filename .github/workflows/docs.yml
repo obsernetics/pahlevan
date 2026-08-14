@@ -54,7 +54,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: "1.24"
+        go-version: "1.25"
 
     - name: Install controller-gen
       run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
@@ -80,51 +80,3 @@ jobs:
         echo "Generated documentation files:"
         ls -la docs/api/ docs/go/ 2>/dev/null || echo "No generated docs found"
         echo "Note: Auto-commit disabled to prevent permission issues"
-
-  deploy-docs:
-    name: Deploy Documentation
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint-docs, generate-docs]
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Build documentation site
-      run: |
-        # Create a simple documentation site structure
-        mkdir -p site/docs
-        cp README.md site/docs/
-        cp -r docs/* site/docs/ 2>/dev/null || true
-
-        # Create a basic index
-        cat > site/docs/README.md << 'EOF'
-        # Pahlevan Documentation
-
-        Welcome to the Pahlevan eBPF-based Kubernetes Security Operator documentation.
-
-        ## Quick Links
-
-        - [Getting Started](../README.md)
-        - [API Reference](api/)
-        - [Go Documentation](go/)
-
-        EOF
-
-    - name: Setup Pages
-      uses: actions/configure-pages@v5
-
-    - name: Upload to GitHub Pages
-      uses: actions/upload-pages-artifact@v4
-      with:
-        path: ./site/docs
-
-    - name: Deploy to GitHub Pages
-      uses: actions/deploy-pages@v4

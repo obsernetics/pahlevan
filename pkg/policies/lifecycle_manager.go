@@ -617,9 +617,13 @@ type LifecycleEventHandler interface {
 
 // Policy tightening scheduler
 type PolicyTighteningScheduler struct {
+	mu                   sync.Mutex
 	scheduledTightenings map[string][]*ScheduledTighteningTask
 	ticker               *time.Ticker
 	stopCh               chan struct{}
+	// execute runs a due tightening task. It is wired by the LifecycleManager
+	// so scheduled tasks are actually applied.
+	execute func(*ScheduledTighteningTask) error
 }
 
 type ScheduledTighteningTask struct {
@@ -648,7 +652,7 @@ func NewLifecycleManager(
 	client client.Client,
 	enforcementEngine *EnforcementEngine,
 ) *LifecycleManager {
-	return &LifecycleManager{
+	lm := &LifecycleManager{
 		client:                    client,
 		enforcementEngine:         enforcementEngine,
 		workloadStates:            make(map[string]*WorkloadLifecycleState),
@@ -656,6 +660,9 @@ func NewLifecycleManager(
 		policyTighteningScheduler: NewPolicyTighteningScheduler(),
 		stopCh:                    make(chan struct{}),
 	}
+	// Wire the scheduler so due tasks actually tighten the container's policy.
+	lm.policyTighteningScheduler.execute = lm.runScheduledTightening
+	return lm
 }
 
 func NewLifecycleEventProcessor() *LifecycleEventProcessor {
@@ -915,8 +922,7 @@ func (lm *LifecycleManager) TightenPolicy(
 	return nil
 }
 
-// Implementation of remaining methods would continue here...
-// Due to length constraints, I'll provide the key method signatures
+// Lifecycle helper methods.
 
 func (lm *LifecycleManager) getWorkloadKey(workloadRef learner.WorkloadReference) string {
 	return fmt.Sprintf("%s/%s/%s", workloadRef.Namespace, workloadRef.Kind, workloadRef.Name)
@@ -1012,15 +1018,18 @@ func (lm *LifecycleManager) scheduleInitialTighteningEvents(workloadKey string, 
 				ContainerID:    "", // Applies to whole workload
 				ScheduledTime:  time.Now().Add(tighteningSchedule.PeriodicTightening),
 				TighteningType: TighteningTypeSyscall,
+				Status:         TaskStatusPending,
 			}
 
 			// Add to scheduler's map
 			if lm.policyTighteningScheduler != nil {
-				if lm.policyTighteningScheduler.scheduledTightenings == nil {
-					lm.policyTighteningScheduler.scheduledTightenings = make(map[string][]*ScheduledTighteningTask)
+				pts := lm.policyTighteningScheduler
+				pts.mu.Lock()
+				if pts.scheduledTightenings == nil {
+					pts.scheduledTightenings = make(map[string][]*ScheduledTighteningTask)
 				}
-				lm.policyTighteningScheduler.scheduledTightenings[workloadKey] =
-					append(lm.policyTighteningScheduler.scheduledTightenings[workloadKey], tighteningTask)
+				pts.scheduledTightenings[workloadKey] = append(pts.scheduledTightenings[workloadKey], tighteningTask)
+				pts.mu.Unlock()
 			}
 
 			log.Log.Info("Scheduled periodic tightening",
@@ -1035,11 +1044,14 @@ func (lm *LifecycleManager) scheduleInitialTighteningEvents(workloadKey string, 
 				ContainerID:    "",
 				ScheduledTime:  time.Now().Add(customEvent.Delay),
 				TighteningType: TighteningTypeCombined,
+				Status:         TaskStatusPending,
 			}
 
 			if lm.policyTighteningScheduler != nil {
-				lm.policyTighteningScheduler.scheduledTightenings[workloadKey] =
-					append(lm.policyTighteningScheduler.scheduledTightenings[workloadKey], tighteningTask)
+				pts := lm.policyTighteningScheduler
+				pts.mu.Lock()
+				pts.scheduledTightenings[workloadKey] = append(pts.scheduledTightenings[workloadKey], tighteningTask)
+				pts.mu.Unlock()
 			}
 		}
 
@@ -1211,7 +1223,63 @@ func (lm *LifecycleManager) schedulePolicyTightening(
 	containerID string,
 	transition ContainerPhaseTransition,
 ) {
-	// Implementation would schedule policy tightening
+	if lm.policyTighteningScheduler == nil {
+		return
+	}
+
+	// Escalate tightening intensity with lifecycle maturity: a container that
+	// has reached a steady state can tolerate more aggressive narrowing than
+	// one that has just become ready.
+	intensity := IntensityGentle
+	switch transition.To {
+	case ContainerPhaseReady:
+		intensity = IntensityModerate
+	case ContainerPhaseSteady:
+		intensity = IntensityAggressive
+	}
+
+	task := &ScheduledTighteningTask{
+		ID:             fmt.Sprintf("%s-%s-%d", containerID, transition.To, time.Now().UnixNano()),
+		ContainerID:    containerID,
+		ScheduledTime:  time.Now(),
+		TighteningType: TighteningTypeCombined,
+		Intensity:      intensity,
+		Status:         TaskStatusPending,
+	}
+
+	pts := lm.policyTighteningScheduler
+	pts.mu.Lock()
+	defer pts.mu.Unlock()
+
+	// Avoid piling up duplicate pending tasks for the same container.
+	for _, existing := range pts.scheduledTightenings[containerID] {
+		if existing.Status == TaskStatusPending {
+			return
+		}
+	}
+	pts.scheduledTightenings[containerID] = append(pts.scheduledTightenings[containerID], task)
+
+	log.Log.V(1).Info("Scheduled policy tightening",
+		"containerID", containerID,
+		"trigger", transition.To,
+		"intensity", intensity)
+}
+
+// runScheduledTightening executes a due tightening task by applying the
+// tightening to the container through the normal tightening path.
+func (lm *LifecycleManager) runScheduledTightening(task *ScheduledTighteningTask) error {
+	if task == nil || task.ContainerID == "" {
+		return nil
+	}
+	tighteningType := task.TighteningType
+	if tighteningType == "" {
+		tighteningType = TighteningTypeCombined
+	}
+	intensity := task.Intensity
+	if intensity == "" {
+		intensity = IntensityGentle
+	}
+	return lm.TightenPolicy(task.ContainerID, tighteningType, intensity)
 }
 
 func (lm *LifecycleManager) eventTypeToTrigger(eventType LifecycleEventType) TransitionTrigger {
@@ -1230,7 +1298,112 @@ func (lm *LifecycleManager) updateContainerStateFromEvent(
 	eventType LifecycleEventType,
 	eventData map[string]interface{},
 ) {
-	// Implementation would update container state based on event data
+	if containerState == nil {
+		return
+	}
+
+	// Update readiness/probe accounting from the event type.
+	switch eventType {
+	case EventTypeContainerStarted:
+		if containerState.StartTime.IsZero() {
+			containerState.StartTime = time.Now()
+		}
+	case EventTypeContainerReady, EventTypeContainerHealthy:
+		if containerState.ReadinessProbe == nil {
+			containerState.ReadinessProbe = &ProbeState{Enabled: true}
+		}
+		containerState.ReadinessProbe.SuccessCount++
+		containerState.ReadinessProbe.LastResult = ProbeResultSuccess
+		containerState.ReadinessProbe.LastProbeTime = time.Now()
+		if containerState.ReadinessProbe.SuccessCount >= 3 {
+			containerState.ReadinessProbe.Stabilized = true
+		}
+	case EventTypeViolationDetected:
+		if containerState.ReadinessProbe == nil {
+			containerState.ReadinessProbe = &ProbeState{Enabled: true}
+		}
+		containerState.ReadinessProbe.FailureCount++
+		containerState.ReadinessProbe.LastResult = ProbeResultFailure
+		containerState.ReadinessProbe.LastProbeTime = time.Now()
+	}
+
+	if eventData == nil {
+		return
+	}
+
+	// Fold reported metrics into the container's usage/stability patterns.
+	if v, ok := floatFromData(eventData["stability_score"]); ok {
+		if containerState.StabilityMetrics == nil {
+			containerState.StabilityMetrics = &StabilityMetrics{}
+		}
+		containerState.StabilityMetrics.OverallScore = v
+		containerState.StabilityMetrics.LastStabilityCheck = time.Now()
+		if containerState.StabilityMetrics.TimeToStability == 0 && v >= 0.8 && !containerState.StartTime.IsZero() {
+			containerState.StabilityMetrics.TimeToStability = time.Since(containerState.StartTime)
+		}
+	}
+	if v, ok := floatFromData(eventData["cpu_usage"]); ok {
+		if containerState.ResourceUsage == nil {
+			containerState.ResourceUsage = &ResourceUsagePattern{}
+		}
+		if containerState.ResourceUsage.CPUUsage == nil {
+			containerState.ResourceUsage.CPUUsage = &UsageMetrics{}
+		}
+		updateUsageMetric(containerState.ResourceUsage.CPUUsage, v)
+	}
+	if v, ok := floatFromData(eventData["memory_usage"]); ok {
+		if containerState.ResourceUsage == nil {
+			containerState.ResourceUsage = &ResourceUsagePattern{}
+		}
+		if containerState.ResourceUsage.MemoryUsage == nil {
+			containerState.ResourceUsage.MemoryUsage = &UsageMetrics{}
+		}
+		updateUsageMetric(containerState.ResourceUsage.MemoryUsage, v)
+	}
+}
+
+// floatFromData coerces common numeric types from an event-data value.
+func floatFromData(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
+}
+
+// updateUsageMetric folds a new observation into a running usage metric,
+// maintaining current/average/peak/min.
+func updateUsageMetric(m *UsageMetrics, value float64) {
+	if m.Average == 0 && m.Peak == 0 && m.Minimum == 0 && m.Current == 0 {
+		m.Average = value
+		m.Peak = value
+		m.Minimum = value
+	} else {
+		m.Average = (m.Average + value) / 2
+		if value > m.Peak {
+			m.Peak = value
+		}
+		if value < m.Minimum {
+			m.Minimum = value
+		}
+	}
+	if value > m.Current {
+		m.Trend = TrendIncreasing
+	} else if value < m.Current {
+		m.Trend = TrendDecreasing
+	} else {
+		m.Trend = TrendStable
+	}
+	m.Current = value
 }
 
 func (lm *LifecycleManager) monitorWorkloadLifecycles(ctx context.Context) {
@@ -1250,7 +1423,67 @@ func (lm *LifecycleManager) monitorWorkloadLifecycles(ctx context.Context) {
 }
 
 func (lm *LifecycleManager) performLifecycleMonitoring() {
-	// Implementation would perform periodic lifecycle monitoring
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	for _, state := range lm.workloadStates {
+		state.LastUpdate = time.Now()
+
+		// Recompute the workload phase from current container phases.
+		lm.updateWorkloadPhase(state)
+
+		if state.LifecycleConfig == nil || !state.LifecycleConfig.AutomaticTightening {
+			continue
+		}
+
+		for containerID, cs := range state.ContainerStates {
+			// Once a container is ready/steady and has demonstrated stability,
+			// schedule an automatic tightening pass.
+			if cs.CurrentPhase != ContainerPhaseReady && cs.CurrentPhase != ContainerPhaseSteady {
+				continue
+			}
+			if lm.isContainerStable(cs, state.LifecycleConfig) {
+				lm.schedulePolicyTightening(containerID, ContainerPhaseTransition{
+					From:      cs.CurrentPhase,
+					To:        ContainerPhaseSteady,
+					Timestamp: time.Now(),
+					Trigger:   TriggerStabilityReached,
+				})
+			}
+		}
+	}
+}
+
+// isContainerStable reports whether a container has been observed long enough
+// and stably enough to justify tightening.
+func (lm *LifecycleManager) isContainerStable(cs *ContainerLifecycleState, config *LifecycleConfiguration) bool {
+	if cs == nil {
+		return false
+	}
+
+	minObservation := 2 * time.Minute
+	stabilityThreshold := 0.8
+	if config != nil && config.StabilityThresholds != nil {
+		if config.StabilityThresholds.MinimumObservationPeriod > 0 {
+			minObservation = config.StabilityThresholds.MinimumObservationPeriod
+		}
+		if config.StabilityThresholds.OverallStabilityThreshold > 0 {
+			stabilityThreshold = config.StabilityThresholds.OverallStabilityThreshold
+		}
+	}
+
+	if cs.StartTime.IsZero() || time.Since(cs.StartTime) < minObservation {
+		return false
+	}
+	if cs.StabilityMetrics != nil && cs.StabilityMetrics.OverallScore > 0 {
+		return cs.StabilityMetrics.OverallScore >= stabilityThreshold
+	}
+	// No explicit stability score: treat a stabilized readiness probe plus a
+	// steady phase as sufficient evidence.
+	if cs.CurrentPhase == ContainerPhaseSteady {
+		return true
+	}
+	return cs.ReadinessProbe != nil && cs.ReadinessProbe.Stabilized
 }
 
 // Additional helper methods for policy lifecycle management
@@ -1400,11 +1633,55 @@ func (lm *LifecycleManager) assessTighteningImpact(
 	current RequiredPrivileges,
 	new RequiredPrivileges,
 ) ImpactAssessment {
-	// Implementation would assess impact of tightening
+	reduction := lm.calculatePrivilegeReduction(current, new)
+
+	// Detect removal of special (high-blast-radius) privileges.
+	removedSpecial := diffSpecialPrivileges(current.Special, new.Special)
+
+	impacts := make([]PotentialImpact, 0)
+	riskLevel := RiskLevelLow
+	businessImpact := BusinessImpactMinimal
+
+	switch {
+	case reduction >= 0.75 || len(removedSpecial) > 0:
+		riskLevel = RiskLevelHigh
+		businessImpact = BusinessImpactModerate
+		impacts = append(impacts, PotentialImpact{
+			Type:        ImpactTypeFunctionality,
+			Severity:    ImpactSeverityMajor,
+			Probability: 0.4,
+			Description: "Aggressive privilege reduction may block legitimate but rarely used operations",
+		})
+	case reduction >= 0.5:
+		riskLevel = RiskLevelMedium
+		businessImpact = BusinessImpactMinimal
+		impacts = append(impacts, PotentialImpact{
+			Type:        ImpactTypeFunctionality,
+			Severity:    ImpactSeverityModerate,
+			Probability: 0.2,
+			Description: "Moderate privilege reduction; low probability of functional impact",
+		})
+	default:
+		riskLevel = RiskLevelLow
+	}
+
+	// Removing special privileges is always a security improvement worth noting.
+	if len(removedSpecial) > 0 {
+		impacts = append(impacts, PotentialImpact{
+			Type:        ImpactTypeSecurity,
+			Severity:    ImpactSeverityMinor,
+			Probability: 1.0,
+			Description: fmt.Sprintf("Removed special privileges: %v", removedSpecial),
+		})
+	}
+
 	return ImpactAssessment{
-		RiskLevel:      RiskLevelLow,
-		Reversibility:  true,
-		BusinessImpact: BusinessImpactMinimal,
+		RiskLevel:            riskLevel,
+		PotentialImpacts:     impacts,
+		MitigationStrategies: []string{"automatic rollback on health regression", "graceful staged tightening"},
+		Reversibility:        true,
+		EstimatedDowntime:    0,
+		BusinessImpact:       businessImpact,
 	}
 }
 
@@ -1413,11 +1690,50 @@ func (lm *LifecycleManager) createRollbackPlan(
 	previousPrivileges RequiredPrivileges,
 	impact ImpactAssessment,
 ) *RollbackPlan {
-	// Implementation would create rollback plan
+	// Automatic rollback is enabled unless the change is deemed high risk, in
+	// which case operator confirmation is required.
+	automatic := impact.RiskLevel != RiskLevelHigh && impact.RiskLevel != RiskLevelCritical
+
 	return &RollbackPlan{
 		Enabled:           true,
-		AutomaticRollback: true,
+		AutomaticRollback: automatic,
 		MaxRollbackTime:   5 * time.Minute,
+		TriggerConditions: []RollbackTrigger{
+			{
+				Type:        RollbackTriggerHealthCheck,
+				Threshold:   1,
+				TimeWindow:  2 * time.Minute,
+				Description: "Roll back if health checks start failing after tightening",
+			},
+			{
+				Type:        RollbackTriggerErrorRate,
+				Threshold:   0.1,
+				TimeWindow:  2 * time.Minute,
+				Description: "Roll back if the error rate exceeds 10% after tightening",
+			},
+		},
+		Steps: []RollbackStep{
+			{
+				Order:       1,
+				Action:      RollbackActionRestorePolicy,
+				Timeout:     time.Minute,
+				Description: "Restore the pre-tightening policy",
+			},
+			{
+				Order:       2,
+				Action:      RollbackActionNotifyOperator,
+				Timeout:     30 * time.Second,
+				Description: "Notify operators that a tightening rollback occurred",
+			},
+		},
+		VerificationSteps: []VerificationStep{
+			{
+				Name:     "post-rollback-health",
+				Check:    VerificationHealthCheck,
+				Timeout:  time.Minute,
+				Critical: true,
+			},
+		},
 	}
 }
 
@@ -1426,21 +1742,166 @@ func (lm *LifecycleManager) applyTightenedPolicy(
 	newPrivileges RequiredPrivileges,
 	event TighteningEvent,
 ) error {
-	// Implementation would apply tightened policy through enforcement engine
+	if containerState == nil {
+		return fmt.Errorf("nil container state")
+	}
+
+	// Build a generated policy that reflects the narrowed privilege set.
+	policy := &GeneratedPolicy{
+		ContainerID:   containerState.ContainerID,
+		GeneratedAt:   time.Now(),
+		AutoGenerated: true,
+		Version:       1,
+	}
+	if containerState.CurrentPolicy != nil {
+		policy.Version = containerState.CurrentPolicy.Version + 1
+		policy.BasedOnProfile = containerState.CurrentPolicy.BasedOnProfile
+		policy.Confidence = containerState.CurrentPolicy.Confidence
+	}
+
+	// Syscalls.
+	syscallPolicy := &SyscallEnforcementPolicy{
+		AllowedSyscalls:      make(map[uint64]*SyscallRule),
+		DeniedSyscalls:       make(map[uint64]*SyscallRule),
+		DefaultAction:        PolicyActionDeny,
+		ContextRules:         make(map[string]*ContextRule),
+		ArgumentValidation:   make(map[uint64]*ArgumentRule),
+		ReturnCodeValidation: make(map[uint64]*ReturnCodeRule),
+	}
+	for _, nr := range newPrivileges.Syscalls {
+		syscallPolicy.AllowedSyscalls[nr] = &SyscallRule{SyscallNr: nr, Action: PolicyActionAllow}
+	}
+	policy.SyscallPolicy = syscallPolicy
+
+	// File paths.
+	filePolicy := &FileEnforcementPolicy{
+		AllowedPaths:     make(map[string]*FileRule),
+		DeniedPaths:      make(map[string]*FileRule),
+		DefaultAction:    PolicyActionDeny,
+		PathPatterns:     make([]*PathPattern, 0),
+		AccessModeRules:  make(map[string]*AccessModeRule),
+		SizeRestrictions: make(map[string]*SizeRestriction),
+	}
+	for _, fp := range newPrivileges.FilePaths {
+		filePolicy.AllowedPaths[fp.Path] = &FileRule{
+			PathPattern: fp.Path,
+			AccessModes: append([]string(nil), fp.AccessModes...),
+			Action:      PolicyActionAllow,
+		}
+	}
+	policy.FilePolicy = filePolicy
+
+	// Network ports.
+	netPolicy := &NetworkEnforcementPolicy{
+		DefaultEgressAction:  PolicyActionDeny,
+		DefaultIngressAction: PolicyActionDeny,
+	}
+	for _, np := range newPrivileges.NetworkPorts {
+		rule := &NetworkRule{
+			Protocol:       np.Protocol,
+			Direction:      np.Direction,
+			Action:         PolicyActionAllow,
+			RemoteEndpoint: &EndpointRule{PortRange: &PortRange{Start: np.Port, End: np.Port}},
+		}
+		if strings.EqualFold(np.Direction, "inbound") {
+			netPolicy.IngressRules = append(netPolicy.IngressRules, rule)
+		} else {
+			netPolicy.EgressRules = append(netPolicy.EgressRules, rule)
+		}
+	}
+	policy.NetworkPolicy = netPolicy
+
+	// Snapshot the prior policy for evolution/history tracking.
+	containerState.PolicyHistory = append(containerState.PolicyHistory, PolicySnapshot{
+		Timestamp:      time.Now(),
+		Policy:         containerState.CurrentPolicy,
+		Phase:          containerState.CurrentPhase,
+		PrivilegeLevel: containerState.PrivilegeLevel,
+		ChangeReason:   string(event.TighteningType) + " tightening",
+		Metrics:        policyMetricsFromPrivileges(newPrivileges),
+	})
+	containerState.CurrentPolicy = policy
+
+	// Push through the enforcement engine when one is available.
+	if lm.enforcementEngine != nil {
+		if err := lm.enforcementEngine.UpdateContainerPolicy(containerState.ContainerID, policy); err != nil {
+			return fmt.Errorf("failed to apply tightened policy via enforcement engine: %w", err)
+		}
+	}
+
 	return nil
 }
 
+// policyMetricsFromPrivileges summarizes a privilege set for policy metrics.
+func policyMetricsFromPrivileges(p RequiredPrivileges) PolicyMetrics {
+	return PolicyMetrics{
+		SyscallCount:     len(p.Syscalls),
+		NetworkRuleCount: len(p.NetworkPorts),
+		FileRuleCount:    len(p.FilePaths),
+		CapabilityCount:  len(p.Capabilities),
+	}
+}
+
+// diffSpecialPrivileges returns the special privileges present in `before` but
+// absent from `after`.
+func diffSpecialPrivileges(before, after []SpecialPrivilege) []SpecialPrivilege {
+	present := make(map[SpecialPrivilege]bool, len(after))
+	for _, s := range after {
+		present[s] = true
+	}
+	removed := make([]SpecialPrivilege, 0)
+	for _, s := range before {
+		if !present[s] {
+			removed = append(removed, s)
+		}
+	}
+	return removed
+}
+
 func (lm *LifecycleManager) calculatePrivilegeLevel(privileges RequiredPrivileges) PrivilegeLevel {
-	// Implementation would calculate privilege level based on privileges
-	return PrivilegeLevelReduced
+	// Any special privilege (host namespaces, ptrace, device access) implies an
+	// elevated or privileged level regardless of counts.
+	for _, s := range privileges.Special {
+		switch s {
+		case PrivilegeHostNetwork, PrivilegeHostPID, PrivilegeHostIPC, PrivilegeDeviceAccess:
+			return PrivilegeLevelPrivileged
+		case PrivilegePtrace, PrivilegeVolumeMount:
+			return PrivilegeLevelElevated
+		}
+	}
+
+	total := len(privileges.Syscalls) + len(privileges.NetworkPorts) +
+		len(privileges.FilePaths) + len(privileges.Capabilities)
+
+	switch {
+	case total == 0:
+		return PrivilegeLevelMinimal
+	case total <= 30:
+		return PrivilegeLevelReduced
+	case total <= 100:
+		return PrivilegeLevelStandard
+	default:
+		return PrivilegeLevelElevated
+	}
 }
 
 func (lm *LifecycleManager) calculatePrivilegeReduction(
 	previous RequiredPrivileges,
 	new RequiredPrivileges,
 ) float64 {
-	// Implementation would calculate percentage of privilege reduction
-	return 0.25 // 25% reduction
+	prevTotal := len(previous.Syscalls) + len(previous.NetworkPorts) +
+		len(previous.FilePaths) + len(previous.Capabilities) + len(previous.Special)
+	newTotal := len(new.Syscalls) + len(new.NetworkPorts) +
+		len(new.FilePaths) + len(new.Capabilities) + len(new.Special)
+
+	if prevTotal == 0 {
+		return 0
+	}
+	reduction := float64(prevTotal-newTotal) / float64(prevTotal)
+	if reduction < 0 {
+		return 0
+	}
+	return reduction
 }
 
 // Event processor methods
@@ -1506,22 +1967,44 @@ func (pts *PolicyTighteningScheduler) processTighteningTasks(ctx context.Context
 func (pts *PolicyTighteningScheduler) processScheduledTasks() {
 	now := time.Now()
 
+	pts.mu.Lock()
+	due := make([]*ScheduledTighteningTask, 0)
 	for _, tasks := range pts.scheduledTightenings {
 		for _, task := range tasks {
 			if task.Status == TaskStatusPending && task.ScheduledTime.Before(now) {
-				go pts.executeTask(task)
+				// Mark as running under the lock so it is not picked up twice.
+				task.Status = TaskStatusRunning
+				due = append(due, task)
 			}
 		}
+	}
+	pts.mu.Unlock()
+
+	for _, task := range due {
+		go pts.executeTask(task)
 	}
 }
 
 func (pts *PolicyTighteningScheduler) executeTask(task *ScheduledTighteningTask) {
-	// Implementation would execute tightening task
-	task.Status = TaskStatusRunning
-	// ... execution logic ...
-	task.Status = TaskStatusCompleted
+	if task.Status != TaskStatusRunning {
+		task.Status = TaskStatusRunning
+	}
+
+	var err error
+	if pts.execute != nil {
+		err = pts.execute(task)
+	}
+
 	now := time.Now()
 	task.CompletedTime = &now
+	if err != nil {
+		task.Status = TaskStatusFailed
+		task.Error = err
+		log.Log.Error(err, "Scheduled tightening task failed",
+			"taskID", task.ID, "containerID", task.ContainerID)
+		return
+	}
+	task.Status = TaskStatusCompleted
 }
 
 // Helper methods for filtering privileges based on usage patterns

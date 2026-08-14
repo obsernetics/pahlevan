@@ -2,11 +2,13 @@ package ebpf
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -817,6 +819,15 @@ func TestManager_StartStopLifecycle(t *testing.T) {
 }
 
 func TestManager_LoadPrograms(t *testing.T) {
+	// LoadPrograms loads real eBPF into the kernel, so it must run only in the
+	// test VM (never the host). There the required syscall monitor loads and
+	// network/file degrade gracefully, so we expect success.
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; loads eBPF)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
 	manager := &Manager{
 		capabilities: &SystemCapabilities{
 			HasEBPFSupport:       true,
@@ -824,11 +835,13 @@ func TestManager_LoadPrograms(t *testing.T) {
 			HasTCSupport:         false,
 		},
 	}
-
-	// This will fail in test environment, but we test the error handling
-	err := manager.LoadPrograms()
-	assert.Error(t, err) // Expected to fail without actual eBPF programs
-	t.Logf("Expected LoadPrograms error: %v", err)
+	if err := manager.LoadPrograms(); err != nil {
+		t.Fatalf("LoadPrograms: %v", err)
+	}
+	defer manager.Close()
+	if manager.syscallCollection == nil {
+		t.Error("expected syscall collection to load")
+	}
 }
 
 func TestManager_CheckCapabilitiesMock(t *testing.T) {
