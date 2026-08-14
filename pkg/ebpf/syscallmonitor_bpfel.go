@@ -14,8 +14,8 @@ import (
 )
 
 type SyscallMonitorConfig struct {
-	_       structs.HostLayout
-	Enabled uint8
+	_        structs.HostLayout
+	Disabled uint8
 }
 
 // LoadSyscallMonitor returns the embedded CollectionSpec for SyscallMonitor.
