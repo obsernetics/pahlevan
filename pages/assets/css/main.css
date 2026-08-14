@@ -436,7 +436,14 @@ em { color: var(--text); font-style: normal; font-weight: 600; }
 .code-block pre {
   margin: 0;
   padding: 1.25rem;
+  /* Wrap long lines (incl. unbreakable URLs) instead of overflowing the page.
+     pre-wrap preserves indentation; overflow-wrap/anywhere breaks only when a
+     token can't fit. This guarantees the block never widens its column. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   overflow-x: auto;
+  max-width: 100%;
   font-family: var(--mono);
   font-size: 0.85rem;
   line-height: 1.6;
@@ -446,6 +453,9 @@ em { color: var(--text); font-style: normal; font-weight: 600; }
   color: #d7e0f2;
   padding: 0;
   font-size: inherit;
+  white-space: inherit;
+  overflow-wrap: inherit;
+  word-break: inherit;
 }
 
 /* Requirements + benchmarks */
