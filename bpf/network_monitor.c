@@ -32,7 +32,7 @@ struct network_event {
 	__u32 daddr;      /* IPv4 destination, 0 when family is AF_INET6 */
 	__u16 sport;
 	__u16 dport;
-	__u8  protocol;   /* IPPROTO_TCP */
+	__u8  protocol;   /* IPPROTO_* from sk->sk_protocol */
 	__u8  direction;  /* 0 = egress, bit 0x80 = denied */
 	__u8  family;     /* AF_INET or AF_INET6 */
 	__u8  pad;
@@ -93,6 +93,12 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 
 	__u64 cgroup_id = bpf_get_current_cgroup_id();
 
+	/* The transport protocol, read from the socket rather than assumed. It was
+	 * hardcoded to IPPROTO_TCP in the event and left out of the allow-set key
+	 * entirely, so a destination learned over TCP was also permitted over UDP
+	 * on the same port. */
+	__u8 protocol = (__u8)BPF_CORE_READ(sock, sk, sk_protocol);
+
 	/* Allow-set key folds the whole destination address so v4 and v6 cannot
 	 * collide and a v6 destination cannot be smuggled past a v4 entry. */
 	__u64 addr_hash;
@@ -105,7 +111,13 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 			addr_hash *= 1099511628211ULL;
 		}
 	}
-	__u64 key = cgroup_id ^ (addr_hash << 16) ^ (__u64)dport ^ (__u64)family;
+	/* The protocol is mixed multiplicatively rather than shifted into the
+	 * port's bits: a plain (protocol << 8) would make port 1536 over protocol 0
+	 * collide with port 0 over protocol 6, and a raw socket really does report
+	 * protocol 0. The constant is the 64-bit golden ratio, which spreads the
+	 * eight protocol bits across the whole key. */
+	__u64 key = cgroup_id ^ (addr_hash << 16) ^ (__u64)dport ^ (__u64)family ^
+		    ((__u64)protocol * 0x9E3779B97F4A7C15ULL);
 
 	__u8 *modep = bpf_map_lookup_elem(&network_mode, &cgroup_id);
 	__u8 mode = modep ? *modep : MODE_LEARN;
@@ -125,7 +137,7 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 			__builtin_memcpy(e->daddr6, daddr6, sizeof(daddr6));
 			e->sport = 0;
 			e->dport = dport;
-			e->protocol = 6;
+			e->protocol = protocol;
 			e->direction = 0x80; /* denied marker */
 			e->family = (__u8)family;
 			e->pad = 0;
@@ -152,7 +164,7 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 	__builtin_memcpy(e->daddr6, daddr6, sizeof(daddr6));
 	e->sport = 0;
 	e->dport = dport;
-	e->protocol = 6;
+	e->protocol = protocol;
 	e->direction = 0;
 	e->family = (__u8)family;
 	e->pad = 0;

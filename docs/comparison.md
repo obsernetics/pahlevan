@@ -114,6 +114,7 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | Hook | `lsm/socket_connect` (`bpf/network_monitor.c`) | Socket syscalls through the driver | kprobes on the TCP stack, plus socket LSM hooks, per policy |
 | Direction | **Egress only.** There is no ingress hook at all | Both, as observed at the syscall layer | Both, depending on the policy |
 | Address family | IPv4 and IPv6. `socket_connect` governs both families and folds the full 16-byte v6 address into the allow-set key, so a v6 destination cannot be smuggled past a v4 entry | IPv4 and IPv6 | IPv4 and IPv6 |
+| Transport protocol | Read from `sk->sk_protocol` and folded into the allow-set key, so a destination learned over TCP is not thereby permitted over UDP on the same port. It was previously hardcoded to `IPPROTO_TCP` in the event and absent from the key | Yes | Yes |
 | Protocol | The allow-set key is destination address and destination port. **Protocol is not part of the key**, and events report TCP unconditionally | Distinguishes protocols | Distinguishes protocols |
 | DNS visibility | **No** DNS parsing or name-based policy | Available through rules and fields | Available, including a DNS-oriented policy library |
 | L7 visibility | **No** | Limited, through plugins | Limited natively. Cilium and Hubble cover L7 alongside it |
@@ -380,19 +381,16 @@ Listed plainly, worst first. Every item here is real and current.
     counted on the metrics endpoint and on `ContainerProfile`.
 11. **Grafana dashboards are not published.** The metrics are real now; nothing
     ships to visualise them.
-12. **The network allow-set ignores protocol.** A destination learned over TCP
-    is also permitted over UDP on the same port. IPv6 itself is governed, and
-    the family is folded into the key, but the protocol is not.
-13. **No syscall arguments, no command-line arguments, no image, no pod labels,
+12. **No syscall arguments, no command-line arguments, no image, no pod labels,
     no workload owner** on events. Both comparators have all of this.
-14. **eBPF load tests and the benchmark are not automated.** The unit suite,
+13. **eBPF load tests and the benchmark are not automated.** The unit suite,
     `-race`, gofmt, coverage and an arm64 cross-build all run in CI now, but
     the kernel tests need a VM with `lsm=bpf` and the competitor benchmark
     needs three tools installed, so both are still run by hand.
-15. **OpenTelemetry instrumentation is thin.** Real OTLP and stdout exporters
+14. **OpenTelemetry instrumentation is thin.** Real OTLP and stdout exporters
     and a working `StartSpan` exist, but very little of the codebase is
     actually instrumented, so a trace shows almost nothing.
-16. **Learning is trust on first use.** A workload that is already compromised
+15. **Learning is trust on first use.** A workload that is already compromised
     when learning starts has its malicious behaviour baselined. Policy deny
     lists and exceptions let an operator correct the edges, but there is no
     review or approval step before a learned profile takes effect. This is the

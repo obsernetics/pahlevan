@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -900,4 +901,114 @@ func seedTestFixture(t *testing.T, name string) (*ebpf.Collection, uint64, func(
 		return exec.Command("/bin/sh", "-c", script).Run()
 	}
 	return coll, st.Ino, runIn
+}
+
+// TestVMNetworkProtocolIsGoverned asserts that the transport protocol is part
+// of the allow-set identity and is reported truthfully.
+//
+// Two bugs sat here: the event hardcoded protocol 6 regardless of the socket,
+// and the allow-set key ignored the protocol entirely, so a destination learned
+// over TCP was also permitted over UDP on the same port. That is a real egress
+// bypass, since DNS-shaped exfiltration over UDP/53 would ride an allow entry
+// created by an ordinary TCP resolver connection. VM-only.
+func TestVMNetworkProtocolIsGoverned(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadNetworkMonitor()
+	if err != nil {
+		t.Fatalf("LoadNetworkMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["socket_connect"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(socket_connect): %v", err)
+	}
+	defer l.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["network_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// This test governs the whole test process's cgroup rather than a child, so
+	// it dials from here and restores learning mode before returning.
+	self, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		t.Skipf("cannot read own cgroup: %v", err)
+	}
+	line := strings.TrimSpace(string(self))
+	idx := strings.LastIndex(line, ":")
+	if idx < 0 {
+		t.Skipf("unexpected cgroup line %q", line)
+	}
+	var st syscall.Stat_t
+	if err := syscall.Stat(filepath.Join("/sys/fs/cgroup", line[idx+1:]), &st); err != nil {
+		t.Skipf("cannot stat own cgroup: %v", err)
+	}
+	cgID := st.Ino
+	defer func() { _ = coll.Maps["network_mode"].Delete(cgID) }()
+
+	const target = "127.0.0.1:59997"
+
+	// LEARN over TCP. connect() reaches socket_connect even on a closed port.
+	c, _ := net.DialTimeout("tcp4", target, 300*time.Millisecond)
+	if c != nil {
+		c.Close()
+	}
+
+	// Drain whatever the learning connect produced and confirm the protocol is
+	// reported as TCP rather than assumed.
+	sawTCP := false
+	rd.SetDeadline(time.Now().Add(time.Second))
+	for {
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		if ev := parseNetworkEvent(rec.RawSample); ev != nil && ev.DstPort == 59997 {
+			if ev.Protocol != ProtocolTCP {
+				t.Errorf("learned TCP connect reported protocol %d, want %d", ev.Protocol, ProtocolTCP)
+			}
+			sawTCP = true
+			break
+		}
+		rd.SetDeadline(time.Now().Add(300 * time.Millisecond))
+	}
+	if !sawTCP {
+		t.Fatal("no event observed for the learning TCP connect")
+	}
+
+	if err := coll.Maps["network_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce mode: %v", err)
+	}
+
+	// The learned TCP destination must still be reachable.
+	if c, err := net.DialTimeout("tcp4", target, 300*time.Millisecond); err != nil &&
+		strings.Contains(err.Error(), "operation not permitted") {
+		t.Errorf("learned TCP destination should be ALLOWED under enforcement: %v", err)
+	} else if c != nil {
+		c.Close()
+	}
+
+	// The same host and port over UDP was never learned, so it must be denied.
+	// Before the protocol was folded into the key this succeeded.
+	uc, err := net.DialTimeout("udp4", target, 300*time.Millisecond)
+	if uc != nil {
+		uc.Close()
+	}
+	if err == nil {
+		t.Error("UDP to a destination learned only over TCP should be DENIED, but it succeeded")
+	} else if !strings.Contains(err.Error(), "operation not permitted") {
+		t.Errorf("UDP connect failed for the wrong reason: %v", err)
+	} else {
+		t.Logf("UDP to a TCP-learned destination denied as expected: %v", err)
+	}
 }
