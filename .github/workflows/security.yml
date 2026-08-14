@@ -60,16 +60,6 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-tools-
 
-    - name: Cache eBPF generated files
-      uses: actions/cache@v5
-      with:
-        path: |
-          pkg/ebpf/*monitor_bpf*.go
-          pkg/ebpf/*monitor_bpf*.o
-        key: ${{ runner.os }}-ebpf-${{ hashFiles('bpf/*.c', 'bpf/*.h') }}
-        restore-keys: |
-          ${{ runner.os }}-ebpf-
-
     - name: Cache APT packages
       uses: actions/cache@v5
       with:
@@ -130,16 +120,6 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-tools-
 
-    - name: Cache eBPF generated files
-      uses: actions/cache@v5
-      with:
-        path: |
-          pkg/ebpf/*monitor_bpf*.go
-          pkg/ebpf/*monitor_bpf*.o
-        key: ${{ runner.os }}-ebpf-${{ hashFiles('bpf/*.c', 'bpf/*.h') }}
-        restore-keys: |
-          ${{ runner.os }}-ebpf-
-
     - name: Cache APT packages
       uses: actions/cache@v5
       with:
@@ -150,6 +130,11 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-apt-
 
+    # Deliberately no cache of pkg/ebpf/*_bpf*.{go,o}: those files are committed
+    # to the repo, so a cache can only ever restore stale copies alongside the
+    # checked-out ones. A restore-keys fallback did exactly that after the
+    # bindings were regenerated per-architecture, resurrecting the deleted
+    # single-arch files and breaking the build with redeclaration errors.
     - name: Build
       run: go build ./...
 
