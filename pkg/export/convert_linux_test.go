@@ -102,7 +102,9 @@ func TestFromFileEventObserve(t *testing.T) {
 func TestFromNetworkEvent(t *testing.T) {
 	ev := FromNetworkEvent(&ebpf.NetworkEvent{
 		PID:       11,
-		SrcIP:     0xc0a80101,
+		// Network byte order, as the kernel writes sin_addr.s_addr and the
+		// decoder reads it: 192.168.1.1 and 8.8.8.8.
+		SrcIP:     0x0101a8c0,
 		DstIP:     0x08080808,
 		SrcPort:   34567,
 		DstPort:   53,
@@ -119,6 +121,9 @@ func TestFromNetworkEvent(t *testing.T) {
 	}
 	if ev.Network.SourceIP != "192.168.1.1" || ev.Network.SourcePort != 34567 {
 		t.Errorf("source = %s:%d", ev.Network.SourceIP, ev.Network.SourcePort)
+	}
+	if ev.Network.DestinationIP != "8.8.8.8" {
+		t.Errorf("destination = %q", ev.Network.DestinationIP)
 	}
 	if ev.Network.Protocol != "udp" || ev.Network.ProtocolNumber != 17 {
 		t.Errorf("protocol = %s/%d", ev.Network.Protocol, ev.Network.ProtocolNumber)

@@ -406,9 +406,27 @@ Reading the table honestly:
 ## Event export and observability
 
 Pahlevan's `pahlevan_*` Prometheus metrics **are** served on `:8080` now (74
-series), which the first run reported as broken. After the suite the agent
-reported `pahlevan_containers_enforced 2`, `pahlevan_enforcement_actions_total 2`
-and `pahlevan_policy_violations_total 148`, and per-type export counters.
+series), which the first run reported as broken. Scraped live from the agent
+during the run: `pahlevan_containers_enforced 2`,
+`pahlevan_enforcement_actions_total 2`, `pahlevan_policy_violations_total 148`
+(0 before the suite, so the counter does move), and per-type
+`pahlevan_export_events_total`.
+
+The whole event stream for the run, by type and action, straight from the
+exported JSON lines:
+
+| Type | observe | deny |
+|------|--------:|-----:|
+| file | 23238 | 146 |
+| syscall | 3905 | 0 |
+| process | 1064 | 0 |
+| capability | 235 | 0 |
+| network | 146 | **2** |
+| **total** | **28588** | **148** |
+
+That table is the mechanism finding in one place: 148 in-kernel denials, 146 from
+`file_open` and 2 from `socket_connect` (the two probes), none from
+`bprm_check_security` or `capable`.
 
 Two problems in the exported events, both visible in the raw JSON lines kept with
 this run:
@@ -419,17 +437,36 @@ exported as `"destinationIp":"1.0.0.127"`, and one to `10.43.0.10:53` as
 order, so every network event in the export names the wrong host. The port,
 protocol and deny action are correct.
 
-**Pod attribution is mostly missing.** Of 70136 exported events in one run, 776
-carried any `kubernetes` object and only 13 carried a pod name, and that name was
-a *previous, deleted* target pod. In the final run the denials do carry
+**Pod attribution is mostly missing.** Of 28736 exported events, 763 carried any
+`kubernetes` object and only 31 carried a pod name. The denials do carry
 `podUid`, `containerId`, `runtime` and `qosClass`, but `namespace` and `pod` are
-empty. A consumer therefore has to resolve cgroup or pod UID to a pod name
-itself. The benchmark's correlator falls back to matching `cgroupId` for exactly
-this reason.
+empty, so a consumer has to resolve cgroup or pod UID to a pod name itself. The
+benchmark's correlator falls back to matching `cgroupId` for exactly this reason.
+An earlier run in the same session was worse: of 70136 events, 13 carried a pod
+name and it was a *previous, deleted* target pod.
 
 `PahlevanPolicy.status` stayed **empty** for the whole run: no phase, no learning
 progress, no enforcement counters. Enforcement state is observable through the
 BPF maps, the logs and the metrics endpoint, but not through the CRD.
+
+## Reproducibility
+
+The Pahlevan half of this run was executed twice, from two different commits
+(`30f4cac` and `370f14a`, the second taken after the tree moved again mid-session).
+**Both produced an identical matrix**: the same 25 blocks, the same
+`15-write-passwd-sudoers` escape, the same 3/3 benign controls, the same three
+probe results, and BPF map memlock identical to the byte (19,741,128). The
+figures published here are from `370f14a`.
+
+At the end of the run the node-wide learned allow-sets held 37470 file entries,
+1470 exec entries, 342 capability entries and 234 network destinations across all
+cgroups on the node (not just the target). The agent finished with **0 restarts**
+and the target pod with 0 restarts.
+
+Raw artifacts for each tool (per-scenario timings, the tool's own signal stream,
+the correlated matrix as JSON, cgroup resource samples, `bpftool` output) are
+produced under `/tmp/pahlevan-bench/results/<tool>/` and the tables above are
+rendered from them by `test/benchmark/report.py`, not transcribed by hand.
 
 ## Caveats
 

@@ -261,9 +261,3 @@ func protocolName(proto uint8) string {
 		return fmt.Sprintf("proto_%d", proto)
 	}
 }
-
-// ipv4String renders a big endian IPv4 address held in a uint32 as dotted quad.
-// The eBPF programs store addresses in network byte order.
-func ipv4String(addr uint32) string {
-	return net.IPv4(byte(addr>>24), byte(addr>>16), byte(addr>>8), byte(addr)).String()
-}

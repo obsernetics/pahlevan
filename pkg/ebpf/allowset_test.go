@@ -232,3 +232,53 @@ func BenchmarkNetworkAllowKeyIPv6(b *testing.B) {
 		_, _ = NetworkAllowKey(42, ip, 443)
 	}
 }
+
+// IPv4String and the network allow-set key must agree about what the uint32
+// holds, because one renders the destination an operator reads and the other
+// decides whether the kernel permits it. They disagreed: the exported address
+// came out backwards, so 127.0.0.1 was reported as 1.0.0.127 while the key was
+// derived correctly, which is the worst combination - enforcement works and
+// the evidence lies about what was enforced.
+func TestIPv4StringMatchesTheWireByteOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		wire uint32 // sin_addr.s_addr decoded little-endian
+		want string
+	}{
+		{"loopback", 0x0100007f, "127.0.0.1"},
+		{"ordered", 0x04030201, "1.2.3.4"},
+		{"dns", 0x08080808, "8.8.8.8"},
+		{"private", 0x0101a8c0, "192.168.1.1"},
+		{"zero", 0, "0.0.0.0"},
+		{"broadcast", 0xffffffff, "255.255.255.255"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IPv4String(tc.wire))
+
+			// The same uint32 must key the allow-set the same way net.ParseIP
+			// of the rendered string does, or seeding an exception written by a
+			// human would miss what the kernel learned from the wire.
+			fromWire, err := NetworkAllowKey(1, net.IP(le32(tc.wire)), 443)
+			require.NoError(t, err)
+			fromText, err := NetworkAllowKey(1, net.ParseIP(tc.want), 443)
+			require.NoError(t, err)
+			assert.Equal(t, fromWire, fromText,
+				"the key derived from the wire bytes must match the one derived "+
+					"from the rendered address %s", tc.want)
+		})
+	}
+}
+
+// le32 lays a uint32 out little-endian, which is how the wire bytes sit.
+func le32(v uint32) []byte {
+	return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)}
+}
+
+func BenchmarkIPv4String(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = IPv4String(0x0100007f)
+	}
+}

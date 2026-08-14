@@ -955,9 +955,10 @@ func (sl *SyscallLearner) generateRecommendations(state *ContainerLearningState,
 }
 
 // Utility functions
+// ipToString defers to the one owner of this conversion; shifting the uint32
+// as if it were host-order rendered every address backwards.
 func (sl *SyscallLearner) ipToString(ip uint32) string {
-	return fmt.Sprintf("%d.%d.%d.%d",
-		(ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF)
+	return ebpf.IPv4String(ip)
 }
 
 func (sl *SyscallLearner) protocolToString(proto uint8) string {
