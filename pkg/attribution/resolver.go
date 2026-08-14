@@ -110,4 +110,3 @@ func cgroupID(path string) (uint64, bool) {
 	}
 	return st.Ino, true
 }
-

@@ -866,6 +866,7 @@ func parseFileEvent(data []byte) *FileEvent {
 	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
 	return event
 }
+
 // Validation methods for policy types
 func (cp *ContainerPolicy) Validate() error {
 	if cp.AllowedSyscalls == nil {
@@ -904,4 +905,47 @@ func FnvPathHash(path string) uint64 {
 		h *= 1099511628211
 	}
 	return h
+}
+
+// SetFileEnforcement flips a cgroup between learning and enforcing for the file
+// allow-list. In enforcing mode, opens of paths not in the learned allow-set are
+// denied in-kernel. Absent from the mode map == learning (the default).
+func (m *Manager) SetFileEnforcement(cgroupID uint64, enforce bool) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.fileCollection == nil {
+		return fmt.Errorf("file monitor not loaded (bpf LSM unavailable?)")
+	}
+	fm := m.fileCollection.Maps["file_mode"]
+	if fm == nil {
+		return fmt.Errorf("file_mode map not found")
+	}
+	if enforce {
+		return fm.Put(cgroupID, uint8(1))
+	}
+	// Learning: remove the entry so the default (learn) applies. Ignore ENOENT.
+	_ = fm.Delete(cgroupID)
+	return nil
+}
+
+// LearnedFileCount returns the number of (cgroup,path) entries currently in the
+// file allow-set (diagnostics / profile sizing). Returns 0 if unavailable.
+func (m *Manager) LearnedFileCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.fileCollection == nil {
+		return 0
+	}
+	fm := m.fileCollection.Maps["file_allowed"]
+	if fm == nil {
+		return 0
+	}
+	var k uint64
+	var v uint8
+	n := 0
+	it := fm.Iterate()
+	for it.Next(&k, &v) {
+		n++
+	}
+	return n
 }
