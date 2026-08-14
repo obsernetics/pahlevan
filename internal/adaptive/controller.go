@@ -41,6 +41,7 @@ type Enforcer interface {
 	SetFileEnforcement(cgroupID uint64, enforce bool) error
 	SetNetworkEnforcement(cgroupID uint64, enforce bool) error
 	SetExecEnforcement(cgroupID uint64, enforce bool) error
+	SetCapabilityEnforcement(cgroupID uint64, enforce bool) error
 }
 
 // PolicyResolver decides, for a given cgroup, whether a policy applies and how
@@ -63,6 +64,7 @@ type cgState struct {
 	files     map[string]struct{}
 	dests     map[string]struct{}
 	execs     map[string]struct{}
+	caps      map[uint32]struct{}
 }
 
 // Controller tracks per-cgroup learning state and flips cgroups to enforcement
@@ -118,6 +120,7 @@ func (c *Controller) track(cgroupID uint64) *cgState {
 			files:     make(map[string]struct{}),
 			dests:     make(map[string]struct{}),
 			execs:     make(map[string]struct{}),
+			caps:      make(map[uint32]struct{}),
 		}
 		c.state[cgroupID] = st
 	}
@@ -184,6 +187,20 @@ func (c *Controller) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 	return nil
 }
 
+// HandleCapabilityEvent records an observed capability for the learning set.
+func (c *Controller) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
+	if e.CgroupID == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.track(e.CgroupID)
+	if st.phase == PhaseLearning {
+		st.caps[e.Capability] = struct{}{}
+	}
+	return nil
+}
+
 // Profile is a snapshot of what a container learned.
 type Profile struct {
 	CgroupID  uint64
@@ -240,11 +257,14 @@ func (c *Controller) Reconcile() {
 		if err := c.enforcer.SetExecEnforcement(id, true); err != nil {
 			c.log.V(1).Info("exec enforcement unavailable", "cgroup", id, "error", err.Error())
 		}
+		if err := c.enforcer.SetCapabilityEnforcement(id, true); err != nil {
+			c.log.V(1).Info("capability enforcement unavailable", "cgroup", id, "error", err.Error())
+		}
 		st.phase = PhaseEnforcing
 		c.writeSeccompProfile(st)
 		c.log.Info("container transitioned to enforcing",
 			"cgroup", id, "pod", st.ref.PodUID,
-			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs))
+			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs), "caps", len(st.caps))
 	}
 	// Persist/refresh the inspectable ContainerProfile for every tracked container.
 	for _, st := range c.state {

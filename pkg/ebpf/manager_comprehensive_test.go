@@ -1067,6 +1067,10 @@ func (m *MockEventHandler) HandleProcessEvent(event *ProcessEvent) error {
 	return nil
 }
 
+func (m *MockEventHandler) HandleCapabilityEvent(event *CapabilityEvent) error {
+	return nil
+}
+
 // Add validation methods to events
 func (se *SyscallEvent) Validate() error {
 	if se.ContainerID == "" {

@@ -415,10 +415,11 @@ func TestVMMapMemoryFootprint(t *testing.T) {
 	}
 
 	for name, load := range map[string]func() (*ebpf.CollectionSpec, error){
-		"syscall": LoadSyscallMonitor,
-		"file":    LoadFileMonitor,
-		"network": LoadNetworkMonitor,
-		"exec":    LoadExecMonitor,
+		"syscall":    LoadSyscallMonitor,
+		"file":       LoadFileMonitor,
+		"network":    LoadNetworkMonitor,
+		"exec":       LoadExecMonitor,
+		"capability": LoadCapabilityMonitor,
 	} {
 		spec, err := load()
 		if err != nil {
@@ -448,6 +449,7 @@ func TestVMMapMemoryFootprint(t *testing.T) {
 		"events": true, "file_events": true, "network_events": true, "exec_events": true,
 		"syscall_seen": true, "file_allowed": true, "network_allowed": true, "exec_allowed": true,
 		"file_mode": true, "network_mode": true, "exec_mode": true,
+		"cap_events": true, "cap_allowed": true, "cap_mode": true,
 		"config_map": true, "file_config": true,
 	}
 	var total int64
@@ -463,8 +465,126 @@ func TestVMMapMemoryFootprint(t *testing.T) {
 		t.Fatal("measurement failed: bpftool listed none of the pahlevan maps")
 	}
 	mib := float64(total) / (1024 * 1024)
-	t.Logf("TOTAL pahlevan BPF map memlock (%d maps, all 4 programs): %.1f MiB", matched, mib)
+	t.Logf("TOTAL pahlevan BPF map memlock (%d maps, all 5 programs): %.1f MiB", matched, mib)
 	if mib > 64 {
 		t.Errorf("BPF map footprint is %.1f MiB (expected well under 64 MiB); check max_entries sizing", mib)
 	}
+}
+
+// TestVMCapabilityMonitor loads the CO-RE capability monitor, attaches lsm/capable,
+// and verifies real capability checks are observed with cgroup attribution.
+// VM-only (requires bpf LSM).
+func TestVMCapabilityMonitor(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadCapabilityMonitor()
+	if err != nil {
+		t.Fatalf("LoadCapabilityMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			t.Fatalf("verifier: %+v", ve)
+		}
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["capable_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(capable): %v", err)
+	}
+	defer l.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["cap_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// Trigger privileged operations that require capability checks.
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			_ = exec.Command("/bin/sh", "-c", "chown root /tmp/pahlevan-cap-probe 2>/dev/null; ip link show >/dev/null 2>&1").Run()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	rd.SetDeadline(time.Now().Add(5 * time.Second))
+	rec, err := rd.Read()
+	if err != nil {
+		t.Fatalf("ringbuf read (no capability events): %v", err)
+	}
+	ev := parseCapabilityEvent(rec.RawSample)
+	if ev == nil {
+		t.Fatalf("failed to parse capability event from %d bytes", len(rec.RawSample))
+	}
+	if ev.CgroupID == 0 {
+		t.Errorf("expected non-zero cgroup id")
+	}
+	t.Logf("observed capability event: cap=%d (%s) comm=%q pid=%d cgroup=%d",
+		ev.Capability, CapabilityName(ev.Capability), ev.Comm, ev.PID, ev.CgroupID)
+}
+
+// TestVMProcessAncestry verifies exec events carry the parent pid and comm, which
+// is what lets a denial be traced back to the process that spawned it. VM-only.
+func TestVMProcessAncestry(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["exec_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// sh -c 'exec /bin/true' gives a known parent (sh) for the exec'd binary.
+	go func() {
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			_ = exec.Command("/bin/sh", "-c", "/bin/true").Run()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseProcessEvent(rec.RawSample)
+		if ev == nil || ev.PPID == 0 {
+			continue
+		}
+		t.Logf("observed exec with ancestry: %q (pid=%d) spawned by %q (ppid=%d)",
+			ev.Filename, ev.PID, ev.ParentComm, ev.PPID)
+		if ev.ParentComm == "" {
+			t.Error("expected a parent comm on the exec event")
+		}
+		return
+	}
+	t.Fatal("no exec event with parent ancestry observed")
 }

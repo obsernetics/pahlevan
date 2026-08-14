@@ -269,3 +269,7 @@ func (o *agentObserver) HandleFileEvent(e *ebpf.FileEvent) error {
 func (o *agentObserver) HandleProcessEvent(event *ebpf.ProcessEvent) error {
 	return nil
 }
+
+func (o *agentObserver) HandleCapabilityEvent(event *ebpf.CapabilityEvent) error {
+	return nil
+}
