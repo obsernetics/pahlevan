@@ -17,8 +17,12 @@ limitations under the License.
 package discovery
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +33,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// procRoot is the procfs mount point. It is a variable so tests can point it at
+// a fixture directory.
+var procRoot = "/proc"
 
 // ContainerInfo holds detailed information about a discovered container
 type ContainerInfo struct {
@@ -427,7 +435,7 @@ func (ct *ContainerTracker) buildContainerInfo(
 		Limits:   containerSpec.Resources.Limits,
 	}
 
-	// Build runtime info (simplified)
+	// Build runtime info from the CRI ID and procfs.
 	if info.ID != "" {
 		info.RuntimeInfo = ct.buildRuntimeInfo(info.ID, containerStatus)
 	}
@@ -507,29 +515,138 @@ func (ct *ContainerTracker) buildSecurityContextInfo(pod *corev1.Pod, containerS
 	return info
 }
 
-// buildRuntimeInfo builds runtime-specific information
+// buildRuntimeInfo builds runtime-specific information by parsing the CRI
+// container ID and, when running on the container's node, resolving the real
+// PID and cgroup path from procfs.
 func (ct *ContainerTracker) buildRuntimeInfo(containerID string, containerStatus *corev1.ContainerStatus) *RuntimeInfo {
 	info := &RuntimeInfo{
 		ExtraInfo: make(map[string]string),
 	}
 
+	fullID := ""
 	if containerStatus != nil {
-		// Extract runtime type from container ID
-		if strings.HasPrefix(containerStatus.ContainerID, "docker://") {
-			info.Runtime = "docker"
-		} else if strings.HasPrefix(containerStatus.ContainerID, "containerd://") {
-			info.Runtime = "containerd"
-		} else if strings.HasPrefix(containerStatus.ContainerID, "cri-o://") {
-			info.Runtime = "cri-o"
-		} else {
-			info.Runtime = "unknown"
-		}
+		fullID = containerStatus.ContainerID
+	}
 
-		// In a real implementation, you would query the runtime for more details
-		info.CgroupPath = fmt.Sprintf("/sys/fs/cgroup/docker/%s", containerID)
+	// Detect the container runtime from the CRI ID prefix.
+	info.Runtime = runtimeFromContainerID(fullID)
+
+	// Record identifiers useful for correlating with eBPF/cgroup data.
+	if fullID != "" {
+		info.ExtraInfo["fullContainerID"] = fullID
+	}
+	info.ExtraInfo["shortID"] = shortContainerID(containerID)
+
+	// Best-effort default cgroup path based on the runtime and cgroup layout.
+	info.CgroupPath = defaultCgroupPath(info.Runtime, containerID)
+
+	// If this process shares the node with the container, resolve the actual
+	// PID and cgroup path by scanning procfs for a process whose cgroup
+	// membership references this container ID.
+	if pid, cgroupPath, ok := findContainerProcess(containerID); ok {
+		info.PID = pid
+		if cgroupPath != "" {
+			info.CgroupPath = cgroupPath
+		}
 	}
 
 	return info
+}
+
+// runtimeFromContainerID maps a CRI container ID prefix to a runtime name.
+func runtimeFromContainerID(fullID string) string {
+	switch {
+	case strings.HasPrefix(fullID, "docker://"):
+		return "docker"
+	case strings.HasPrefix(fullID, "containerd://"):
+		return "containerd"
+	case strings.HasPrefix(fullID, "cri-o://"):
+		return "cri-o"
+	default:
+		return "unknown"
+	}
+}
+
+// shortContainerID returns the 12-character short form commonly used in cgroup
+// paths, or the full ID when shorter.
+func shortContainerID(containerID string) string {
+	if len(containerID) > 12 {
+		return containerID[:12]
+	}
+	return containerID
+}
+
+// defaultCgroupPath returns a best-effort cgroup path for a container based on
+// the runtime and typical Kubernetes cgroup layouts.
+func defaultCgroupPath(runtime, containerID string) string {
+	switch runtime {
+	case "docker":
+		return "/sys/fs/cgroup/docker/" + containerID
+	case "containerd", "cri-o":
+		return "/sys/fs/cgroup/kubepods/" + containerID
+	default:
+		return "/sys/fs/cgroup/" + containerID
+	}
+}
+
+// findContainerProcess scans procfs for a process whose cgroup membership
+// references the given container ID and returns its PID and the parsed cgroup
+// path. It returns ok=false when no match is found or procfs is unavailable.
+func findContainerProcess(containerID string) (int32, string, bool) {
+	if containerID == "" {
+		return 0, "", false
+	}
+
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return 0, "", false
+	}
+
+	short := shortContainerID(containerID)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+
+		cgroupFile := filepath.Join(procRoot, entry.Name(), "cgroup")
+		cgroupPath, matched := matchCgroupFile(cgroupFile, containerID, short)
+		if matched {
+			return int32(pid), cgroupPath, true
+		}
+	}
+
+	return 0, "", false
+}
+
+// matchCgroupFile parses a /proc/<pid>/cgroup file and returns the cgroup path
+// for the entry that references the container ID (full or short form).
+func matchCgroupFile(path, fullID, shortID string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Format: hierarchy-ID:controller-list:cgroup-path
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		cgroupPath := parts[2]
+		if strings.Contains(cgroupPath, fullID) ||
+			(len(shortID) >= 12 && strings.Contains(cgroupPath, shortID)) {
+			return cgroupPath, true
+		}
+	}
+
+	return "", false
 }
 
 // determineContainerState determines the current state of a container
