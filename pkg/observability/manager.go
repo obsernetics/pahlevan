@@ -24,9 +24,9 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	// OTLP exporters commented out due to dependency issues
-	// "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	// "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	// "go.opentelemetry.io/otel/sdk/instrumentation"
@@ -87,8 +87,11 @@ type Config struct {
 
 // ExporterConfig defines exporter configuration
 type ExporterConfig struct {
-	Type       ExporterType
-	Endpoint   string
+	Type ExporterType
+	// Endpoint is the collector address, e.g. otel-collector:4317 for OTLP/gRPC.
+	Endpoint string
+	// Insecure disables TLS to the collector (common for in-cluster collectors).
+	Insecure   bool
 	Headers    map[string]string
 	Attributes map[string]string
 	Config     map[string]interface{}
@@ -592,11 +595,34 @@ func (m *Manager) initializeTracing(res *resource.Resource) error {
 	for _, exporterConfig := range m.config.TracingExporters {
 		switch exporterConfig.Type {
 		case ExporterTypeOTLP:
-			// OTLP trace exporter temporarily disabled due to dependency issues
-			log.Log.Info("OTLP trace exporter temporarily disabled")
+			// Real OTLP/gRPC exporter. Both exporters used to be stubbed out with
+			// a log line, so the provider was built with zero span processors and
+			// tracing silently did nothing while still being advertised.
+			opts := []otlptracegrpc.Option{}
+			if exporterConfig.Endpoint != "" {
+				opts = append(opts, otlptracegrpc.WithEndpoint(exporterConfig.Endpoint))
+			}
+			if exporterConfig.Insecure {
+				opts = append(opts, otlptracegrpc.WithInsecure())
+			}
+			if len(exporterConfig.Headers) > 0 {
+				opts = append(opts, otlptracegrpc.WithHeaders(exporterConfig.Headers))
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			exp, err := otlptracegrpc.New(ctx, opts...)
+			cancel()
+			if err != nil {
+				log.Log.Error(err, "failed to create OTLP trace exporter", "endpoint", exporterConfig.Endpoint)
+				continue
+			}
+			exporters = append(exporters, exp)
 		case ExporterTypeConsole:
-			// Console trace exporter temporarily disabled due to API compatibility
-			log.Log.Info("Console trace exporter temporarily disabled")
+			exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+			if err != nil {
+				log.Log.Error(err, "failed to create console trace exporter")
+				continue
+			}
+			exporters = append(exporters, exp)
 		}
 	}
 
@@ -914,4 +940,31 @@ func (m *Manager) ExportObservabilityData() (*ObservabilityData, error) {
 	}
 
 	return data, nil
+}
+
+// StartSpan begins a span on the manager's tracer. It is safe to call before or
+// after tracing is configured: when tracing is disabled the global no-op tracer
+// is used, so callers never need to nil-check. Previously the manager built a
+// TracerProvider with no exporters and no caller ever started a span, so tracing
+// was advertised but produced nothing.
+func (m *Manager) StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	m.mu.RLock()
+	tr := m.tracer
+	m.mu.RUnlock()
+	if tr == nil {
+		tr = otel.Tracer("pahlevan.io/operator")
+	}
+	ctx, span := tr.Start(ctx, name)
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	return ctx, span
+}
+
+// TracingEnabled reports whether at least one span exporter is configured, so
+// callers and tests can distinguish "tracing off" from "tracing broken".
+func (m *Manager) TracingEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tracerProvider != nil
 }
