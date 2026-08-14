@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -398,5 +399,72 @@ func TestVMExecAdaptiveEnforcement(t *testing.T) {
 		t.Error("expected unlearned binary exec to be DENIED under enforcement")
 	} else {
 		t.Logf("DENIED in-kernel as expected: exec /tmp/pahlevan-unlearned -> %v", err)
+	}
+}
+
+// TestVMMapMemoryFootprint loads every program and reports the real kernel memory
+// the BPF maps reserve, summed from bpftool JSON. BPF maps are preallocated, so
+// this is the floor of the agent's memory cost and was the dominant term in the
+// benchmark's 327 MiB figure. VM-only.
+func TestVMMapMemoryFootprint(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+
+	for name, load := range map[string]func() (*ebpf.CollectionSpec, error){
+		"syscall": LoadSyscallMonitor,
+		"file":    LoadFileMonitor,
+		"network": LoadNetworkMonitor,
+		"exec":    LoadExecMonitor,
+	} {
+		spec, err := load()
+		if err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+		c, err := ebpf.NewCollection(spec)
+		if err != nil {
+			t.Fatalf("create %s collection: %v", name, err)
+		}
+		defer c.Close()
+	}
+
+	out, err := exec.Command("bpftool", "-j", "map", "show").Output()
+	if err != nil {
+		t.Fatalf("bpftool -j map show: %v", err)
+	}
+	var maps []struct {
+		Name       string `json:"name"`
+		MaxEntries uint32 `json:"max_entries"`
+		Memlock    int64  `json:"bytes_memlock"`
+	}
+	if err := json.Unmarshal(out, &maps); err != nil {
+		t.Fatalf("parse bpftool json: %v", err)
+	}
+
+	ours := map[string]bool{
+		"events": true, "file_events": true, "network_events": true, "exec_events": true,
+		"syscall_seen": true, "file_allowed": true, "network_allowed": true, "exec_allowed": true,
+		"file_mode": true, "network_mode": true, "exec_mode": true,
+		"config_map": true, "file_config": true,
+	}
+	var total int64
+	var matched int
+	for _, m := range maps {
+		if ours[m.Name] {
+			total += m.Memlock
+			matched++
+			t.Logf("  %-16s max_entries=%-8d memlock=%.2f MiB", m.Name, m.MaxEntries, float64(m.Memlock)/(1024*1024))
+		}
+	}
+	if matched == 0 {
+		t.Fatal("measurement failed: bpftool listed none of the pahlevan maps")
+	}
+	mib := float64(total) / (1024 * 1024)
+	t.Logf("TOTAL pahlevan BPF map memlock (%d maps, all 4 programs): %.1f MiB", matched, mib)
+	if mib > 64 {
+		t.Errorf("BPF map footprint is %.1f MiB (expected well under 64 MiB); check max_entries sizing", mib)
 	}
 }

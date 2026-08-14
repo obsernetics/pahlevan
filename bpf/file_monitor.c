@@ -33,7 +33,7 @@ struct file_event {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 << 24);
+	__uint(max_entries, 1 << 18); /* 256 KiB; events are deduped in-kernel */
 } file_events SEC(".maps");
 
 /* The learned allow-set: key = cgroup_id ^ FNV(path). During learning this is
@@ -43,7 +43,9 @@ struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, __u64);
 	__type(value, __u8);
-	__uint(max_entries, 1 << 20);
+	/* Working set of (cgroup, path) pairs on a node. LRU evicts the tail, so
+	 * this bounds memory instead of preallocating ~60 MiB. */
+	__uint(max_entries, 1 << 17);
 } file_allowed SEC(".maps");
 
 /* Per-cgroup enforcement mode: absent/0 = learning, 1 = enforcing. Userspace
@@ -54,7 +56,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
 	__type(value, __u8);
-	__uint(max_entries, 1 << 16);
+	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } file_mode SEC(".maps");
 
 struct fconfig {
