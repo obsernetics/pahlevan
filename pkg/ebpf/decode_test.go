@@ -135,16 +135,45 @@ func buildCapRec(cgroup, ts uint64, pid, cap, flags uint32, comm string) []byte 
 }
 
 func buildExecRec(cgroup, ts uint64, pid, ppid, uid, flags uint32, comm, pcomm, filename string) []byte {
-	b := make([]byte, 192)
+	var chain []Ancestor
+	if ppid != 0 {
+		chain = []Ancestor{{PID: ppid, Comm: pcomm}}
+	}
+	return buildExecRecAncestry(cgroup, ts, pid, uid, flags, comm, filename, chain)
+}
+
+// buildExecRecAncestry encodes the full `struct exec_event`, ancestry included.
+// It mirrors the C layout independently of the constants in manager.go, so a
+// change to one side fails the test instead of both moving together silently.
+func buildExecRecAncestry(cgroup, ts uint64, pid, uid, flags uint32, comm, filename string, chain []Ancestor) []byte {
+	const (
+		offComm     = 32
+		offParent   = 48
+		offAncestry = 64
+		ancSize     = 20
+		offFilename = offAncestry + 4*ancSize // 144
+		total       = offFilename + 128       // 272
+	)
+	b := make([]byte, total)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
 	binary.LittleEndian.PutUint64(b[8:], ts)
 	binary.LittleEndian.PutUint32(b[16:], pid)
-	binary.LittleEndian.PutUint32(b[20:], ppid)
+	if len(chain) > 0 {
+		binary.LittleEndian.PutUint32(b[20:], chain[0].PID) // ppid
+		copy(b[offParent:offParent+16], chain[0].Comm)
+	}
 	binary.LittleEndian.PutUint32(b[24:], uid)
 	binary.LittleEndian.PutUint32(b[28:], flags)
-	copy(b[32:48], comm)
-	copy(b[48:64], pcomm)
-	copy(b[64:192], filename)
+	copy(b[offComm:offComm+16], comm)
+	for i, a := range chain {
+		if i >= 4 {
+			break
+		}
+		off := offAncestry + i*ancSize
+		binary.LittleEndian.PutUint32(b[off:], a.PID)
+		copy(b[off+4:off+20], a.Comm)
+	}
+	copy(b[offFilename:total], filename)
 	return b
 }
 
@@ -186,6 +215,114 @@ func TestParseProcessEventAncestry(t *testing.T) {
 	}
 	if parseProcessEvent(make([]byte, 10)) != nil {
 		t.Error("short buffer must decode to nil")
+	}
+	if len(ev.Ancestry) != 1 || ev.Ancestry[0].PID != 1234 || ev.Ancestry[0].Comm != "bash" {
+		t.Errorf("ancestry = %+v", ev.Ancestry)
+	}
+}
+
+// The lineage is what makes a denial actionable, so decoding it correctly at
+// every depth matters more than the single-parent case it replaces.
+func TestParseProcessEventFullAncestry(t *testing.T) {
+	chain := []Ancestor{
+		{PID: 300, Comm: "sh"},
+		{PID: 200, Comm: "nginx"},
+		{PID: 1, Comm: "init"},
+	}
+	rec := buildExecRecAncestry(7004, 9, 400, 0, 0, "curl", "/usr/bin/curl", chain)
+	ev := parseProcessEvent(rec)
+	if ev == nil {
+		t.Fatal("nil event")
+	}
+	if len(ev.Ancestry) != 3 {
+		t.Fatalf("expected 3 ancestors, got %d: %+v", len(ev.Ancestry), ev.Ancestry)
+	}
+	for i, want := range chain {
+		if ev.Ancestry[i] != want {
+			t.Errorf("ancestry[%d] = %+v, want %+v", i, ev.Ancestry[i], want)
+		}
+	}
+	// PPID stays consistent with the nearest ancestor for existing consumers.
+	if ev.PPID != 300 || ev.ParentComm != "sh" {
+		t.Errorf("ppid/pcomm = %d/%q, want 300/sh", ev.PPID, ev.ParentComm)
+	}
+	if got, want := ev.AncestryChain(), "init -> nginx -> sh -> curl"; got != want {
+		t.Errorf("chain = %q, want %q", got, want)
+	}
+}
+
+// A zero pid terminates the chain, so a shallow lineage must not report
+// phantom ancestors from the zeroed tail of the array.
+func TestParseProcessEventShallowAncestry(t *testing.T) {
+	rec := buildExecRecAncestry(1, 1, 400, 0, 0, "curl", "/usr/bin/curl",
+		[]Ancestor{{PID: 300, Comm: "sh"}})
+	ev := parseProcessEvent(rec)
+	if ev == nil {
+		t.Fatal("nil event")
+	}
+	if len(ev.Ancestry) != 1 {
+		t.Fatalf("expected exactly 1 ancestor, got %d: %+v", len(ev.Ancestry), ev.Ancestry)
+	}
+	if got, want := ev.AncestryChain(), "sh -> curl"; got != want {
+		t.Errorf("chain = %q, want %q", got, want)
+	}
+}
+
+func TestParseProcessEventNoAncestry(t *testing.T) {
+	rec := buildExecRecAncestry(1, 1, 400, 0, 0, "init", "/sbin/init", nil)
+	ev := parseProcessEvent(rec)
+	if ev == nil {
+		t.Fatal("nil event")
+	}
+	if len(ev.Ancestry) != 0 {
+		t.Errorf("expected no ancestors, got %+v", ev.Ancestry)
+	}
+	if ev.PPID != 0 {
+		t.Errorf("ppid = %d, want 0", ev.PPID)
+	}
+	if got := ev.AncestryChain(); got != "init" {
+		t.Errorf("chain = %q, want %q", got, "init")
+	}
+}
+
+// The array holds four entries; a deeper chain is truncated, not overrun.
+func TestParseProcessEventAncestryIsBounded(t *testing.T) {
+	chain := []Ancestor{
+		{PID: 5, Comm: "a"}, {PID: 4, Comm: "b"}, {PID: 3, Comm: "c"}, {PID: 2, Comm: "d"},
+	}
+	ev := parseProcessEvent(buildExecRecAncestry(1, 1, 6, 0, 0, "e", "/e", chain))
+	if ev == nil {
+		t.Fatal("nil event")
+	}
+	if len(ev.Ancestry) != AncestryDepth {
+		t.Fatalf("expected %d ancestors, got %d", AncestryDepth, len(ev.Ancestry))
+	}
+	if got, want := ev.AncestryChain(), "d -> c -> b -> a -> e"; got != want {
+		t.Errorf("chain = %q, want %q", got, want)
+	}
+}
+
+func BenchmarkParseProcessEventFullAncestry(b *testing.B) {
+	rec := buildExecRecAncestry(1, 1, 6, 0, 0, "curl", "/usr/bin/curl", []Ancestor{
+		{PID: 5, Comm: "sh"}, {PID: 4, Comm: "entrypoint"},
+		{PID: 3, Comm: "nginx"}, {PID: 1, Comm: "init"},
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = parseProcessEvent(rec)
+	}
+}
+
+func BenchmarkAncestryChain(b *testing.B) {
+	ev := &ProcessEvent{Comm: "curl", Ancestry: []Ancestor{
+		{PID: 5, Comm: "sh"}, {PID: 4, Comm: "entrypoint"},
+		{PID: 3, Comm: "nginx"}, {PID: 1, Comm: "init"},
+	}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ev.AncestryChain()
 	}
 }
 

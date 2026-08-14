@@ -151,10 +151,16 @@ type EventHandler interface {
 	HandleCapabilityEvent(event *CapabilityEvent) error
 }
 
+// Ancestor is one link in a process's lineage.
+type Ancestor struct {
+	PID  uint32
+	Comm string
+}
+
 // ProcessEvent is an execve observed by the LSM bprm_check_security hook.
 type ProcessEvent struct {
 	PID         uint32
-	PPID        uint32 // parent tgid (process ancestry)
+	PPID        uint32 // parent tgid; same as Ancestry[0].PID when present
 	UID         uint32
 	Flags       uint32 // 0x80000000 => denied in-kernel, 0x40000000 => killed
 	Timestamp   uint64
@@ -163,6 +169,25 @@ type ProcessEvent struct {
 	ParentComm  string
 	Filename    string
 	ContainerID string
+
+	// Ancestry is the process lineage, nearest ancestor first, up to
+	// AncestryDepth entries and truncated at pid 1. A denial reads far better
+	// as "nginx -> sh -> curl" than as "curl was denied".
+	Ancestry []Ancestor
+}
+
+// AncestryChain renders the lineage oldest-first with the execing process last,
+// e.g. "nginx -> sh -> curl".
+func (e *ProcessEvent) AncestryChain() string {
+	if len(e.Ancestry) == 0 {
+		return e.Comm
+	}
+	parts := make([]string, 0, len(e.Ancestry)+1)
+	for i := len(e.Ancestry) - 1; i >= 0; i-- {
+		parts = append(parts, e.Ancestry[i].Comm)
+	}
+	parts = append(parts, e.Comm)
+	return strings.Join(parts, " -> ")
 }
 
 // CapabilityEvent is a capability check observed by the LSM capable hook.
@@ -1233,13 +1258,37 @@ func (m *Manager) SetNetworkEnforcement(cgroupID uint64, enforce bool) error {
 	return nil
 }
 
-// parseProcessEvent decodes the CO-RE `struct exec_event` from bpf/exec_monitor.c:
+// AncestryDepth is the number of ancestors bpf/exec_monitor.c records, matching
+// ANCESTRY_DEPTH there. The two must move together.
+const AncestryDepth = 4
+
+// Byte offsets of `struct exec_event` in bpf/exec_monitor.c. The C layout is:
 //
-//	__u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 ppid; __u32 uid;
-//	__u32 flags; __u8 comm[16]; __u8 pcomm[16]; __u8 filename[128];  // 192 bytes
+//	__u64 cgroup_id;              // 0
+//	__u64 timestamp_ns;           // 8
+//	__u32 pid, ppid, uid, flags;  // 16
+//	__u8  comm[16];               // 32
+//	__u8  pcomm[16];              // 48
+//	struct ancestor {             // 64, 4 entries of 20 bytes
+//	        __u32 pid; __u8 comm[16];
+//	} ancestry[4];
+//	__u8  filename[128];          // 144
+//	                              // 272 total
+//
+// Spelled out as named constants because a wrong offset here decodes into
+// plausible-looking garbage rather than failing, which is exactly the kind of
+// skew pahlevan_ebpf_decode_errors_total exists to make visible.
+const (
+	execOffComm      = 32
+	execOffParent    = 48
+	execOffAncestry  = 64
+	execAncestorSize = 20
+	execOffFilename  = execOffAncestry + AncestryDepth*execAncestorSize
+	execEventSize    = execOffFilename + 128
+)
+
 func parseProcessEvent(data []byte) *ProcessEvent {
-	const size = 8 + 8 + 4 + 4 + 4 + 4 + 16 + 16 + 128
-	if len(data) < size {
+	if len(data) < execEventSize {
 		return nil
 	}
 	ev := &ProcessEvent{
@@ -1256,9 +1305,24 @@ func parseProcessEvent(data []byte) *ProcessEvent {
 		}
 		return string(b)
 	}
-	ev.Comm = cut(data[32:48])
-	ev.ParentComm = cut(data[48:64])
-	ev.Filename = cut(data[64:192])
+	ev.Comm = cut(data[execOffComm : execOffComm+16])
+	ev.ParentComm = cut(data[execOffParent : execOffParent+16])
+	ev.Filename = cut(data[execOffFilename:execEventSize])
+
+	// The chain is terminated by the first zero pid, so a shallow lineage does
+	// not report phantom ancestors.
+	for i := 0; i < AncestryDepth; i++ {
+		off := execOffAncestry + i*execAncestorSize
+		pid := binary.LittleEndian.Uint32(data[off : off+4])
+		if pid == 0 {
+			break
+		}
+		ev.Ancestry = append(ev.Ancestry, Ancestor{
+			PID:  pid,
+			Comm: cut(data[off+4 : off+20]),
+		})
+	}
+
 	ev.ContainerID = fmt.Sprintf("cgroup:%d", ev.CgroupID)
 	return ev
 }

@@ -24,16 +24,31 @@ char LICENSE[] SEC("license") = "GPL";
 #define MODE_LEARN 0
 #define MODE_ENFORCE 1
 
+/* Depth of the recorded process lineage, not counting the execing process
+ * itself. Four is enough for the chains that matter in a container -
+ * entrypoint -> shell -> tool -> child - and the walk has to be a bounded loop
+ * for the verifier anyway. Each level costs 20 bytes in the event. */
+#define ANCESTRY_DEPTH 4
+
+struct ancestor {
+	__u32 pid;      /* tgid; 0 marks the end of the chain */
+	__u8  comm[16];
+};
+
 struct exec_event {
 	__u64 cgroup_id;
 	__u64 timestamp_ns;
 	__u32 pid;  /* tgid */
-	__u32 ppid; /* parent tgid: process ancestry, so a denial can be traced
-		     * back to who spawned it (parity with Tetragon lineage). */
+	__u32 ppid; /* parent tgid: kept as its own field so existing consumers
+		     * do not have to understand the ancestry array. Equal to
+		     * ancestry[0].pid. */
 	__u32 uid;
 	__u32 flags; /* bit 0x80000000 => denied, 0x40000000 => killed */
 	__u8  comm[16];
-	__u8  pcomm[16]; /* parent comm */
+	__u8  pcomm[16]; /* parent comm; equal to ancestry[0].comm */
+	/* Full lineage, nearest ancestor first. A denial is far more actionable
+	 * as "nginx -> sh -> curl" than as "curl was denied". */
+	struct ancestor ancestry[ANCESTRY_DEPTH];
 	__u8  filename[PATH_MAX_LEN];
 };
 
@@ -99,15 +114,36 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	e->flags = 0;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
-	/* Process ancestry: record the parent so an alert or denial identifies the
-	 * spawning process, not just the doomed child. */
+	/* Process ancestry: walk real_parent so a denial identifies the whole
+	 * chain that led to it, not just the doomed child. The loop is bounded and
+	 * fully unrolled, which is what the verifier requires. */
 	e->ppid = 0;
 	e->pcomm[0] = 0;
+	__builtin_memset(e->ancestry, 0, sizeof(e->ancestry));
 	{
 		struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-		if (task) {
-			e->ppid = BPF_CORE_READ(task, real_parent, tgid);
-			BPF_CORE_READ_STR_INTO(&e->pcomm, task, real_parent, comm);
+#pragma unroll
+		for (int i = 0; i < ANCESTRY_DEPTH; i++) {
+			if (!task)
+				break;
+			struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+			if (!parent)
+				break;
+			__u32 ptgid = BPF_CORE_READ(parent, tgid);
+			/* pid 0 is the idle task and every chain terminates at pid 1;
+			 * recording past that is noise, and a task that is its own
+			 * parent would otherwise spin out the unrolled loop. */
+			if (ptgid == 0 || parent == task)
+				break;
+			e->ancestry[i].pid = ptgid;
+			BPF_CORE_READ_STR_INTO(&e->ancestry[i].comm, parent, comm);
+			if (i == 0) {
+				e->ppid = ptgid;
+				BPF_CORE_READ_STR_INTO(&e->pcomm, parent, comm);
+			}
+			if (ptgid == 1)
+				break;
+			task = parent;
 		}
 	}
 

@@ -140,8 +140,22 @@ func FromProcessEvent(e *ebpf.ProcessEvent, now time.Time) *Event {
 			UID:  e.UID,
 			Comm: e.Comm,
 		},
-		Exec: &ExecInfo{Binary: e.Filename},
+		Exec: execInfo(e),
 	}
+}
+
+// execInfo carries the binary and the lineage that led to it.
+func execInfo(e *ebpf.ProcessEvent) *ExecInfo {
+	info := &ExecInfo{Binary: e.Filename}
+	if len(e.Ancestry) == 0 {
+		return info
+	}
+	info.Ancestry = make([]AncestorInfo, 0, len(e.Ancestry))
+	for _, a := range e.Ancestry {
+		info.Ancestry = append(info.Ancestry, AncestorInfo{PID: a.PID, Comm: a.Comm})
+	}
+	info.AncestryChain = e.AncestryChain()
+	return info
 }
 
 // FromCapabilityEvent converts a raw capability check into the envelope.
