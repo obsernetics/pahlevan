@@ -80,6 +80,14 @@ type ContainerProfileStatus struct {
 	// DenialCount is the number of in-kernel denials observed since the current
 	// enforce transition. It resets on every transition and on rollback.
 	DenialCount int32 `json:"denialCount,omitempty"`
+
+	// Per-signal breakdown of DenialCount. Split out because "twelve denials"
+	// and "twelve denied egress attempts" are very different findings, and the
+	// operator aggregates these into the governing policy's status.
+	DeniedFiles        int32 `json:"deniedFiles,omitempty"`
+	DeniedNetwork      int32 `json:"deniedNetwork,omitempty"`
+	DeniedExecs        int32 `json:"deniedExecs,omitempty"`
+	DeniedCapabilities int32 `json:"deniedCapabilities,omitempty"`
 }
 
 // +kubebuilder:object:root=true

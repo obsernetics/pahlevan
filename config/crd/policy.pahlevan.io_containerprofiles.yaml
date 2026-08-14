@@ -124,6 +124,22 @@ spec:
                   enforce transition. It resets on every transition and on rollback.
                 format: int32
                 type: integer
+              deniedCapabilities:
+                format: int32
+                type: integer
+              deniedExecs:
+                format: int32
+                type: integer
+              deniedFiles:
+                description: |-
+                  Per-signal breakdown of DenialCount. Split out because "twelve denials"
+                  and "twelve denied egress attempts" are very different findings, and the
+                  operator aggregates these into the governing policy's status.
+                format: int32
+                type: integer
+              deniedNetwork:
+                format: int32
+                type: integer
               enforcementAttempts:
                 description: |-
                   EnforcementAttempts is how many times this container has been transitioned

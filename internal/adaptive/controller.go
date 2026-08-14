@@ -194,8 +194,11 @@ type cgState struct {
 	caps          map[uint32]struct{}
 
 	// Enforcement health tracking.
-	enforcingSince     time.Time
-	denials            int
+	enforcingSince time.Time
+	denials        int
+	// Per-signal breakdown of denials, reset alongside it. "Twelve denials" and
+	// "twelve denied egress attempts" are very different findings.
+	denialsByKind      map[string]int
 	attempts           int
 	rollbacks          int
 	lastRollback       time.Time
@@ -218,10 +221,22 @@ type cgState struct {
 // noteDenial records an in-kernel denial. Only denials observed while the
 // container is enforcing are meaningful: they are the ones caused by the
 // baseline Pahlevan just installed. Callers must hold c.mu.
-func (st *cgState) noteDenial() {
-	if st.phase == PhaseEnforcing {
-		st.denials++
+func (st *cgState) noteDenial(kind string) {
+	if st.phase != PhaseEnforcing {
+		return
 	}
+	st.denials++
+	if st.denialsByKind == nil {
+		st.denialsByKind = make(map[string]int, 4)
+	}
+	st.denialsByKind[kind]++
+}
+
+// resetDenials clears the counters at an enforce transition and on rollback, so
+// they always describe the current attempt rather than the container's history.
+func (st *cgState) resetDenials() {
+	st.denials = 0
+	st.denialsByKind = nil
 }
 
 // Controller tracks per-cgroup learning state and flips cgroups to enforcement
@@ -319,7 +334,7 @@ func (c *Controller) HandleFileEvent(e *ebpf.FileEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Flags&DeniedFlag != 0 {
-		c.recordDenial(st)
+		c.recordDenial(st, DenialKindFile)
 		return nil
 	}
 	if st.phase == PhaseLearning && e.Path != "" {
@@ -337,7 +352,7 @@ func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Direction&DeniedDirection != 0 {
-		c.recordDenial(st)
+		c.recordDenial(st, DenialKindNetwork)
 		return nil
 	}
 	if st.phase == PhaseLearning {
@@ -359,7 +374,7 @@ func (c *Controller) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Flags&DeniedFlag != 0 {
-		c.recordDenial(st)
+		c.recordDenial(st, DenialKindExec)
 		return nil
 	}
 	if st.phase == PhaseLearning && e.Filename != "" {
@@ -377,7 +392,7 @@ func (c *Controller) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
 	if e.Flags&DeniedFlag != 0 {
-		c.recordDenial(st)
+		c.recordDenial(st, DenialKindCapability)
 		return nil
 	}
 	if st.phase == PhaseLearning {
@@ -385,6 +400,15 @@ func (c *Controller) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
 	}
 	return nil
 }
+
+// Denial kinds, matching the eBPF event kinds. Used for the per-signal
+// breakdown reported on ContainerProfile and aggregated onto the policy.
+const (
+	DenialKindFile       = "file"
+	DenialKindNetwork    = "network"
+	DenialKindExec       = "exec"
+	DenialKindCapability = "capability"
+)
 
 // metricLabels builds the label set for a tracked container. PodMeta is
 // consulted only when a recorder is actually attached, so the nil-Metrics path
@@ -402,8 +426,8 @@ func (c *Controller) metricLabels(st *cgState) metrics.MetricLabels {
 
 // recordDenial notes an in-kernel denial on both the container state and the
 // policy-plane metrics. Callers must hold c.mu.
-func (c *Controller) recordDenial(st *cgState) {
-	st.noteDenial()
+func (c *Controller) recordDenial(st *cgState, kind string) {
+	st.noteDenial(kind)
 	if c.Metrics != nil && st.phase == PhaseEnforcing {
 		c.Metrics.RecordPolicyViolation(c.metricLabels(st))
 	}
@@ -604,7 +628,7 @@ func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 	st.phase = PhaseEnforcing
 	st.enforcingSince = now
 	st.attempts++
-	st.denials = 0
+	st.resetDenials()
 	st.overrides = d.Overrides
 	st.policyName = d.PolicyName
 	st.baseline = CaptureBaseline(c.fetchPod(st))
@@ -715,7 +739,7 @@ func (c *Controller) rollback(id uint64, st *cgState, reason string) {
 	st.rollbacks++
 	st.lastRollback = now
 	st.lastRollbackReason = reason
-	st.denials = 0
+	st.resetDenials()
 	st.enforcingSince = time.Time{}
 	st.baseline = ContainerBaseline{}
 	// Restart the learning window and hold off the next attempt. The cooldown
@@ -937,6 +961,10 @@ func (c *Controller) persistProfile(st *cgState) {
 			RollbackCount:              int32(st.rollbacks),
 			LastRollbackReason:         st.lastRollbackReason,
 			DenialCount:                int32(st.denials),
+			DeniedFiles:                int32(st.denialsByKind[DenialKindFile]),
+			DeniedNetwork:              int32(st.denialsByKind[DenialKindNetwork]),
+			DeniedExecs:                int32(st.denialsByKind[DenialKindExec]),
+			DeniedCapabilities:         int32(st.denialsByKind[DenialKindCapability]),
 		},
 	}
 	if st.phase == PhaseEnforcing && !st.enforcingSince.IsZero() {

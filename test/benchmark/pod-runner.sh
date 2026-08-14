@@ -76,6 +76,15 @@ for f in "${BENCH}"/scenarios/benign/*.sh; do
   kinds+=("benign")
   srcs+=("$(<"${f}")")
 done
+# Mechanism probes: builtin-only actions that reach one specific kernel decision
+# (socket_connect, file_open) without exec'ing a helper binary first. They are
+# NOT part of the 26 attack scenarios and are never scored as such.
+for f in "${BENCH}"/scenarios/probes/*.sh; do
+  [ -e "${f}" ] || continue
+  names+=("${f##*/}")
+  kinds+=("probe")
+  srcs+=("$(<"${f}")")
+done
 
 # Prime the trigger path into the allow-set while learning is still on.
 _prime=$(<"${BENCH}/trigger")
