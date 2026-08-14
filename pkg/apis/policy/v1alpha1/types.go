@@ -527,14 +527,35 @@ type EnforcementStatus struct {
 	// StartTime indicates when enforcement started
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 
-	// BlockedSyscalls indicates blocked syscall count
+	// BlockedSyscalls indicates blocked syscall count.
+	//
+	// Always zero today, and kept for API compatibility. Syscalls are confined
+	// by the generated seccomp profile, whose denials the kernel does not
+	// report back to this agent, while the BPF syscall program is observation
+	// only. The counters below are the ones that carry real numbers.
 	BlockedSyscalls int64 `json:"blockedSyscalls,omitempty"`
 
-	// BlockedNetworkConnections indicates blocked network connections
+	// BlockedNetworkConnections indicates connect() calls denied in-kernel.
 	BlockedNetworkConnections int64 `json:"blockedNetworkConnections,omitempty"`
 
-	// BlockedFileAccess indicates blocked file access count
+	// BlockedFileAccess indicates file opens denied in-kernel.
 	BlockedFileAccess int64 `json:"blockedFileAccess,omitempty"`
+
+	// BlockedExecs indicates execve calls denied in-kernel.
+	BlockedExecs int64 `json:"blockedExecs,omitempty"`
+
+	// BlockedCapabilities indicates capability checks denied in-kernel.
+	BlockedCapabilities int64 `json:"blockedCapabilities,omitempty"`
+
+	// BlockedTotal is the sum of every in-kernel denial across the containers
+	// this policy governs. It exists so the printed column reports the whole
+	// picture rather than one signal.
+	BlockedTotal int64 `json:"blockedTotal,omitempty"`
+
+	// EnforcingContainers and TotalContainers describe how many of the
+	// containers this policy selects have actually reached enforcement.
+	EnforcingContainers int32 `json:"enforcingContainers,omitempty"`
+	TotalContainers     int32 `json:"totalContainers,omitempty"`
 
 	// AlertsGenerated indicates alerts generated count
 	AlertsGenerated int64 `json:"alertsGenerated,omitempty"`
@@ -587,7 +608,7 @@ type WorkloadReference struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Learning",type=string,JSONPath=`.status.learningStatus.progress`
-// +kubebuilder:printcolumn:name="Blocked",type=integer,JSONPath=`.status.enforcementStatus.blockedSyscalls`
+// +kubebuilder:printcolumn:name="Blocked",type=integer,JSONPath=`.status.enforcementStatus.blockedTotal`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PahlevanPolicy is the Schema for the pahlevanpolicies API

@@ -91,7 +91,7 @@ def main():
     print(head)
     print(sep)
     for name in order:
-        if name.startswith("b0"):
+        if name.startswith("b0") or name.startswith("p0"):
             continue
         cells = "| `%s` | %s |" % (name[:-3], control.get(name, "n/a"))
         for t in present:
@@ -106,6 +106,26 @@ def main():
             if mech:
                 blk += " (%s)" % mech
             cells += " %s | %s |" % (det, blk)
+        print(cells)
+
+    print("\n### Mechanism probes (builtin-only; not scored as attacks)\n")
+    head = "| Probe | Control |"
+    sep = "|---|---|"
+    for t in present:
+        head += " %s outcome | %s signals |" % (t.capitalize(), t.capitalize())
+        sep += ":-:|---|"
+    print(head)
+    print(sep)
+    for name in order:
+        if not name.startswith("p0"):
+            continue
+        cells = "| `%s` | %s |" % (name[:-3], control.get(name, "n/a"))
+        for t in present:
+            r = rows[name].get(t)
+            if r is None:
+                cells += " n/a | n/a |"
+                continue
+            cells += " %s | %s |" % (r["outcome"], "; ".join(r["signals"])[:120] or "-")
         print(cells)
 
     print("\n### Benign controls (false positives)\n")
@@ -151,6 +171,8 @@ def main():
     for t in present:
         det = blk = fp = 0
         for r in data[t]["scenarios"]:
+            if r["kind"] == "probe":
+                continue
             if r["kind"] == "benign":
                 if r["outcome"] != "allowed":
                     fp += 1

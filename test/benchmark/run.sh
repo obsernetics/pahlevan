@@ -504,7 +504,7 @@ echo "--- final mode maps ---"
 sudo python3 /tmp/modes.py "\$CGIDS" || true
 echo "--- allow-set sizes ---"
 for m in file_allowed exec_allowed network_allowed cap_allowed; do
-  echo "\$m: \$(sudo bpftool -j map dump name \$m 2>/dev/null | grep -c '"key"' || echo '?')"
+  echo "\$m: \$(sudo bpftool -j map dump name \$m 2>/dev/null | grep -o '"key"' | wc -l)"
 done
 echo "--- agent restarts ---"
 sudo kubectl -n pahlevan-system get pod -l app.kubernetes.io/name=pahlevan-agent \

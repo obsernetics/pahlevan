@@ -38,7 +38,7 @@ spec:
     - jsonPath: .status.learningStatus.progress
       name: Learning
       type: string
-    - jsonPath: .status.enforcementStatus.blockedSyscalls
+    - jsonPath: .status.enforcementStatus.blockedTotal
       name: Blocked
       type: integer
     - jsonPath: .metadata.creationTimestamp
@@ -759,18 +759,46 @@ spec:
                     description: AlertsGenerated indicates alerts generated count
                     format: int64
                     type: integer
+                  blockedCapabilities:
+                    description: BlockedCapabilities indicates capability checks denied
+                      in-kernel.
+                    format: int64
+                    type: integer
+                  blockedExecs:
+                    description: BlockedExecs indicates execve calls denied in-kernel.
+                    format: int64
+                    type: integer
                   blockedFileAccess:
-                    description: BlockedFileAccess indicates blocked file access count
+                    description: BlockedFileAccess indicates file opens denied in-kernel.
                     format: int64
                     type: integer
                   blockedNetworkConnections:
-                    description: BlockedNetworkConnections indicates blocked network
-                      connections
+                    description: BlockedNetworkConnections indicates connect() calls
+                      denied in-kernel.
                     format: int64
                     type: integer
                   blockedSyscalls:
-                    description: BlockedSyscalls indicates blocked syscall count
+                    description: |-
+                      BlockedSyscalls indicates blocked syscall count.
+
+                      Always zero today, and kept for API compatibility. Syscalls are confined
+                      by the generated seccomp profile, whose denials the kernel does not
+                      report back to this agent, while the BPF syscall program is observation
+                      only. The counters below are the ones that carry real numbers.
                     format: int64
+                    type: integer
+                  blockedTotal:
+                    description: |-
+                      BlockedTotal is the sum of every in-kernel denial across the containers
+                      this policy governs. It exists so the printed column reports the whole
+                      picture rather than one signal.
+                    format: int64
+                    type: integer
+                  enforcingContainers:
+                    description: |-
+                      EnforcingContainers and TotalContainers describe how many of the
+                      containers this policy selects have actually reached enforcement.
+                    format: int32
                     type: integer
                   rollbackCount:
                     description: RollbackCount indicates number of rollbacks performed
@@ -780,6 +808,9 @@ spec:
                     description: StartTime indicates when enforcement started
                     format: date-time
                     type: string
+                  totalContainers:
+                    format: int32
+                    type: integer
                 type: object
               lastUpdated:
                 description: LastUpdated indicates when status was last updated
@@ -979,6 +1010,22 @@ spec:
                 description: |-
                   DenialCount is the number of in-kernel denials observed since the current
                   enforce transition. It resets on every transition and on rollback.
+                format: int32
+                type: integer
+              deniedCapabilities:
+                format: int32
+                type: integer
+              deniedExecs:
+                format: int32
+                type: integer
+              deniedFiles:
+                description: |-
+                  Per-signal breakdown of DenialCount. Split out because "twelve denials"
+                  and "twelve denied egress attempts" are very different findings, and the
+                  operator aggregates these into the governing policy's status.
+                format: int32
+                type: integer
+              deniedNetwork:
                 format: int32
                 type: integer
               enforcementAttempts:

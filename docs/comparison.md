@@ -271,7 +271,7 @@ which is not a story.
 | Prometheus endpoint | Yes, `:8080`, served by controller-runtime | Yes, native | Yes, native and extensive |
 | Metrics that actually work | Data plane: events, denials and decode errors per event kind, all five kinds pre-created so an idle kind reports 0 rather than being absent. Policy plane: policy violations, enforcement actions, rollbacks, self-healing actions, learning duration, privilege reduction, learned attack surface, and per-node phase gauges. Plus export sent and dropped | A broad set, including rule hit counts, drops, and engine internals | A broad set: per-policy, per-sensor, event counts, map pressure, and overhead |
 | Metrics that exist but read zero | **None registered by default.** `pkg/metrics` previously built roughly fifty collectors, registered none of them, and had 39 recorders called from nowhere. Registration happens now and the controller feeds the series. The per-container ones are keyed by container id crossed with a syscall or path, so they are behind `--metrics-detail=high` rather than left on to melt a Prometheus | n/a | n/a |
-| Policy status counters | `status.enforcementStatus.blocked*` fields exist and **are not incremented** | n/a | n/a |
+| Policy status counters | Real. The operator rolls the per-container `ContainerProfile` denial counts up onto the policy: `blockedFileAccess`, `blockedNetworkConnections`, `blockedExecs`, `blockedCapabilities`, `blockedTotal`, plus enforcing/total container counts. `blockedSyscalls` stays zero and says why: seccomp denials are not reported back to the agent | n/a | n/a |
 | Health probes | Yes, `:8081` | Yes | Yes |
 | OpenTelemetry tracing | Real OTLP/gRPC and console span exporters, plus a `StartSpan` API proven by tests to record spans and nest them. Instrumentation coverage of the codebase is still thin | Not a tracing tool, but the ecosystem covers it | Metrics focused |
 | Grafana dashboards | Types exist in code, nothing is exported | Community dashboards | Published dashboards |
@@ -376,21 +376,18 @@ Listed plainly, worst first. Every item here is real and current.
    after admission, and the operator deliberately runs without a mutating
    webhook, so today an operator has to reference the generated profile
    themselves.
-10. **Policy status counters stay at zero.** `status.enforcementStatus.blocked*`
-    exists and is not incremented, even though the underlying denials are now
-    counted on the metrics endpoint and on `ContainerProfile`.
-11. **Grafana dashboards are not published.** The metrics are real now; nothing
+10. **Grafana dashboards are not published.** The metrics are real now; nothing
     ships to visualise them.
-12. **No syscall arguments, no command-line arguments, no image, no pod labels,
+11. **No syscall arguments, no command-line arguments, no image, no pod labels,
     no workload owner** on events. Both comparators have all of this.
-13. **eBPF load tests and the benchmark are not automated.** The unit suite,
+12. **eBPF load tests and the benchmark are not automated.** The unit suite,
     `-race`, gofmt, coverage and an arm64 cross-build all run in CI now, but
     the kernel tests need a VM with `lsm=bpf` and the competitor benchmark
     needs three tools installed, so both are still run by hand.
-14. **OpenTelemetry instrumentation is thin.** Real OTLP and stdout exporters
+13. **OpenTelemetry instrumentation is thin.** Real OTLP and stdout exporters
     and a working `StartSpan` exist, but very little of the codebase is
     actually instrumented, so a trace shows almost nothing.
-15. **Learning is trust on first use.** A workload that is already compromised
+14. **Learning is trust on first use.** A workload that is already compromised
     when learning starts has its malicious behaviour baselined. Policy deny
     lists and exceptions let an operator correct the edges, but there is no
     review or approval step before a learned profile takes effect. This is the

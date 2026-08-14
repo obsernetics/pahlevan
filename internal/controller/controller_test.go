@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func testScheme(t *testing.T) *runtime.Scheme {
+func testScheme(t testing.TB) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -32,7 +32,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
+func newFakeClient(t testing.TB, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
@@ -255,15 +255,91 @@ func TestPahlevanPolicy_HandleTransition_NoWorkloadError(t *testing.T) {
 	}
 }
 
+// profileFor builds a ContainerProfile as a node agent would publish it.
+func profileFor(name, ns, policyRef, phase string, files, network, execs, caps, rollbacks int32) *policyv1alpha1.ContainerProfile {
+	return &policyv1alpha1.ContainerProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec:       policyv1alpha1.ContainerProfileSpec{PolicyRef: policyRef},
+		Status: policyv1alpha1.ContainerProfileStatus{
+			Phase:              phase,
+			DeniedFiles:        files,
+			DeniedNetwork:      network,
+			DeniedExecs:        execs,
+			DeniedCapabilities: caps,
+			DenialCount:        files + network + execs + caps,
+			RollbackCount:      rollbacks,
+		},
+	}
+}
+
+// The policy's blocked* counters used to stay at zero forever while the printed
+// column claimed to show blocked syscalls. They are rolled up from the
+// ContainerProfiles the node agents publish.
+func TestPahlevanPolicy_AggregatesContainerProfiles(t *testing.T) {
+	policy := samplePolicy("p1", "default", map[string]string{"app": "web"})
+	policy.Status.Phase = policyv1alpha1.PolicyPhaseEnforcing
+
+	c := newFakeClient(t, policy,
+		profileFor("c1", "default", "p1", "Enforcing", 3, 2, 1, 0, 1),
+		profileFor("c2", "default", "p1", "Learning", 1, 0, 0, 4, 0),
+		// Governed by a different policy: must not be counted.
+		profileFor("c3", "default", "other", "Enforcing", 100, 100, 100, 100, 9),
+	)
+	r := &PahlevanPolicyReconciler{Client: c, Scheme: testScheme(t)}
+
+	if err := r.aggregateProfiles(context.Background(), policy); err != nil {
+		t.Fatalf("aggregateProfiles: %v", err)
+	}
+	st := policy.Status.EnforcementStatus
+	if st == nil {
+		t.Fatal("expected enforcement status")
+	}
+	if st.TotalContainers != 2 || st.EnforcingContainers != 1 {
+		t.Errorf("containers = %d total / %d enforcing, want 2/1", st.TotalContainers, st.EnforcingContainers)
+	}
+	if st.BlockedFileAccess != 4 || st.BlockedNetworkConnections != 2 ||
+		st.BlockedExecs != 1 || st.BlockedCapabilities != 4 {
+		t.Errorf("per-kind wrong: %+v", st)
+	}
+	if st.BlockedTotal != 11 {
+		t.Errorf("blockedTotal = %d, want 11", st.BlockedTotal)
+	}
+	if st.RollbackCount != 1 {
+		t.Errorf("rollbackCount = %d, want 1", st.RollbackCount)
+	}
+	// Syscalls are confined by seccomp, whose denials this agent cannot see.
+	if st.BlockedSyscalls != 0 {
+		t.Errorf("blockedSyscalls = %d, want 0", st.BlockedSyscalls)
+	}
+}
+
+// StartTime is set at the enforce transition and must survive a roll-up.
+func TestPahlevanPolicy_AggregatePreservesStartTime(t *testing.T) {
+	policy := samplePolicy("p1", "default", nil)
+	start := metav1.NewTime(time.Unix(1700000000, 0))
+	policy.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{StartTime: &start}
+
+	c := newFakeClient(t, policy)
+	r := &PahlevanPolicyReconciler{Client: c, Scheme: testScheme(t)}
+	if err := r.aggregateProfiles(context.Background(), policy); err != nil {
+		t.Fatalf("aggregateProfiles: %v", err)
+	}
+	if policy.Status.EnforcementStatus.StartTime == nil ||
+		!policy.Status.EnforcementStatus.StartTime.Equal(&start) {
+		t.Errorf("startTime lost: %+v", policy.Status.EnforcementStatus.StartTime)
+	}
+}
+
 func TestPahlevanPolicy_HandleEnforcement_SelfHealing(t *testing.T) {
 	policy := samplePolicy("p1", "default", map[string]string{"app": "web"})
 	policy.Finalizers = []string{"pahlevan.io/finalizer"}
 	policy.Status.Phase = policyv1alpha1.PolicyPhaseEnforcing
 	policy.Spec.SelfHealing.Enabled = true
-	policy.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{
-		BlockedSyscalls: 2000, // over threshold
-	}
-	c := newFakeClient(t, policy)
+
+	// One container denying heavily: the roll-up puts it over the per-container
+	// threshold, which is what the backstop reads.
+	c := newFakeClient(t, policy,
+		profileFor("c1", "default", "p1", "Enforcing", 2000, 0, 0, 0, 0))
 	r := &PahlevanPolicyReconciler{Client: c, Scheme: testScheme(t)}
 
 	res, err := r.handleEnforcement(context.Background(), policy)
@@ -275,6 +351,31 @@ func TestPahlevanPolicy_HandleEnforcement_SelfHealing(t *testing.T) {
 	}
 	if policy.Status.Phase != policyv1alpha1.PolicyPhaseRollingBack {
 		t.Fatalf("expected RollingBack, got %s", policy.Status.Phase)
+	}
+	if policy.Status.EnforcementStatus.BlockedTotal != 2000 {
+		t.Errorf("blockedTotal = %d, want 2000", policy.Status.EnforcementStatus.BlockedTotal)
+	}
+}
+
+// A healthy fleet must not be rolled back by the backstop.
+func TestPahlevanPolicy_HandleEnforcement_HealthyIsLeftAlone(t *testing.T) {
+	policy := samplePolicy("p1", "default", map[string]string{"app": "web"})
+	policy.Status.Phase = policyv1alpha1.PolicyPhaseEnforcing
+	policy.Spec.SelfHealing.Enabled = true
+
+	c := newFakeClient(t, policy,
+		profileFor("c1", "default", "p1", "Enforcing", 2, 1, 0, 0, 0))
+	r := &PahlevanPolicyReconciler{Client: c, Scheme: testScheme(t)}
+
+	res, err := r.handleEnforcement(context.Background(), policy)
+	if err != nil {
+		t.Fatalf("handleEnforcement: %v", err)
+	}
+	if res.Requeue {
+		t.Errorf("healthy policy should not requeue immediately: %+v", res)
+	}
+	if policy.Status.Phase != policyv1alpha1.PolicyPhaseEnforcing {
+		t.Errorf("phase = %s, want Enforcing", policy.Status.Phase)
 	}
 }
 
@@ -425,13 +526,31 @@ func TestPahlevanPolicy_ShouldTriggerSelfHealing(t *testing.T) {
 	if r.shouldTriggerSelfHealing(p) {
 		t.Fatal("expected false with nil enforcement status")
 	}
-	p.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{BlockedSyscalls: 10}
+	// The threshold is now an average per governed container, so a policy with
+	// no containers cannot trip it however large the count.
+	p.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{BlockedTotal: 100000}
+	if r.shouldTriggerSelfHealing(p) {
+		t.Fatal("expected false with no governed containers")
+	}
+
+	p.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{
+		BlockedTotal: 10, TotalContainers: 1,
+	}
 	if r.shouldTriggerSelfHealing(p) {
 		t.Fatal("expected false below threshold")
 	}
+
 	p.Status.EnforcementStatus.BlockedFileAccess = 5000
+	p.Status.EnforcementStatus.BlockedTotal = 5010
 	if !r.shouldTriggerSelfHealing(p) {
 		t.Fatal("expected true above threshold")
+	}
+
+	// A large deployment must not trip the backstop simply by being large:
+	// the same absolute count spread over many containers is normal.
+	p.Status.EnforcementStatus.TotalContainers = 50
+	if r.shouldTriggerSelfHealing(p) {
+		t.Fatal("expected false when the same total is spread across 50 containers")
 	}
 }
 
