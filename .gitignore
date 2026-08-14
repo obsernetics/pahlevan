@@ -21,11 +21,13 @@ build/
 vendor/
 
 # eBPF related
-# Compiled BPF objects are build artifacts; the bpf2go-generated Go bindings
-# (*_bpfel.go / *_bpfeb.go) ARE committed so `go build ./...` works without a
-# clang/codegen step. Regenerate them with `make ebpf` / `go generate ./pkg/ebpf/`.
+# The bpf2go-generated Go bindings (*_bpfel.go / *_bpfeb.go) AND the compiled
+# objects they //go:embed (pkg/ebpf/*.o) are committed, so `go build ./...` works
+# from a clean checkout with no clang/codegen step. Regenerate with `make ebpf`.
+# All other *.o (e.g. the redundant manual bpf/*.o compile artifacts) stay ignored.
 *.bpf.o
 *.o
+!pkg/ebpf/*.o
 
 # Testing and coverage
 coverage.out
