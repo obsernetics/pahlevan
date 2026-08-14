@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/metric"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Package-level counters are registered exactly once with the default registry.
@@ -43,7 +44,7 @@ var (
 // CO-RE in a later step and still compile against kernel uapi headers.
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" SyscallMonitor ../../bpf/syscall_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" NetworkMonitor ../../bpf/network_monitor.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -I/usr/include/x86_64-linux-gnu" FileMonitor ../../bpf/file_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" FileMonitor ../../bpf/file_monitor.c
 
 type Manager struct {
 	mu                  sync.RWMutex
@@ -118,6 +119,7 @@ type FileEvent struct {
 	Mode        uint16
 	Action      uint8
 	Comm        string
+	CgroupID    uint64 // real attribution key from bpf_get_current_cgroup_id()
 	ContainerID string
 	Path        string
 }
@@ -187,58 +189,45 @@ func (m *Manager) LoadPrograms() error {
 		return fmt.Errorf("eBPF support check failed: %v", err)
 	}
 
-	// Load syscall monitor (requires tracepoint support)
+	// The syscall monitor is REQUIRED — it is the core observation program.
 	if !m.capabilities.HasTracepointSupport {
 		return fmt.Errorf("syscall monitoring requires tracepoint support which is not available on this system. Please ensure debugfs is mounted and kernel has tracepoint support")
 	}
-
 	syscallSpecs, err := LoadSyscallMonitor()
 	if err != nil {
 		return fmt.Errorf("failed to load syscall monitor specs: %v", err)
 	}
 	m.syscallSpecs = syscallSpecs
-
 	syscallColl, err := ebpf.NewCollection(syscallSpecs)
 	if err != nil {
 		return fmt.Errorf("failed to create syscall collection: %v", err)
 	}
 	m.syscallCollection = syscallColl
 
-	// Load network monitor (may require TC support for some features)
-	networkSpecs, err := LoadNetworkMonitor()
-	if err != nil {
-		if !m.capabilities.HasTCSupport {
-			return fmt.Errorf("network monitoring failed to load and TC (traffic control) support is not available. Please install iproute2 package and ensure you have root privileges. Error: %v", err)
+	// The file (LSM) and network monitors are BEST-EFFORT: a kernel without the
+	// bpf LSM (file) or without the still-migrating network program should still
+	// run the agent in a degraded, syscall-only mode rather than fail outright.
+	if fileSpecs, ferr := LoadFileMonitor(); ferr == nil {
+		if fileColl, cerr := ebpf.NewCollection(fileSpecs); cerr == nil {
+			m.fileSpecs = fileSpecs
+			m.fileCollection = fileColl
+		} else {
+			log.Log.V(0).Info("file monitor unavailable; continuing without file observation", "error", cerr.Error())
 		}
-		return fmt.Errorf("failed to load network monitor specs: %v", err)
+	} else {
+		log.Log.V(0).Info("file monitor spec unavailable; continuing without file observation", "error", ferr.Error())
 	}
-	m.networkSpecs = networkSpecs
 
-	networkColl, err := ebpf.NewCollection(networkSpecs)
-	if err != nil {
-		if !m.capabilities.HasTCSupport {
-			return fmt.Errorf("network monitoring collection creation failed and TC support is not available. Network monitoring will be limited. Error: %v", err)
+	if netSpecs, nerr := LoadNetworkMonitor(); nerr == nil {
+		if netColl, cerr := ebpf.NewCollection(netSpecs); cerr == nil {
+			m.networkSpecs = netSpecs
+			m.networkCollection = netColl
+		} else {
+			log.Log.V(0).Info("network monitor unavailable; continuing without network observation", "error", cerr.Error())
 		}
-		return fmt.Errorf("failed to create network collection: %v", err)
+	} else {
+		log.Log.V(0).Info("network monitor spec unavailable; continuing without network observation", "error", nerr.Error())
 	}
-	m.networkCollection = networkColl
-
-	// Load file monitor (requires tracepoint support)
-	if !m.capabilities.HasTracepointSupport {
-		return fmt.Errorf("file monitoring requires tracepoint support which is not available on this system")
-	}
-
-	fileSpecs, err := LoadFileMonitor()
-	if err != nil {
-		return fmt.Errorf("failed to load file monitor specs: %v", err)
-	}
-	m.fileSpecs = fileSpecs
-
-	fileColl, err := ebpf.NewCollection(fileSpecs)
-	if err != nil {
-		return fmt.Errorf("failed to create file collection: %v", err)
-	}
-	m.fileCollection = fileColl
 
 	return nil
 }
@@ -247,10 +236,9 @@ func (m *Manager) AttachPrograms() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Programs must be loaded before they can be attached. Guard against nil
-	// collections so a misordered Start()/AttachPrograms() returns an error
-	// instead of panicking on a nil-map dereference.
-	if m.syscallCollection == nil || m.networkCollection == nil || m.fileCollection == nil {
+	// The syscall collection is required; network/file are best-effort and may be
+	// nil in degraded mode. Guard against a misordered Start()/AttachPrograms().
+	if m.syscallCollection == nil {
 		return fmt.Errorf("cannot attach: eBPF programs not loaded (call LoadPrograms first)")
 	}
 
@@ -268,32 +256,21 @@ func (m *Manager) AttachPrograms() error {
 		m.syscallLinks = append(m.syscallLinks, l)
 	}
 
-	// Attach file monitor tracepoints
-	fileTracepoints := []string{
-		"sys_enter_openat",
-		"sys_enter_open",
-		"sys_enter_creat",
-		"sys_enter_unlink",
-		"sys_enter_unlinkat",
-		"sys_enter_mkdir",
-		"sys_enter_mkdirat",
-		"sys_enter_rmdir",
-	}
-
-	for _, tp := range fileTracepoints {
-		prog := m.fileCollection.Programs[fmt.Sprintf("trace_file_%s", tp)]
-		if prog == nil {
-			prog = m.fileCollection.Programs[fmt.Sprintf("trace_file_%s", tp[11:])] // Remove sys_enter_ prefix
+	// Attach the file monitor via the BPF LSM file_open hook. This sees the
+	// resolved struct file (full path via bpf_d_path) and, in a later phase, can
+	// DENY by returning -EPERM — something tracepoints cannot do. Requires a
+	// kernel booted with the bpf LSM active (lsm=...,bpf).
+	if m.fileCollection != nil {
+		if prog := m.fileCollection.Programs["file_open"]; prog != nil {
+			l, err := link.AttachLSM(link.LSMOptions{Program: prog})
+			if err != nil {
+				// Degrade gracefully: without the bpf LSM active, keep running with
+				// syscall observation rather than failing the whole data plane.
+				log.Log.V(0).Info("lsm/file_open attach failed; file enforcement/observation disabled (enable with lsm=...,bpf)", "error", err.Error())
+			} else {
+				m.fileLinks = append(m.fileLinks, l)
+			}
 		}
-		if prog == nil {
-			continue
-		}
-
-		l, err := link.Tracepoint("syscalls", tp, prog, nil)
-		if err != nil {
-			return fmt.Errorf("failed to attach file tracepoint %s: %v", tp, err)
-		}
-		m.fileLinks = append(m.fileLinks, l)
 	}
 
 	// Setup event readers
@@ -315,24 +292,27 @@ func (m *Manager) setupEventReaders() error {
 		m.eventReader = reader
 	}
 
-	// Network events
-	networkEventsMap := m.networkCollection.Maps["network_events"]
-	if networkEventsMap != nil {
-		reader, err := ringbuf.NewReader(networkEventsMap)
-		if err != nil {
-			return fmt.Errorf("failed to create network event reader: %v", err)
+	// Network events (best-effort; nil in degraded mode).
+	if m.networkCollection != nil {
+		if networkEventsMap := m.networkCollection.Maps["network_events"]; networkEventsMap != nil {
+			reader, err := ringbuf.NewReader(networkEventsMap)
+			if err != nil {
+				log.Log.V(0).Info("network event reader unavailable", "error", err.Error())
+			} else {
+				m.networkEventReader = reader
+			}
 		}
-		m.networkEventReader = reader
 	}
 
-	// File events
-	fileEventsMap := m.fileCollection.Maps["file_events"]
-	if fileEventsMap != nil {
-		reader, err := ringbuf.NewReader(fileEventsMap)
-		if err != nil {
-			return fmt.Errorf("failed to create file event reader: %v", err)
+	// File events (best-effort; nil in degraded mode).
+	if m.fileCollection != nil {
+		if fileEventsMap := m.fileCollection.Maps["file_events"]; fileEventsMap != nil {
+			reader, err := ringbuf.NewReader(fileEventsMap)
+			if err != nil {
+				return fmt.Errorf("failed to create file event reader: %v", err)
+			}
+			m.fileEventReader = reader
 		}
-		m.fileEventReader = reader
 	}
 
 	return nil
@@ -857,91 +837,35 @@ func parseNetworkEvent(data []byte) *NetworkEvent {
 }
 
 func parseFileEvent(data []byte) *FileEvent {
-	if len(data) < 40 { // Minimum size for file event
-		return &FileEvent{}
+	// CO-RE `struct file_event` from bpf/file_monitor.c:
+	//   __u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 uid; __u32 gid;
+	//   __u32 flags; __u8 comm[16]; __u8 path[128];   // 176 bytes
+	const size = 8 + 8 + 4 + 4 + 4 + 4 + 16 + 128
+	if len(data) < size {
+		return nil
 	}
-
-	event := &FileEvent{}
-	offset := 0
-
-	// Parse PID (4 bytes)
-	event.PID = binary.LittleEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Parse TGID (4 bytes)
-	event.TGID = binary.LittleEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Parse UID (4 bytes)
-	event.UID = binary.LittleEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Parse GID (4 bytes)
-	event.GID = binary.LittleEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Parse Timestamp (8 bytes)
-	event.Timestamp = binary.LittleEndian.Uint64(data[offset : offset+8])
-	offset += 8
-
-	// Parse SyscallNr (4 bytes)
-	event.SyscallNr = binary.LittleEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Parse Flags (4 bytes)
-	event.Flags = binary.LittleEndian.Uint32(data[offset : offset+4])
-	offset += 4
-
-	// Parse Mode (2 bytes)
-	event.Mode = binary.LittleEndian.Uint16(data[offset : offset+2])
-	offset += 2
-
-	// Parse Action (1 byte)
-	if offset < len(data) {
-		event.Action = data[offset]
-		offset++
+	event := &FileEvent{
+		CgroupID:  binary.LittleEndian.Uint64(data[0:8]),
+		Timestamp: binary.LittleEndian.Uint64(data[8:16]),
+		PID:       binary.LittleEndian.Uint32(data[16:20]),
+		UID:       binary.LittleEndian.Uint32(data[20:24]),
+		GID:       binary.LittleEndian.Uint32(data[24:28]),
+		Flags:     binary.LittleEndian.Uint32(data[28:32]),
 	}
-
-	// Skip padding byte
-	offset++
-
-	// Parse Comm (null-terminated string, up to 16 bytes)
-	commEnd := offset + 16
-	if commEnd > len(data) {
-		commEnd = len(data)
+	event.TGID = event.PID
+	comm := data[32:48]
+	if i := indexZero(comm); i >= 0 {
+		comm = comm[:i]
 	}
-
-	for i := offset; i < commEnd; i++ {
-		if data[i] == 0 {
-			event.Comm = string(data[offset:i])
-			break
-		}
-		if i == commEnd-1 {
-			event.Comm = string(data[offset:commEnd])
-		}
+	event.Comm = string(comm)
+	path := data[48:176]
+	if i := indexZero(path); i >= 0 {
+		path = path[:i]
 	}
-	offset = commEnd
-
-	// Parse Path (remaining bytes, null-terminated)
-	if offset < len(data) {
-		pathData := data[offset:]
-		for i, b := range pathData {
-			if b == 0 {
-				event.Path = string(pathData[:i])
-				break
-			}
-			if i == len(pathData)-1 {
-				event.Path = string(pathData)
-			}
-		}
-	}
-
-	// Container ID would be determined from PID namespace
-	event.ContainerID = fmt.Sprintf("container-%d", event.PID)
-
+	event.Path = string(path)
+	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
 	return event
 }
-
 // Validation methods for policy types
 func (cp *ContainerPolicy) Validate() error {
 	if cp.AllowedSyscalls == nil {
