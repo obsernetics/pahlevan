@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -713,25 +714,47 @@ func TestCompletionCommand(t *testing.T) {
 	}
 }
 
-func TestStubCommands(t *testing.T) {
-	// attack-surface analyze/report subcommands.
-	for _, sub := range []string{"analyze", "report"} {
-		as := NewAttackSurfaceCommand()
-		as.SetArgs([]string{sub})
-		if err := withSilencedStdout(t, as.Execute); err != nil {
-			t.Errorf("attack-surface %s error: %v", sub, err)
-		}
+// TestNoStubCommandsRemain guards the regression this package was built to fix:
+// every command that once printed "to be implemented" now either does real work
+// or fails loudly because it cannot reach a cluster. Silently succeeding while
+// doing nothing is the behaviour under test.
+func TestNoStubCommandsRemain(t *testing.T) {
+	clearClients(t)
+
+	commands := map[string]*cobra.Command{
+		"attack-surface analyze": NewAttackSurfaceAnalyzeCommand(),
+		"attack-surface report":  NewAttackSurfaceReportCommand(),
+		"logs":                   NewLogsCommand(),
+		"metrics":                NewMetricsCommand(),
+		"debug":                  NewDebugCommand(),
 	}
-	if n := len(NewAttackSurfaceCommand().Commands()); n != 2 {
-		t.Errorf("attack-surface should have 2 subcommands, got %d", n)
+	for name, cmd := range commands {
+		t.Run(name, func(t *testing.T) {
+			out, err := runCommand(t, cmd)
+			if err == nil {
+				t.Fatalf("%s succeeded without a cluster; a command that cannot do its job must say so", name)
+			}
+			if !strings.Contains(err.Error(), "not initialized") {
+				t.Errorf("error should explain the missing cluster connection: %v", err)
+			}
+			if strings.Contains(out, "to be implemented") {
+				t.Errorf("%s still prints a stub message: %s", name, out)
+			}
+		})
 	}
 
-	// logs/metrics/debug stubs.
-	for _, mk := range []func() *cobra.Command{NewLogsCommand, NewMetricsCommand, NewDebugCommand} {
-		cmd := mk()
-		cmd.SetArgs([]string{})
-		if err := withSilencedStdout(t, cmd.Execute); err != nil {
-			t.Errorf("%s stub error: %v", cmd.Use, err)
+	// The help text must not advertise unimplemented behaviour either.
+	all := []*cobra.Command{
+		NewAttackSurfaceCommand(), NewAttackSurfaceAnalyzeCommand(), NewAttackSurfaceReportCommand(),
+		NewLogsCommand(), NewMetricsCommand(), NewDebugCommand(),
+	}
+	for _, cmd := range all {
+		if strings.Contains(cmd.Long, "to be implemented") || strings.Contains(cmd.Short, "to be implemented") {
+			t.Errorf("%s help still says 'to be implemented'", cmd.Name())
 		}
+	}
+
+	if n := len(NewAttackSurfaceCommand().Commands()); n != 2 {
+		t.Errorf("attack-surface should have 2 subcommands, got %d", n)
 	}
 }
