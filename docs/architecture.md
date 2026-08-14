@@ -1,509 +1,183 @@
-# Architecture Overview
+# Architecture
 
-Pahlevan is designed as a cloud-native Kubernetes operator that leverages eBPF for kernel-level security enforcement. This document provides a comprehensive overview of the system architecture, components, and data flow.
+Pahlevan splits a **privileged per-node data plane** from an **unprivileged,
+leader-elected control plane**. The agent owns everything that touches the
+kernel; the operator owns everything that touches the Kubernetes API. This is
+the same node-instrumentation shape as Falco and Tetragon, with an operator
+driving a `selector -> learn -> enforce` lifecycle on top.
 
-## High-Level Architecture
+![Pahlevan architecture](assets/architecture.svg)
 
-```mermaid
-graph TB
-    subgraph "Kubernetes Cluster"
-        subgraph "Pahlevan Operator"
-            Controller[Policy Controller]
-            Manager[eBPF Manager]
-            Learning[Learning Engine]
-            Enforcement[Enforcement Engine]
-            SelfHealing[Self-Healing Engine]
-            Observability[Observability Manager]
-        end
+## Components
 
-        subgraph "eBPF Programs"
-            SyscallMonitor[Syscall Monitor]
-            NetworkMonitor[Network Monitor]
-            FileMonitor[File Monitor]
-        end
+### Agent (DaemonSet, one per node)
 
-        subgraph "Target Workloads"
-            Pod1[Pod 1]
-            Pod2[Pod 2]
-            Pod3[Pod N]
-        end
+The agent runs on every node and owns the eBPF data plane:
 
-        subgraph "Monitoring Stack"
-            Prometheus[Prometheus]
-            Grafana[Grafana]
-            AlertManager[Alert Manager]
-        end
-    end
+- Loads and attaches the CO-RE eBPF programs at startup, degrading gracefully
+  when a hook is unavailable (for example, no BPF LSM means observation only).
+- Resolves cgroup ids to Kubernetes pods and containers so every event carries
+  real workload identity.
+- Builds per-container baselines during the learning window and writes the
+  resulting allow-sets into BPF maps.
+- Enforces locally in the kernel. No user-space round trip sits on the hot path,
+  so a denial is a verdict returned by the LSM hook itself.
+- Exposes Prometheus metrics on `:8080` and health probes on `:8081`.
 
-    Controller --> Manager
-    Manager --> SyscallMonitor
-    Manager --> NetworkMonitor
-    Manager --> FileMonitor
+It does **not** run with `privileged: true`. It requests the capability set the
+work actually needs (`CAP_BPF`, `CAP_PERFMON`, `CAP_SYS_ADMIN`,
+`CAP_SYS_RESOURCE`, `CAP_NET_ADMIN`) with `readOnlyRootFilesystem: true` and
+`drop: ALL` for everything else. `CAP_BPF` and `CAP_PERFMON` are the modern
+least-privilege pair on kernel 5.8 and newer; `CAP_SYS_ADMIN` and
+`CAP_SYS_RESOURCE` cover older kernels and map operations.
 
-    SyscallMonitor --> Pod1
-    SyscallMonitor --> Pod2
-    SyscallMonitor --> Pod3
+### Operator (Deployment, leader-elected)
 
-    NetworkMonitor --> Pod1
-    NetworkMonitor --> Pod2
-    NetworkMonitor --> Pod3
+The operator is an ordinary controller-runtime manager. It needs no host access
+at all, so it runs in a **user namespace** (`hostUsers: false`, Kubernetes 1.30+),
+which maps in-container root to an unprivileged host UID. It handles:
 
-    FileMonitor --> Pod1
-    FileMonitor --> Pod2
-    FileMonitor --> Pod3
+- Reconciling `PahlevanPolicy` resources and driving phase transitions.
+- Aggregating learning and enforcement status from every node agent.
+- Maintaining `ContainerProfile` and `AttackSurface` resources.
+- Admission, via a CEL `ValidatingAdmissionPolicy`. There is no admission
+  webhook, so there is no certificate rotation, no webhook availability risk,
+  and no extra network path in the API server's critical path.
 
-    Learning --> Controller
-    Enforcement --> Manager
-    SelfHealing --> Controller
+### Custom resources
 
-    Observability --> Prometheus
-    Prometheus --> Grafana
-    Prometheus --> AlertManager
+| Kind | Scope | Purpose |
+|---|---|---|
+| `PahlevanPolicy` | Namespaced | Selects workloads and configures the learning window, enforcement mode, and self-healing. |
+| `ContainerProfile` | Namespaced | The learned baseline for a container: syscalls, file paths, and egress destinations, persisted so restarts do not relearn from zero. |
+| `AttackSurface` | Namespaced | Aggregated posture and risk view derived from the observed and learned data. |
+
+## eBPF programs
+
+All programs are CO-RE (compile once, run everywhere): they are compiled during
+the build, the objects and bpf2go bindings are committed to the tree, and no
+per-node compilation or kernel headers are required at runtime.
+
+| Program | Hook | Role |
+|---|---|---|
+| `syscall_monitor.c` | `raw_tracepoint/sys_enter` | Observes every syscall, deduplicated in-kernel per `(cgroup, syscall)` so the ring buffer sees each pair once. |
+| `file_monitor.c` | `lsm/file_open` | Observes opens with paths resolved in-kernel via `bpf_d_path()`; denies unlearned paths with `EPERM` under enforcement. |
+| `network_monitor.c` | `lsm/socket_connect` | Observes egress; denies connections to destinations outside the learned allow-set. |
+| `exec_monitor.c` | `lsm/bprm_check_security` | Observes process execution; denies unlearned binaries. |
+| `lsm_monitor.c` | `lsm/task_alloc`, `lsm/socket_create`, `lsm/ptrace_access_check`, `lsm/capable`, `lsm/bprm_check_security` | Broader security-event surface for posture analysis. |
+
+Each enforcing program is driven by two map families: a `*_mode` map that says
+whether the cgroup is off, monitoring, or blocking, and a `*_allowed` map that
+holds the learned allow-set. Flipping a policy to enforcement is a map update,
+not a program reload.
+
+Every program passes the kernel verifier before it can attach, runs in the eBPF
+virtual machine with bounded loops and bounded memory, and is subject to the
+agent's resource limits.
+
+## Learn to enforce
+
+1. **Select.** A `PahlevanPolicy` selector matches target pods. The agent
+   identifies their cgroups with `bpf_get_current_cgroup_id()` and resolves those
+   ids back to pod and container names.
+2. **Learn.** During the learning window every file the container opens (path
+   resolved with `bpf_d_path()`), every egress destination it dials, and every
+   binary it executes is added to that cgroup's allow-set. Syscalls are observed
+   in parallel and deduplicated per `(cgroup, syscall)`.
+3. **Transition.** On `learningConfig.autoTransition`, or when you flip
+   `enforcementConfig.mode` by hand, the policy moves to enforcement and a
+   seccomp profile is generated from the learned syscall set.
+4. **Enforce.** An open of an unlearned path, an egress to an unlearned
+   destination, or an exec of an unlearned binary is **denied in-kernel with
+   `EPERM`** by the LSM hook, before the operation completes. A detection tool
+   can only tell you it already happened.
+
+`enforcementConfig.mode` accepts `Off`, `Monitoring`, and `Blocking`. Start in
+`Monitoring`, review the learned profile, then move to `Blocking`.
+
+### Verification
+
+The flow is verified in a VM on Linux 6.8 with the BPF LSM enabled
+(`hack/vm/up.sh`, then `make vm-test`). Representative output from the
+enforcement test:
+
+```text
+learned 28 (cgroup,path) allow-set entries
+learned /etc/hostname allowed under enforcement
+DENIED in-kernel as expected: cat /etc/os-release -> exit status 1
 ```
 
-## Core Components
-
-### 1. Policy Controller
-
-The Policy Controller is the central component that manages the lifecycle of Pahlevan policies.
-
-**Responsibilities:**
-- Watches for `PahlevanPolicy` custom resources
-- Coordinates learning and enforcement phases
-- Manages policy transitions and updates
-- Handles self-healing operations
-
-**Key Features:**
-- Kubernetes controller pattern implementation
-- Event-driven architecture
-- Graceful error handling and retries
-- Comprehensive status reporting
-
-```go
-type PolicyController struct {
-    client.Client
-    scheme          *runtime.Scheme
-    ebpfManager     *ebpf.Manager
-    learningEngine  *policies.LearningEngine
-    enforcementEngine *policies.EnforcementEngine
-    selfHealingManager *policies.SelfHealingManager
-}
-```
-
-### 2. eBPF Manager
-
-The eBPF Manager handles the loading, attachment, and management of eBPF programs with full production-ready implementation.
-
-**Responsibilities:**
-- Load and compile eBPF programs with comprehensive error handling
-- Attach programs to appropriate kernel hooks (LSM, kprobes, tracepoints)
-- Manage eBPF maps for policy data with efficient synchronization
-- Handle eBPF program lifecycle and cleanup
-- Provide real-time event parsing and processing
-
-**Implementation Status:** ✅ **Fully Implemented**
-- Complete eBPF event parsing (parseNetworkEvent, parseFileEvent)
-- Container policy management with proper state tracking
-- Comprehensive error handling and recovery mechanisms
-- Support for both LSM hooks (kernel 5.7+) and kprobe fallbacks
-- Handle program lifecycle and updates
-
-**eBPF Programs:**
-
-#### Syscall Monitor (`syscall_monitor.c`)
-- Attaches to tracepoints for syscall entry/exit
-- Profiles allowed/denied syscalls per container
-- Enforces syscall policies in real-time
-- Collects usage statistics
-
-#### Network Monitor (`network_monitor.c`)
-- Uses TC (Traffic Control) eBPF programs
-- Monitors ingress/egress network traffic
-- Enforces port-based policies
-- Tracks connection patterns
-
-#### File Monitor (`file_monitor.c`)
-- Attaches to tracepoint hooks for file operations
-- Monitors file access patterns (open, read, write)
-- Enforces file access policies
-- Tracks file access violations
-
-```c
-// Example syscall monitor structure
-struct syscall_event {
-    __u32 pid;
-    __u32 tgid;
-    __u32 uid;
-    __u64 syscall_nr;
-    __u64 timestamp;
-    char comm[TASK_COMM_LEN];
-    char container_id[CONTAINER_ID_LEN];
-};
-```
-
-### 3. Learning Engine
-
-The Learning Engine automatically profiles container behavior during the learning phase.
-
-**Responsibilities:**
-- Collect behavioral data from eBPF programs
-- Analyze patterns and generate baseline profiles
-- Create minimal security policies
-- Determine optimal transition timing
-
-**Learning Process:**
-1. **Data Collection**: Gather syscall, network, and file access data
-2. **Pattern Analysis**: Identify common behaviors and outliers
-3. **Profile Generation**: Create minimal allow-lists
-4. **Validation**: Ensure policies don't break legitimate operations
-
-```go
-type BehavioralProfile struct {
-    ContainerID    string
-    SyscallProfile SyscallProfile
-    NetworkProfile NetworkProfile
-    FileProfile    FileProfile
-    Confidence     float64
-    LastUpdated    time.Time
-}
-```
-
-### 4. Enforcement Engine
-
-The Enforcement Engine evaluates events against policies and takes enforcement actions.
-
-**Responsibilities:**
-- Real-time policy evaluation
-- Enforcement action execution
-- Violation logging and metrics
-- Performance optimization
-
-**Enforcement Modes:**
-- **Monitor**: Log violations without blocking
-- **Enforce**: Block violations and log events
-- **Alert**: Send alerts on violations
-
-```go
-type EnforcementResult struct {
-    Action      ActionType    // Allow, Deny, Alert
-    Reason      string
-    IsViolation bool
-    Confidence  float64
-    Metadata    map[string]interface{}
-}
-```
-
-### 5. Self-Healing Engine
-
-The Self-Healing Engine automatically recovers from policy failures with comprehensive implementation of all healing strategies.
-
-**Implementation Status:** ✅ **Fully Implemented**
-- Complete policy rollback verification with violation tracking
-- Intelligent policy relaxation based on violation types
-- Emergency mode activation for system compromise scenarios
-- Health monitoring with component-level status tracking
-- Anomaly detection with adaptive thresholds
-
-**Responsibilities:**
-- Monitor policy effectiveness
-- Detect and diagnose failures
-- Implement rollback strategies
-- Maintain system availability
-
-**Self-Healing Strategies:**
-- **Gradual Rollback**: Step-by-step policy relaxation
-- **Emergency Mode**: Disable enforcement during critical failures
-- **Learning Reset**: Restart learning phase if needed
-- **Intelligent Recovery**: Learn from failures to improve policies
-
-### 6. Observability Manager
-
-The Observability Manager provides comprehensive monitoring and alerting with full production implementation.
-
-**Implementation Status:** ✅ **Fully Implemented**
-- Complete metrics collection and export system
-- Multi-format alerting with webhook, email, Slack, and PagerDuty support
-- Comprehensive logging with structured output
-- Real-time performance monitoring
-
-**Components:**
-- **Metrics Collection**: Prometheus metrics for all components with custom metric definitions
-- **Distributed Tracing**: OpenTelemetry integration with Jaeger support
-- **Alerting**: Policy violation and system health alerts with multiple channels
-- **Dashboards**: Pre-built Grafana dashboards with attack surface visualization
-- **Attack Surface Analysis**: Real-time security posture assessment and visualization
-
-### 7. Attack Surface Analyzer
-
-The Attack Surface Analyzer provides continuous security posture assessment and risk analysis.
-
-**Implementation Status:** ✅ **Fully Implemented**
-- Complete attack surface mapping and analysis
-- Multi-format export capabilities (Prometheus, JSON, Grafana, OTEL)
-- Risk assessment with configurable matrices
-- Network topology analysis and vulnerability scanning
-
-**Key Features:**
-- Real-time attack surface calculation and scoring
-- Exporters for Prometheus, JSON, Grafana dashboards, and OpenTelemetry
-- Risk matrix configuration for different security levels
-- Integration with observability stack for comprehensive monitoring
-
-## Data Flow
-
-### 1. Learning Phase
-
-```mermaid
-sequenceDiagram
-    participant PC as Policy Controller
-    participant EM as eBPF Manager
-    participant LE as Learning Engine
-    participant EP as eBPF Programs
-    participant C as Container
-
-    PC->>EM: Start Learning for Container
-    EM->>EP: Load and Attach Programs
-    EP->>C: Monitor Behavior
-    C->>EP: Generate Events
-    EP->>LE: Send Learning Data
-    LE->>LE: Analyze Patterns
-    LE->>PC: Report Learning Progress
-    PC->>PC: Check Completion Criteria
-    PC->>LE: Generate Policy
-    LE->>PC: Return Generated Policy
-```
-
-### 2. Enforcement Phase
-
-```mermaid
-sequenceDiagram
-    participant C as Container
-    participant EP as eBPF Programs
-    participant EE as Enforcement Engine
-    participant PC as Policy Controller
-    participant OM as Observability Manager
-
-    C->>EP: Perform Operation
-    EP->>EE: Evaluate Against Policy
-    EE->>EE: Make Enforcement Decision
-    alt Operation Allowed
-        EE->>EP: Allow
-        EP->>C: Continue Operation
-    else Operation Denied
-        EE->>EP: Deny
-        EP->>C: Block Operation
-        EE->>OM: Log Violation
-        OM->>OM: Update Metrics
-    end
-```
-
-### 3. Self-Healing Process
-
-```mermaid
-sequenceDiagram
-    participant SH as Self-Healing Engine
-    participant PC as Policy Controller
-    participant OM as Observability Manager
-    participant LE as Learning Engine
-
-    OM->>SH: Report High Violation Rate
-    SH->>SH: Analyze Failure Pattern
-    SH->>PC: Trigger Rollback
-    PC->>PC: Relax Policy
-    SH->>OM: Monitor Recovery
-    alt Recovery Successful
-        SH->>SH: Mark Stable
-    else Recovery Failed
-        SH->>LE: Restart Learning
-        LE->>PC: Generate New Policy
-    end
-```
-
-## Security Model
-
-### Operator Privileges
-
-The Pahlevan operator requires specific privileges to function:
-
-```yaml
-# Required capabilities
-capabilities:
-  add:
-  - CAP_BPF          # Load eBPF programs
-  - CAP_SYS_ADMIN    # Manage kernel resources
-  - CAP_NET_ADMIN    # Network program attachment
-
-# Security context
-securityContext:
-  runAsNonRoot: true
-  runAsUser: 65534
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop: ["ALL"]
-    add: ["CAP_BPF", "CAP_SYS_ADMIN", "CAP_NET_ADMIN"]
-```
-
-### eBPF Program Security
-
-- **Kernel Verifier**: All eBPF programs pass through the kernel verifier
-- **Resource Limits**: Memory and CPU limits prevent DoS attacks
-- **Sandboxing**: Programs run in isolated eBPF virtual machine
-- **Program Signing**: Optional program signing for enhanced security
-
-### Policy Isolation
-
-- **Namespace Isolation**: Policies are namespace-scoped
-- **RBAC Integration**: Kubernetes RBAC controls policy access
-- **Least Privilege**: Minimal required permissions
-- **Audit Logging**: All policy changes are logged
-
-## Performance Characteristics
-
-### Resource Usage
-
-| Component | CPU (per container) | Memory (per container) | Network Impact |
-|-----------|-------------------|----------------------|----------------|
-| Syscall Monitor | ~1-2% | ~10-15MB | None |
-| Network Monitor | ~1-3% | ~5-10MB | Minimal |
-| File Monitor | ~1-2% | ~5-10MB | None |
-| **Total** | **~3-7%** | **~20-35MB** | **Minimal** |
-
-> **Note**: Performance characteristics vary based on workload behavior, policy complexity, and system load. These are estimated ranges based on typical usage patterns.
-
-### Scalability Limits
-
-- **Containers per Node**: Hundreds (limited by kernel eBPF resources)
-- **Policies per Cluster**: Thousands (limited by etcd and operator capacity)
-- **Events per Second**: Depends on ring buffer configuration and processing capacity
-- **Learning Time**: 5-30 minutes (configurable, depends on workload complexity)
-
-### Optimization Techniques
-
-- **Event Batching**: Reduce context switches
-- **Ring Buffer Tuning**: Optimize memory usage
-- **Program Caching**: Reuse loaded programs
-- **Policy Caching**: Cache compiled policies
-
-## Deployment Patterns
-
-### Single-Cluster Deployment
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: pahlevan-operator
-  namespace: pahlevan-system
-spec:
-  replicas: 1  # Single instance per cluster
-  selector:
-    matchLabels:
-      app: pahlevan-operator
-  template:
-    spec:
-      serviceAccountName: pahlevan-operator
-      containers:
-      - name: operator
-        image: obsernetics/pahlevan:latest
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-```
-
-### Multi-Cluster Deployment
-
-For multi-cluster setups, deploy Pahlevan in each cluster with centralized monitoring:
-
-```yaml
-# Central monitoring cluster
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-config
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 15s
-    scrape_configs:
-    - job_name: 'pahlevan-cluster-1'
-      static_configs:
-      - targets: ['cluster1-prometheus:9090']
-    - job_name: 'pahlevan-cluster-2'
-      static_configs:
-      - targets: ['cluster2-prometheus:9090']
-```
-
-## Integration Points
-
-### Kubernetes Integration
-
-- **Custom Resources**: Native Kubernetes API integration
-- **Controller Pattern**: Standard Kubernetes controller implementation
-- **Event System**: Kubernetes events for status updates
-- **Admission Controllers**: Optional integration for policy validation
-
-### Monitoring Integration
-
-- **Prometheus**: Native metrics export
-- **OpenTelemetry**: Distributed tracing support
-- **Grafana**: Pre-built dashboards
-- **AlertManager**: Alert routing and management
-
-### CI/CD Integration
-
-- **Policy as Code**: Version control for policies
-- **GitOps**: Automated policy deployment
-- **Testing**: Policy validation in CI pipelines
-- **Compliance**: Automated compliance reporting
-
-## Extension Points
-
-### Custom eBPF Programs
-
-Pahlevan supports loading custom eBPF programs:
-
-```go
-type CustomProgram struct {
-    Name        string
-    Type        ebpf.ProgramType
-    AttachType  ebpf.AttachType
-    Source      []byte
-    AttachPoint string
-}
-```
-
-### Policy Plugins
-
-Extend policy evaluation with custom logic:
-
-```go
-type PolicyPlugin interface {
-    Name() string
-    Evaluate(event Event, policy Policy) EnforcementResult
-    Configure(config map[string]interface{}) error
-}
-```
-
-### Webhook Integration
-
-> **Note**: Webhook support is planned for future releases.
-
-Integrate with external systems via webhooks:
-
-```yaml
-spec:
-  webhooks:
-  - name: "slack-alerts"
-    url: "https://hooks.slack.com/webhook/..."
-    events: ["violation", "policy-change"]
-  - name: "siem-integration"
-    url: "https://siem.company.com/api/events"
-    events: ["all"]
-```
-
-This architecture provides a robust, scalable, and secure foundation for eBPF-based Kubernetes security enforcement.
+The demo GIF in the README is a scripted replay of exactly this behavior.
+
+## Self-healing
+
+Enforcement built from a learned baseline can be wrong when the baseline was
+incomplete: a workload path exercised only at month end was never seen during a
+five-minute window. Self-healing exists so that failure mode degrades
+availability as little as possible.
+
+The operator watches violation rate and workload health after a transition. When
+enforcement correlates with disruption it relaxes the policy, and if relaxation
+does not recover the workload it rolls back to monitoring and can restart the
+learning phase. Set `selfHealing.enabled: false` if you would rather have a hard
+failure than an automatic rollback.
+
+## Security model
+
+- **Blast radius is split.** The component with kernel privilege has no cluster
+  API power beyond its own node's status reporting; the component with
+  cluster-wide API power runs in a user namespace with no host access.
+- **No admission webhook.** Policy validation is a CEL
+  `ValidatingAdmissionPolicy` evaluated by the API server itself.
+- **Namespace scoping.** Policies are namespaced and enforced through Kubernetes
+  RBAC. The `pahlevan-system` namespace is labelled
+  `pod-security.kubernetes.io/enforce: privileged` because the agent needs eBPF
+  capabilities; protected workloads live in their own namespaces and keep
+  whatever Pod Security level you already run.
+- **Verifier-gated code.** Nothing reaches the kernel that the verifier has not
+  accepted.
+
+## Kernel requirements
+
+| Capability | Requirement |
+|---|---|
+| Syscall, file, network, and exec observation | Linux 5.8+ (CO-RE, ring buffer, `CAP_BPF`) |
+| In-kernel enforcement (`EPERM` denials) | Linux 5.7+ with `CONFIG_BPF_LSM=y` and `bpf` in the active `lsm=` list |
+| User-namespace operator | Kubernetes 1.30+ |
+
+Without the BPF LSM the agent still loads, still learns, and still reports:
+enforcement degrades to monitoring rather than failing. See
+[`lsm-support.md`](lsm-support.md) for per-distribution details and
+[`system-requirements.md`](system-requirements.md) for the full matrix.
+
+## Resource profile
+
+Defaults per node agent are `100m` CPU and `128Mi` memory requested, with
+`500m` / `512Mi` limits. The operator requests `50m` / `64Mi` with `200m` /
+`256Mi` limits. Actual usage
+tracks event volume: a chatty workload during its learning window costs more
+than the same workload once enforcement is on and the ring buffer has gone
+quiet, because in-kernel deduplication suppresses repeats.
+
+Measured resident memory from the 2026-08-14 benchmark run was roughly 327 MiB
+for the Pahlevan agent with debug logging enabled, against 106 MiB for Falco and
+67 MiB for Tetragon. That gap is a known tuning target and is reported in full in
+[`benchmarks/results.md`](benchmarks/results.md).
+
+## Scalability
+
+- **Containers per node**: hundreds, bounded by kernel eBPF map resources.
+- **Policies per cluster**: bounded by etcd and operator reconcile capacity, not
+  by the data plane.
+- **Events per second**: bounded by ring buffer sizing; in-kernel deduplication
+  keeps steady-state volume far below raw syscall rate.
+- **Learning window**: configurable, typically 5 to 30 minutes depending on how
+  much of the workload's behavior a window is likely to cover.
+
+## Observability
+
+The agent and operator both export Prometheus metrics, including enforcement and
+violation counters. OpenTelemetry export is available for traces, and
+`AttackSurface` data can be exported for dashboards. See
+[`deployment.md`](deployment.md) for wiring these into an existing monitoring
+stack.

@@ -2,8 +2,8 @@ apiVersion: v2
 name: pahlevan-operator
 description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
 type: application
-version: 1.0.0
-appVersion: "v1.0.0"
+version: 2.0.0
+appVersion: "v2.0.0"
 
 keywords:
   - security
@@ -26,10 +26,8 @@ annotations:
   category: Security
   licenses: Apache-2.0
   images: |
-    - name: pahlevan-operator
-      image: ghcr.io/obsernetics/pahlevan:v1.0.0
-    - name: pahlevan-operator-debug
-      image: ghcr.io/obsernetics/pahlevan:debug-v1.0.0
+    - name: pahlevan
+      image: ghcr.io/obsernetics/pahlevan:v2.0.0
 
 dependencies: []
 
