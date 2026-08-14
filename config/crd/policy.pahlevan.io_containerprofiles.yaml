@@ -26,6 +26,9 @@ spec:
     - jsonPath: .status.fileCount
       name: Files
       type: integer
+    - jsonPath: .status.rollbackCount
+      name: Rollbacks
+      type: integer
     - jsonPath: .spec.node
       name: Node
       type: string
@@ -60,8 +63,12 @@ spec:
               belongs to.
             properties:
               cgroupID:
-                description: CgroupID is the cgroup v2 id the eBPF data plane keys
-                  enforcement on.
+                description: |-
+                  CgroupID is the cgroup v2 id the eBPF data plane keys enforcement on.
+                  Signed because Kubernetes API types may not use unsigned integers; the
+                  serialized schema is int64 either way, and cgroup ids never approach the
+                  sign bit. Using uint64 here also broke server-side apply, whose
+                  structured-merge-diff reflection has no uint64 kind.
                 format: int64
                 type: integer
               containerID:
@@ -111,6 +118,18 @@ spec:
               a first-class, inspectable, git-backupable record (no equivalent in Falco or
               Tetragon).
             properties:
+              denialCount:
+                description: |-
+                  DenialCount is the number of in-kernel denials observed since the current
+                  enforce transition. It resets on every transition and on rollback.
+                format: int32
+                type: integer
+              enforcementAttempts:
+                description: |-
+                  EnforcementAttempts is how many times this container has been transitioned
+                  to enforcing. More than one means an earlier attempt was rolled back.
+                format: int32
+                type: integer
               enforcingSince:
                 format: date-time
                 type: string
@@ -119,6 +138,15 @@ spec:
                 type: integer
               firstSeen:
                 description: FirstSeen / EnforcingSince timestamps.
+                format: date-time
+                type: string
+              lastRollbackReason:
+                description: |-
+                  LastRollbackReason explains the most recent rollback (denial rate or the
+                  specific pod distress that was observed).
+                type: string
+              lastRollbackTime:
+                description: LastRollbackTime is when the most recent rollback happened.
                 format: date-time
                 type: string
               lastUpdated:
@@ -156,6 +184,12 @@ spec:
               phase:
                 description: Phase is Learning or Enforcing.
                 type: string
+              rollbackCount:
+                description: |-
+                  RollbackCount is how many times self-healing returned this container from
+                  enforcing to learning because the learned baseline was breaking it.
+                format: int32
+                type: integer
               syscallCount:
                 description: Counts for quick inspection / printcolumns.
                 format: int32

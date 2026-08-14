@@ -1,6 +1,7 @@
 package adaptive
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -49,6 +50,57 @@ func (f *fakeEnforcer) SetCapabilityEnforcement(cgroupID uint64, enforce bool) e
 	}
 	f.capEnforced[cgroupID] = enforce
 	return nil
+}
+
+// failingEnforcer fails every call and counts the attempts, so tests can assert
+// that a rollback still tries every setter and still completes.
+type failingEnforcer struct {
+	file, net, exec, capa int
+}
+
+func (f *failingEnforcer) SetFileEnforcement(uint64, bool) error {
+	f.file++
+	return errEnforce
+}
+
+func (f *failingEnforcer) SetNetworkEnforcement(uint64, bool) error {
+	f.net++
+	return errEnforce
+}
+
+func (f *failingEnforcer) SetExecEnforcement(uint64, bool) error {
+	f.exec++
+	return errEnforce
+}
+
+func (f *failingEnforcer) SetCapabilityEnforcement(uint64, bool) error {
+	f.capa++
+	return errEnforce
+}
+
+var errEnforce = errors.New("enforcement map update failed")
+
+// partialEnforcer models a kernel without BPF LSM: the file (fentry-based) path
+// works, the LSM-backed ones do not.
+type partialEnforcer struct {
+	net, exec, capa int
+}
+
+func (f *partialEnforcer) SetFileEnforcement(uint64, bool) error { return nil }
+
+func (f *partialEnforcer) SetNetworkEnforcement(uint64, bool) error {
+	f.net++
+	return errEnforce
+}
+
+func (f *partialEnforcer) SetExecEnforcement(uint64, bool) error {
+	f.exec++
+	return errEnforce
+}
+
+func (f *partialEnforcer) SetCapabilityEnforcement(uint64, bool) error {
+	f.capa++
+	return errEnforce
 }
 
 type fakePolicies struct {

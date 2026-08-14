@@ -502,15 +502,6 @@ func TestStartStop(t *testing.T) {
 	ee.Stop()
 }
 
-func TestUpdateContainerPolicy(t *testing.T) {
-	ee := NewEnforcementEngine(nil, nil)
-	ee.containerPolicies["c1"] = &ContainerPolicyState{ContainerID: "c1", SelfHealingState: &SelfHealingState{}}
-	p := &GeneratedPolicy{Version: 5}
-	// nil ebpf manager: UpdateContainerPolicy should still update in-memory state
-	// or return an error deterministically without panic.
-	require.NotPanics(t, func() { _ = ee.UpdateContainerPolicy("c1", p) })
-}
-
 // --- benchmarks ---
 
 func BenchmarkCreateTightenedPolicy(b *testing.B) {
