@@ -209,6 +209,21 @@ type KubernetesRef struct {
 	ContainerID string `json:"containerId,omitempty"`
 	Runtime     string `json:"runtime,omitempty"`
 	QoSClass    string `json:"qosClass,omitempty"`
+
+	// Node is where the event was observed. A denial is only actionable if you
+	// can tell which kernel refused it.
+	Node string `json:"node,omitempty"`
+
+	// WorkloadKind and WorkloadName name the controller that owns the pod, for
+	// example Deployment/nginx. A pod name is ephemeral; the workload is what
+	// an operator actually reasons about and edits.
+	WorkloadKind string `json:"workloadKind,omitempty"`
+	WorkloadName string `json:"workloadName,omitempty"`
+
+	// Labels are the pod's labels. They are what a policy selected the workload
+	// by, so they are what makes a denial groupable by team or service in a log
+	// pipeline rather than only by pod.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // Empty reports whether the reference carries no usable attribution.
