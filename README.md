@@ -3,7 +3,7 @@
 <h1>Pahlevan</h1>
 
 <p><b>eBPF-powered runtime security for Kubernetes.</b><br/>
-Self-learning workload baselines, enforced <i>in-kernel</i> — no hand-written rules.</p>
+Self-learning workload baselines, enforced <i>in-kernel</i> - no hand-written rules.</p>
 
 <p>
   <a href="https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/obsernetics/pahlevan/ci.yml?branch=main&label=CI&logo=github" alt="CI" /></a>
@@ -36,7 +36,7 @@ normally does, then **blocks the rest in-kernel** the moment enforcement is on.
   window are added to a per-cgroup allow-set automatically. No `TracingPolicy`,
   no Falco rule language.
 - **Real in-kernel enforcement.** Under enforcement, an open of an unlearned path
-  is denied with `EPERM` by an `lsm/file_open` BPF program — the syscall never
+  is denied with `EPERM` by an `lsm/file_open` BPF program - the syscall never
   succeeds. Detection tools can only tell you it already happened.
 - **Accurate attribution.** Events are tied to the real container via
   `bpf_get_current_cgroup_id()`, and file paths are resolved in-kernel with
@@ -46,10 +46,10 @@ normally does, then **blocks the rest in-kernel** the moment enforcement is on.
 | --- | --- | --- | --- | --- |
 | Primary model | Adaptive policy operator | Threat detection | Observability + tracing | Network security |
 | Learns behavior | **Auto (per-cgroup)** | Manual rules | Manual `TracingPolicy` | Static policy |
-| File access enforcement | **Blocks in-kernel (LSM BPF)** | Alert only | Possible, hand-written | — |
+| File access enforcement | **Blocks in-kernel (LSM BPF)** | Alert only | Possible, hand-written | - |
 | Rules to author | **None (learned)** | Many | Per-policy | Network rules |
 | Attribution | cgroup id + `d_path` | container context | cgroup/process | endpoint/identity |
-| Coverage | Syscalls, files *(net/seccomp roadmap)* | Runtime events | Kernel tracing | L3–L7 traffic |
+| Coverage | Syscalls, files *(net/seccomp roadmap)* | Runtime events | Kernel tracing | L3-L7 traffic |
 
 > Falco and Tetragon are excellent observability tools. Pahlevan's distinct claim is
 > **closing the loop**: learn the baseline, then *prevent* the deviation in the kernel.
@@ -58,31 +58,31 @@ normally does, then **blocks the rest in-kernel** the moment enforcement is on.
 
 ## Features
 
-- **Adaptive learning** — per-cgroup allow-sets built from observed file opens during a learning window.
-- **In-kernel file enforcement** — `lsm/file_open` denies unlearned opens with `EPERM` (requires BPF LSM).
-- **Full syscall observation** — a `raw_tracepoint/sys_enter` sees every syscall, deduplicated in-kernel per `(cgroup, syscall)`.
-- **CO-RE eBPF** — compile-once/run-everywhere programs; portable across kernels without per-node compilation.
-- **Kubernetes-native** — a `PahlevanPolicy` CRD drives a `selector → learn → enforce` lifecycle.
-- **Self-healing** — automatic policy rollback when enforcement disrupts a workload.
-- **Least-privilege control plane** — the operator runs with `hostUsers: false` (user namespace) and needs no host access.
-- **Roadmap** — network egress/ingress enforcement and seccomp syscall enforcement (the CRD already models them; kernel enforcement is in progress).
+- **Adaptive learning** - per-cgroup allow-sets built from observed file opens during a learning window.
+- **In-kernel file enforcement** - `lsm/file_open` denies unlearned opens with `EPERM` (requires BPF LSM).
+- **Full syscall observation** - a `raw_tracepoint/sys_enter` sees every syscall, deduplicated in-kernel per `(cgroup, syscall)`.
+- **CO-RE eBPF** - compile-once/run-everywhere programs; portable across kernels without per-node compilation.
+- **Kubernetes-native** - a `PahlevanPolicy` CRD drives a `selector → learn → enforce` lifecycle.
+- **Self-healing** - automatic policy rollback when enforcement disrupts a workload.
+- **Least-privilege control plane** - the operator runs with `hostUsers: false` (user namespace) and needs no host access.
+- **Roadmap** - network egress/ingress enforcement and seccomp syscall enforcement (the CRD already models them; kernel enforcement is in progress).
 
 ---
 
 ## Architecture
 
 Pahlevan splits the **data plane** (per-node, privileged) from the **control plane**
-(cluster-wide, unprivileged) — the same node-instrumentation model as Falco and
+(cluster-wide, unprivileged) - the same node-instrumentation model as Falco and
 Tetragon, but with a leader-elected operator driving policy.
 
 <p align="center">
   <img src="docs/assets/architecture.svg" alt="Pahlevan architecture: a leader-elected operator and the PahlevanPolicy/ContainerProfile/AttackSurface CRDs drive per-node privileged agents that load eBPF programs (raw_tracepoint/sys_enter, lsm/file_open, lsm/socket_connect) which observe and deny in-kernel" width="900" />
 </p>
 
-- **Agent** — a privileged **DaemonSet** on every node. It owns the eBPF data plane:
+- **Agent** - a privileged **DaemonSet** on every node. It owns the eBPF data plane:
   loading and attaching programs, building per-container baselines, and enforcing
   locally in the kernel.
-- **Operator** — a leader-elected **Deployment** control plane. It requires no host
+- **Operator** - a leader-elected **Deployment** control plane. It requires no host
   access and runs in a **user namespace** (`hostUsers: false`), handling policy
   lifecycle, cluster-wide status aggregation, and admission.
 
@@ -144,7 +144,7 @@ denials enforced in the kernel. More examples live in [`examples/`](examples).
 3. **Transition.** On `autoTransition` (or when you flip the mode), the policy moves
    to enforcement.
 4. **Enforce.** An open of a path that was **not** learned is **denied in-kernel with
-   `EPERM`** by the `lsm/file_open` hook — before the operation completes.
+   `EPERM`** by the `lsm/file_open` hook - before the operation completes.
 
 This flow is verified in a VM on Linux 6.8 with the BPF LSM enabled. Representative
 output from the enforcement test:
@@ -176,7 +176,7 @@ See [`docs/system-requirements.md`](docs/system-requirements.md) and
 
 Head-to-head against Falco and Tetragon, run **inside a kernel-isolated k3s VM**
 (`hack/vm/`), one tool at a time against the same `nginx:1.27` workload and the
-same four attack scenarios — full methodology, environment, and caveats in
+same four attack scenarios - full methodology, environment, and caveats in
 **[`docs/benchmarks/results.md`](docs/benchmarks/results.md)**. These are measured,
 not hand-written (`make test-benchmark`).
 
@@ -190,16 +190,16 @@ not hand-written (`make test-benchmark`).
 | Unexpected egress | 🛡️ **Blocked²** | ❌ Missed¹ | 👁️ Telemetry only |
 
 Pahlevan **prevented all four in-kernel** (LSM `file_open` denial from an
-auto-learned allow-list — confirmed via the `file_mode`/`file_allowed` BPF maps);
+auto-learned allow-list - confirmed via the `file_mode`/`file_allowed` BPF maps);
 **Falco is alert-only** and its default ruleset missed 2/4; **Tetragon does not
 block by default** (it can with a hand-written `TracingPolicy`, but an unscoped
-node-wide kill policy froze process creation on the node — see the report).
+node-wide kill policy froze process creation on the node - see the report).
 
 <sub>Env: kernel 6.8 with bpf LSM active, k3s v1.36, Falco 0.44.1 (modern_ebpf), Tetragon v1.7.0.
 ¹ default ruleset. ² blocked because the attack execs an unlearned binary; per-connection
 network enforcement (`lsm/socket_connect`) is implemented and enabled by default but was
-added after this run — a refreshed benchmark will reflect it. Agent memory: Pahlevan ~327 MiB
-(debug logging on) vs Falco ~106 MiB vs Tetragon ~67 MiB — a tradeoff we're tuning.</sub>
+added after this run - a refreshed benchmark will reflect it. Agent memory: Pahlevan ~327 MiB
+(debug logging on) vs Falco ~106 MiB vs Tetragon ~67 MiB - a tradeoff we're tuning.</sub>
 
 ---
 
@@ -213,7 +213,7 @@ make manifests      # regenerate CRDs and RBAC from Go types
 make ebpf-build     # regenerate CO-RE eBPF objects + Go bindings (needs clang + libbpf-dev)
 ```
 
-**eBPF work runs in a VM** — never load or attach programs on your host. The
+**eBPF work runs in a VM** - never load or attach programs on your host. The
 [`hack/vm/`](hack/vm) helpers provision a kernel with the BPF LSM enabled:
 
 ```bash

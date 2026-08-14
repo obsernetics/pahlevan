@@ -4,7 +4,7 @@
  * Network monitoring + enforcement (CO-RE) via the BPF LSM socket_connect hook.
  *
  * socket_connect sees every outbound connect() with the destination sockaddr and
- * can DENY by returning -EPERM — so, exactly like the file monitor, the same
+ * can DENY by returning -EPERM - so, exactly like the file monitor, the same
  * program learns a per-cgroup allow-set of destinations during the learning
  * window and then blocks connections to unlearned destinations in-kernel. This is
  * network egress control with zero hand-written rules. Requires bpf LSM.

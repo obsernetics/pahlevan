@@ -477,8 +477,8 @@ func (sl *SyscallLearner) RecordLifecycleEvent(containerID string, event Lifecyc
 func (sl *SyscallLearner) GenerateProfile(containerID string) (*LearningProfile, error) {
 	// A full write lock is required: this method stores the generated profile
 	// into sl.learningProfiles. (It previously took only an RLock, which both
-	// raced on that write and deadlocked when StopLearning — already holding the
-	// write lock — called through here on a non-reentrant RWMutex.)
+	// raced on that write and deadlocked when StopLearning - already holding the
+	// write lock - called through here on a non-reentrant RWMutex.)
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
 
@@ -989,7 +989,7 @@ func (sl *SyscallLearner) detectFileType(path string) string {
 	}
 
 	// Suffix matching (instead of a fixed 4-byte slice) so extensions of any
-	// length are detected — the old slice could never match ".so" (3 bytes).
+	// length are detected - the old slice could never match ".so" (3 bytes).
 	switch {
 	case strings.HasSuffix(path, ".so") || strings.HasSuffix(path, ".dll"):
 		return "library"

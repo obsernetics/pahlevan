@@ -30,7 +30,7 @@ const (
 
 // DesiredPolicy returns the ValidatingAdmissionPolicy Pahlevan enforces: it
 // rejects privileged containers, privilege escalation, and host namespace
-// sharing — the baseline that most runtime compromises rely on.
+// sharing - the baseline that most runtime compromises rely on.
 func DesiredPolicy() *admissionregistrationv1.ValidatingAdmissionPolicy {
 	fail := failClosed
 	return &admissionregistrationv1.ValidatingAdmissionPolicy{
