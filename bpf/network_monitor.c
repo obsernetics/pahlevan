@@ -1,186 +1,93 @@
 //go:build ignore
 
 /*
- * Network Flow Monitoring eBPF Program
+ * Network monitoring (CO-RE).
  *
- * Copyright 2025.
+ * A kprobe on tcp_connect captures outbound TCP connection attempts with the
+ * destination address/port and cgroup attribution. This is the security-relevant
+ * signal (egress to C2/exfil) and works per-cgroup like the other monitors, which
+ * XDP/TC (per-interface, no cgroup context) does not. Events are deduped in-kernel
+ * per (cgroup, daddr, dport) so learning sees each destination once.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions
- * and limitations under the License.
+ * Copyright 2025. Licensed under the Apache License, Version 2.0.
  */
 
-#include "types.h"
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
-#include <bpf/bpf_endian.h>
+#include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
-// Network protocol constants
-#define ETH_P_IP    0x0800
-#define IPPROTO_TCP 6
-#define IPPROTO_UDP 17
+char LICENSE[] SEC("license") = "GPL";
 
-/* --------------------------------------------------------------------------
- * Data Structures
- * -------------------------------------------------------------------------- */
+#define AF_INET 2
 
-/* Network flow event metadata */
-struct network_flow_event {
-    __u32 src_ip;          /* Source IPv4 address (host byte order) */
-    __u32 dst_ip;          /* Destination IPv4 address (host byte order) */
-    __u16 src_port;        /* Source port */
-    __u16 dst_port;        /* Destination port */
-    __u8  protocol;        /* IP protocol (TCP/UDP/ICMP/etc.) */
-    __u32 container_id;    /* Simplified container identifier */
-    __u64 timestamp_ns;    /* Nanosecond timestamp */
-    __u64 bytes;           /* Payload length (if available) */
-    __u64 packets;         /* Number of packets (aggregated in TC hook) */
+struct network_event {
+	__u64 cgroup_id;
+	__u64 timestamp_ns;
+	__u32 pid; /* tgid */
+	__u32 saddr;
+	__u32 daddr;
+	__u16 sport;
+	__u16 dport;
+	__u8  protocol; /* IPPROTO_TCP */
+	__u8  direction; /* 0 = egress */
+	__u8  comm[16];
 };
 
-/* Per-container connection policy */
-struct connection_policy {
-    __u32 container_id;        /* Container identifier */
-    __u32 allowed_destinations[256]; /* Whitelisted destinations (simplified) */
-    __u16 allowed_ports[64];        /* Whitelisted ports */
-    __u32 learning_mode;            /* 1 = learning, 0 = enforcement */
-    __u64 last_update_ns;           /* Last update timestamp */
-};
-
-/* --------------------------------------------------------------------------
- * Maps
- * -------------------------------------------------------------------------- */
-
-/* Container → network connection policy */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u32);
-    __type(value, struct connection_policy);
-    __uint(max_entries, 10000);
-} connection_policies SEC(".maps");
-
-/* Perf event array for sending flow events to user space */
-struct {
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-    __type(key, __u32);
-    __type(value, __u32);
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1 << 24);
 } network_events SEC(".maps");
 
-/* --------------------------------------------------------------------------
- * Helper Functions
- * -------------------------------------------------------------------------- */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 1 << 20);
+} network_seen SEC(".maps");
 
-/**
- * Resolve container identifier from current process context.
- * For network monitoring, we use the current task's namespace information.
- */
-static __always_inline __u32 get_container_id_from_skb(void) {
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    if (!task) {
-        // Fallback to PID-based approach when task is unavailable
-        __u32 pid = bpf_get_current_pid_tgid() >> 32;
-        return pid % 65536;
-    }
+SEC("kprobe/tcp_connect")
+int BPF_KPROBE(tcp_connect, struct sock *sk)
+{
+	__u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	if (family != AF_INET)
+		return 0; /* IPv4 only for now */
 
-    // Simplified container identification using PID and TGID
-    __u32 pid_ns_inum = 0;
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 tgid = pid_tgid >> 32;
+	if (tgid == 0)
+		return 0;
 
-    // Fallback to enhanced PID-based approach if namespace unavailable
-    if (pid_ns_inum == 0) {
-        __u32 pid = bpf_get_current_pid_tgid() >> 32;
-        __u32 tgid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+	__u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+	__u16 dport_be = BPF_CORE_READ(sk, __sk_common.skc_dport);
+	__u16 dport = (dport_be >> 8) | (dport_be << 8); /* ntohs */
+	__u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+	__u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num); /* host order */
 
-        // Better hash combining PID and TGID
-        __u32 hash = pid ^ (tgid << 16);
-        return hash % 65536;
-    }
+	__u64 cgroup_id = bpf_get_current_cgroup_id();
 
-    return pid_ns_inum;
+	/* Dedup per (cgroup, daddr, dport). */
+	__u64 key = cgroup_id ^ ((__u64)daddr << 16) ^ (__u64)dport;
+	if (bpf_map_lookup_elem(&network_seen, &key))
+		return 0;
+	__u8 one = 1;
+	bpf_map_update_elem(&network_seen, &key, &one, BPF_ANY);
+
+	struct network_event *e = bpf_ringbuf_reserve(&network_events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+
+	e->cgroup_id = cgroup_id;
+	e->timestamp_ns = bpf_ktime_get_ns();
+	e->pid = tgid;
+	e->saddr = saddr;
+	e->daddr = daddr;
+	e->sport = sport;
+	e->dport = dport;
+	e->protocol = 6; /* IPPROTO_TCP */
+	e->direction = 0; /* egress */
+	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+	bpf_ringbuf_submit(e, 0);
+	return 0;
 }
-
-/* --------------------------------------------------------------------------
- * XDP Program: Ingress Monitoring
- * -------------------------------------------------------------------------- */
-
-/**
- * Monitor ingress traffic at XDP hook.
- */
-SEC("xdp")
-int xdp_monitor_network(struct xdp_md *ctx) {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data     = (void *)(long)ctx->data;
-
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
-        return XDP_PASS;
-
-    /* Only handle IPv4 */
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
-        return XDP_PASS;
-
-    struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > data_end)
-        return XDP_PASS;
-
-    struct network_flow_event flow = {};
-    flow.src_ip       = bpf_ntohl(ip->saddr);
-    flow.dst_ip       = bpf_ntohl(ip->daddr);
-    flow.protocol     = ip->protocol;
-    flow.timestamp_ns = bpf_ktime_get_ns();
-    flow.container_id = get_container_id_from_skb();
-
-    /* Extract L4 headers */
-    if (ip->protocol == IPPROTO_TCP) {
-        struct tcphdr *tcp = (void *)(ip + 1);
-        if ((void *)(tcp + 1) > data_end)
-            return XDP_PASS;
-
-        flow.src_port = bpf_ntohs(tcp->source);
-        flow.dst_port = bpf_ntohs(tcp->dest);
-
-    } else if (ip->protocol == IPPROTO_UDP) {
-        struct udphdr *udp = (void *)(ip + 1);
-        if ((void *)(udp + 1) > data_end)
-            return XDP_PASS;
-
-        flow.src_port = bpf_ntohs(udp->source);
-        flow.dst_port = bpf_ntohs(udp->dest);
-    }
-
-    /* Emit event to user space */
-    bpf_perf_event_output(ctx, &network_events, BPF_F_CURRENT_CPU, &flow, sizeof(flow));
-
-    return XDP_PASS;
-}
-
-/* --------------------------------------------------------------------------
- * TC Program: Egress Monitoring
- * -------------------------------------------------------------------------- */
-
-/**
- * Monitor egress traffic at TC hook.
- */
-SEC("tc")
-int tc_monitor_egress(struct __sk_buff *skb) {
-    struct network_flow_event flow = {};
-    flow.timestamp_ns = bpf_ktime_get_ns();
-    flow.container_id = get_container_id_from_skb();
-    flow.bytes        = skb->len;
-    flow.packets      = 1;
-
-    bpf_perf_event_output(skb, &network_events, BPF_F_CURRENT_CPU, &flow, sizeof(flow));
-    return 0;
-}
-
-/* --------------------------------------------------------------------------
- * License
- * -------------------------------------------------------------------------- */
-
-char _license[] SEC("license") = "GPL";
