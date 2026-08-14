@@ -215,3 +215,46 @@ func (r *policyResolver) PodMeta(podUID string) (string, string, bool) {
 	}
 	return "", "", false
 }
+
+// PodDetail is what an exported event needs beyond a namespace and a name: the
+// workload that owns the pod, and the labels a policy selected it by. A pod
+// name is ephemeral, so a denial attributed only to one is hard to act on.
+func (r *policyResolver) PodDetail(podUID string) (workloadKind, workloadName string, labels map[string]string, ok bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, found := r.podsByUID[podUID]
+	if !found {
+		return "", "", nil, false
+	}
+	if len(p.Labels) > 0 {
+		// Copied: the caller keeps this in an exported event and the cache is
+		// replaced wholesale on every refresh.
+		labels = make(map[string]string, len(p.Labels))
+		for k, v := range p.Labels {
+			labels[k] = v
+		}
+	}
+	kind, name := ownerWorkload(p)
+	return kind, name, labels, true
+}
+
+// ownerWorkload walks one level up from the pod's controller reference, and a
+// second level for the ReplicaSet a Deployment owns, which is the only
+// indirection worth unwinding: nobody thinks in ReplicaSets.
+func ownerWorkload(p *corev1.Pod) (kind, name string) {
+	for i := range p.OwnerReferences {
+		ref := &p.OwnerReferences[i]
+		if ref.Controller == nil || !*ref.Controller {
+			continue
+		}
+		if ref.Kind == "ReplicaSet" {
+			// A ReplicaSet is named <deployment>-<pod-template-hash>. Trimming
+			// the hash is how kubectl presents it too.
+			if idx := strings.LastIndex(ref.Name, "-"); idx > 0 {
+				return "Deployment", ref.Name[:idx]
+			}
+		}
+		return ref.Kind, ref.Name
+	}
+	return "", ""
+}
