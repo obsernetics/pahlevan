@@ -46,7 +46,7 @@ This installs:
 
 ```bash
 # Add the Helm repository
-helm repo add pahlevan https://obsernetics.github.io/pahlevan-charts
+helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
 helm repo update
 
 # Install with default values
