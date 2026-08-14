@@ -18,17 +18,22 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/obsernetics/pahlevan/internal/adaptive"
 	"github.com/obsernetics/pahlevan/internal/controller"
+	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/obsernetics/pahlevan/pkg/metrics"
 	"github.com/obsernetics/pahlevan/pkg/observability"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
@@ -105,20 +110,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Register the event pipeline sink before starting readers so no events are
-	// missed. The observer counts/logs events and (in a later step) feeds the
-	// learner; policy reconcilers add their own handlers via the manager.
-	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})
-
-	// dataCtx drives the eBPF ring-buffer readers; cancelled on shutdown signal.
-	dataCtx, cancelData := context.WithCancel(context.Background())
-	defer cancelData()
-	if err := ebpfManager.Start(dataCtx); err != nil {
-		setupLog.Error(err, "unable to start eBPF event readers")
-		os.Exit(1)
-	}
-	setupLog.Info("eBPF data plane attached and running")
-
 	// The agent runs a controller-runtime manager WITHOUT leader election: each
 	// node's agent is active for its own node. Cross-node status coordination is
 	// handled via per-node status entries (see PahlevanPolicy status), not by
@@ -131,6 +122,61 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
+		os.Exit(1)
+	}
+
+	// Index pods by node so the policy resolver can list only this node's pods.
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName",
+		func(o client.Object) []string { return []string{o.(*corev1.Pod).Spec.NodeName} }); err != nil {
+		setupLog.Error(err, "unable to index pods by node")
+		os.Exit(1)
+	}
+
+	// The adaptive controller is the core learn->enforce loop: it consumes the
+	// eBPF event stream, attributes events to pods, and flips each matched
+	// container to in-kernel enforcement when its learning window closes.
+	attrResolver := attribution.NewResolver(attribution.DefaultCgroupRoot)
+	polResolver := newPolicyResolver(mgr.GetClient(), nodeName)
+	adaptiveCtl := adaptive.NewController(ctrl.Log.WithName("adaptive"), ebpfManager, attrResolver, polResolver)
+
+	// Register event handlers BEFORE starting readers so no events are missed.
+	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})
+	ebpfManager.AddEventHandler(adaptiveCtl)
+
+	// dataCtx drives the eBPF ring-buffer readers; cancelled on shutdown signal.
+	dataCtx, cancelData := context.WithCancel(context.Background())
+	defer cancelData()
+	if err := ebpfManager.Start(dataCtx); err != nil {
+		setupLog.Error(err, "unable to start eBPF event readers")
+		os.Exit(1)
+	}
+	setupLog.Info("eBPF data plane attached and running")
+
+	// Run the adaptive control loop once the cache is synced (mgr.Add starts it
+	// after leader-election/cache readiness).
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		refresh := func() {
+			if err := polResolver.Refresh(ctx); err != nil {
+				setupLog.V(1).Info("policy refresh failed", "error", err.Error())
+			}
+			if err := attrResolver.Refresh(); err != nil {
+				setupLog.V(1).Info("cgroup refresh failed", "error", err.Error())
+			}
+		}
+		refresh()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				refresh()
+				adaptiveCtl.Reconcile()
+			}
+		}
+	})); err != nil {
+		setupLog.Error(err, "unable to add adaptive controller runnable")
 		os.Exit(1)
 	}
 
@@ -188,10 +234,10 @@ func main() {
 // agentObserver is the default sink for the eBPF event pipeline. It counts events
 // and logs a periodic sample; the learner is fed from here in a later step.
 type agentObserver struct {
-	log       logr.Logger
-	syscalls  atomic.Uint64
-	networks  atomic.Uint64
-	files     atomic.Uint64
+	log      logr.Logger
+	syscalls atomic.Uint64
+	networks atomic.Uint64
+	files    atomic.Uint64
 }
 
 func (o *agentObserver) HandleSyscallEvent(e *ebpf.SyscallEvent) error {

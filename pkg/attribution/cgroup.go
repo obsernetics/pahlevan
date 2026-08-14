@@ -16,11 +16,11 @@ import (
 
 // ContainerRef identifies a container and the pod it belongs to.
 type ContainerRef struct {
-	PodUID        string // Kubernetes pod UID (from the cgroup path)
-	ContainerID   string // container runtime ID (may be empty for the pod cgroup)
-	Runtime       string // "containerd", "crio", "docker", or "" if unknown
-	QoSClass      string // "guaranteed", "burstable", "besteffort", or ""
-	CgroupPath    string // the source cgroup path (for diagnostics)
+	PodUID      string // Kubernetes pod UID (from the cgroup path)
+	ContainerID string // container runtime ID (may be empty for the pod cgroup)
+	Runtime     string // "containerd", "crio", "docker", or "" if unknown
+	QoSClass    string // "guaranteed", "burstable", "besteffort", or ""
+	CgroupPath  string // the source cgroup path (for diagnostics)
 }
 
 var (

@@ -1,0 +1,200 @@
+// Package adaptive implements Pahlevan's core learn->enforce control loop that
+// runs inside the node agent.
+//
+// It consumes the eBPF event stream, attributes each event to a Kubernetes pod
+// via the cgroup id, and drives each matched container through a learning window
+// and then into in-kernel enforcement — with no hand-written rules. This is the
+// behaviour that distinguishes Pahlevan from Falco (alert-only, manual rules) and
+// Tetragon (manual TracingPolicy).
+package adaptive
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/go-logr/logr"
+
+	"github.com/obsernetics/pahlevan/pkg/attribution"
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
+)
+
+// Phase is the lifecycle phase of a container under a policy.
+type Phase string
+
+const (
+	PhaseLearning  Phase = "Learning"
+	PhaseEnforcing Phase = "Enforcing"
+)
+
+// Enforcer is the subset of the eBPF manager the controller needs. Kept small so
+// the loop is testable without a live kernel.
+type Enforcer interface {
+	SetFileEnforcement(cgroupID uint64, enforce bool) error
+}
+
+// PolicyResolver decides, for a given cgroup, whether a policy applies and how
+// long its learning window is. The agent supplies a real implementation backed by
+// pod labels + PahlevanPolicy selectors; tests supply a fake.
+type PolicyResolver interface {
+	// Resolve returns (learningWindow, blocking, ok). ok=false means no policy
+	// governs this cgroup yet (keep observing, don't enforce).
+	Resolve(cgroupID uint64, ref attribution.ContainerRef) (window time.Duration, blocking bool, ok bool)
+}
+
+type cgState struct {
+	firstSeen time.Time
+	phase     Phase
+	ref       attribution.ContainerRef
+	syscalls  map[uint64]struct{}
+	files     map[string]struct{}
+}
+
+// Controller tracks per-cgroup learning state and flips cgroups to enforcement
+// when their learning window closes. It implements ebpf.EventHandler.
+type Controller struct {
+	log      logr.Logger
+	enforcer Enforcer
+	resolver *attribution.Resolver
+	policies PolicyResolver
+	now      func() time.Time
+
+	mu    sync.Mutex
+	state map[uint64]*cgState
+}
+
+// NewController builds an adaptive controller.
+func NewController(log logr.Logger, enforcer Enforcer, resolver *attribution.Resolver, policies PolicyResolver) *Controller {
+	return &Controller{
+		log:      log,
+		enforcer: enforcer,
+		resolver: resolver,
+		policies: policies,
+		now:      time.Now,
+		state:    make(map[uint64]*cgState),
+	}
+}
+
+func (c *Controller) track(cgroupID uint64) *cgState {
+	st, ok := c.state[cgroupID]
+	if !ok {
+		ref := attribution.ContainerRef{}
+		if c.resolver != nil {
+			if r, found := c.resolver.Lookup(cgroupID); found {
+				ref = r
+			}
+		}
+		st = &cgState{
+			firstSeen: c.now(),
+			phase:     PhaseLearning,
+			ref:       ref,
+			syscalls:  make(map[uint64]struct{}),
+			files:     make(map[string]struct{}),
+		}
+		c.state[cgroupID] = st
+	}
+	return st
+}
+
+// HandleSyscallEvent records an observed syscall for the cgroup's learning set.
+func (c *Controller) HandleSyscallEvent(e *ebpf.SyscallEvent) error {
+	if e.CgroupID == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.track(e.CgroupID)
+	if st.phase == PhaseLearning {
+		st.syscalls[e.SyscallNr] = struct{}{}
+	}
+	return nil
+}
+
+// HandleFileEvent records an observed file path for the cgroup's learning set.
+func (c *Controller) HandleFileEvent(e *ebpf.FileEvent) error {
+	if e.CgroupID == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.track(e.CgroupID)
+	if st.phase == PhaseLearning && e.Path != "" {
+		st.files[e.Path] = struct{}{}
+	}
+	return nil
+}
+
+// HandleNetworkEvent is accepted for the EventHandler interface.
+func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error { return nil }
+
+// Profile is a snapshot of what a container learned.
+type Profile struct {
+	CgroupID  uint64
+	Ref       attribution.ContainerRef
+	Phase     Phase
+	Syscalls  []uint64
+	Files     []string
+	FirstSeen time.Time
+}
+
+// Snapshot returns the current per-cgroup learned profiles (for status/CRD sync).
+func (c *Controller) Snapshot() []Profile {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Profile, 0, len(c.state))
+	for id, st := range c.state {
+		p := Profile{CgroupID: id, Ref: st.ref, Phase: st.phase, FirstSeen: st.firstSeen}
+		for s := range st.syscalls {
+			p.Syscalls = append(p.Syscalls, s)
+		}
+		for f := range st.files {
+			p.Files = append(p.Files, f)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// Reconcile evaluates every tracked cgroup once: any container still learning
+// whose window has elapsed and whose policy is blocking is flipped to enforcing.
+// Exposed for tests; Run calls it on a ticker.
+func (c *Controller) Reconcile() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, st := range c.state {
+		if st.phase != PhaseLearning {
+			continue
+		}
+		window, blocking, ok := c.policies.Resolve(id, st.ref)
+		if !ok || !blocking {
+			continue
+		}
+		if c.now().Sub(st.firstSeen) < window {
+			continue
+		}
+		if err := c.enforcer.SetFileEnforcement(id, true); err != nil {
+			c.log.Error(err, "failed to enable enforcement", "cgroup", id)
+			continue
+		}
+		st.phase = PhaseEnforcing
+		c.log.Info("container transitioned to enforcing",
+			"cgroup", id, "pod", st.ref.PodUID, "syscalls", len(st.syscalls), "files", len(st.files))
+	}
+}
+
+// Run drives Reconcile on an interval until ctx is cancelled.
+func (c *Controller) Run(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c.Reconcile()
+			if c.resolver != nil {
+				_ = c.resolver.Refresh()
+			}
+		}
+	}
+}
