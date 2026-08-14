@@ -28,17 +28,18 @@ Self-learning workload baselines, enforced <i>in-kernel</i> - no hand-written ru
 Most runtime tools either *watch* (alert-only) or make you *write the rules yourself*.
 Pahlevan learns what a workload does, then blocks the rest in-kernel.
 
-- **Auto-learning, not manual rules.** Files opened, destinations dialed, and binaries executed during a learning window become a per-cgroup allow-set.
-- **Real in-kernel enforcement.** LSM BPF hooks deny unlearned opens, egress, and execs with `EPERM`. The syscall never succeeds.
+- **Auto-learning, not manual rules.** Files opened, destinations dialed, binaries executed, and capabilities used during a learning window become a per-cgroup allow-set.
+- **Real in-kernel enforcement.** LSM BPF hooks deny unlearned file opens, egress (IPv4 and IPv6), execs, and capability use with `EPERM`. The syscall never succeeds.
 - **Accurate attribution.** Events tie to the container via `bpf_get_current_cgroup_id()`; paths resolve in-kernel with `bpf_d_path()`.
+- **Events leave the process.** JSON-lines file and webhook export with Kubernetes attribution, streamed by `pahlevan events` (`--follow`, `--denials-only`, `--pod`).
 - **Kubernetes-native and self-healing.** Three CRDs drive the lifecycle, a seccomp profile is generated from the learned syscalls, and enforcement rolls back automatically if it disrupts the workload.
 
 | | **Pahlevan** | Falco | Tetragon | Cilium |
 | --- | --- | --- | --- | --- |
 | Learns behavior | **Auto (per-cgroup)** | Manual rules | Manual `TracingPolicy` | Static policy |
-| Blocks in-kernel | **Files, egress, exec** | Alert only | Possible, hand-written | Network only |
+| Blocks in-kernel | **Files, egress, exec, capabilities** | Alert only | Possible, hand-written | Network only |
 | Rules to author | **None (learned)** | Many | Per-policy | Network rules |
-| Coverage | Syscalls, files, egress, exec | Runtime events | Kernel tracing | L3-L7 traffic |
+| Coverage | Syscalls, files, egress, exec, capabilities | Runtime events | Kernel tracing | L3-L7 traffic |
 
 Falco and Tetragon are excellent observability tools. Pahlevan's claim is closing the
 loop: learn the baseline, then *prevent* the deviation.
