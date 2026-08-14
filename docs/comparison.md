@@ -376,10 +376,10 @@ Listed plainly, worst first. Every item here is real and current.
    after admission, and the operator deliberately runs without a mutating
    webhook, so today an operator has to reference the generated profile
    themselves.
-10. **No published Prometheus alert rules.** A dashboard and ServiceMonitors
-    ship in `deploy/monitoring/`, but there are no alerting rules, so the
-    denial-rate spike that signals a bad baseline has to be noticed by a human
-    looking at a graph.
+10. **No integration with anything downstream.** Events reach a file, a
+    webhook, and `pahlevan events`. There is nothing resembling
+    falcosidekick's fan-out to Slack, S3, or a SIEM, so integrating means
+    consuming the file or the webhook yourself.
 11. **No syscall arguments, no command-line arguments, no image, no pod labels,
     no workload owner** on events. Both comparators have all of this.
 12. **eBPF load tests and the benchmark are not automated.** The unit suite,

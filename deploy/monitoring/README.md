@@ -34,6 +34,19 @@ With the Prometheus Operator present:
 kubectl apply -f deploy/monitoring/servicemonitor.yaml
 ```
 
+Alerting rules ship alongside:
+
+```bash
+kubectl apply -f deploy/monitoring/alerts.yaml
+```
+
+Four rules, deliberately few. An alert per metric produces noise that gets
+muted, and a muted alert is worse than no alert. They cover undecodable
+records (the kernel and userspace wire formats have skewed and events are
+being lost silently), a sustained denial-rate spike (usually a baseline that
+is too narrow), repeated rollbacks, and a fleet that tracks containers but
+never enforces any of them.
+
 Import `deploy/monitoring/grafana-dashboard.json` into Grafana, or mount it via
 a sidecar-labelled ConfigMap:
 

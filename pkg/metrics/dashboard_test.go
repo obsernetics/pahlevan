@@ -15,9 +15,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+	"sigs.k8s.io/yaml"
 )
 
-const dashboardPath = "../../deploy/monitoring/grafana-dashboard.json"
+const (
+	dashboardPath = "../../deploy/monitoring/grafana-dashboard.json"
+	alertsPath    = "../../deploy/monitoring/alerts.yaml"
+)
 
 // pahlevanMetric matches a pahlevan_* series name inside a PromQL expression.
 var pahlevanMetric = regexp.MustCompile(`pahlevan_[a-z0-9_]+`)
@@ -170,4 +174,49 @@ func TestDashboardPanelsAllQuery(t *testing.T) {
 			require.NotEmpty(t, tg.Expr, "panel %q has an empty query", p.Title)
 		}
 	}
+}
+
+// An alert that queries a metric nobody records never fires, which is the
+// worst possible failure for an alert: it looks like healthy silence.
+func TestAlertRulesOnlyQueryRealMetrics(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Clean(alertsPath))
+	require.NoError(t, err, "the alert rules must exist where the README says they do")
+
+	var rules struct {
+		Spec struct {
+			Groups []struct {
+				Name  string `yaml:"name"`
+				Rules []struct {
+					Alert string `yaml:"alert"`
+					Expr  string `yaml:"expr"`
+					For   string `yaml:"for"`
+				} `yaml:"rules"`
+			} `yaml:"groups"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &rules))
+
+	declared := declaredMetricNames(t)
+	seen := 0
+	var missing []string
+	for _, g := range rules.Spec.Groups {
+		for _, r := range g.Rules {
+			require.NotEmpty(t, r.Alert, "every rule needs a name")
+			require.NotEmpty(t, r.Expr, "alert %q has no expression", r.Alert)
+			require.NotEmpty(t, r.For, "alert %q has no for:, so it fires on a single scrape", r.Alert)
+			seen++
+			for _, name := range pahlevanMetric.FindAllString(r.Expr, -1) {
+				base := name
+				for _, suffix := range []string{"_bucket", "_sum", "_count"} {
+					base = strings.TrimSuffix(base, suffix)
+				}
+				if !declared[base] && !declared[name] {
+					missing = append(missing, r.Alert+": "+name)
+				}
+			}
+		}
+	}
+	require.NotZero(t, seen, "expected at least one alert rule")
+	sort.Strings(missing)
+	require.Empty(t, missing, "alerts query metrics no collector declares: %v", missing)
 }
