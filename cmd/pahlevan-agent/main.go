@@ -108,10 +108,9 @@ func main() {
 		setupLog.Error(err, "unable to load eBPF programs")
 		os.Exit(1)
 	}
-	if err := ebpfManager.AttachPrograms(); err != nil {
-		setupLog.Error(err, "unable to attach eBPF programs")
-		os.Exit(1)
-	}
+	// Note: Start() attaches the programs; do NOT call AttachPrograms() here or
+	// the links attach twice (EEXIST). Event handlers are registered below,
+	// before Start(), so no events are missed.
 
 	// The agent runs a controller-runtime manager WITHOUT leader election: each
 	// node's agent is active for its own node. Cross-node status coordination is

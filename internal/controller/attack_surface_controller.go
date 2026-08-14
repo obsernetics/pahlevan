@@ -561,7 +561,11 @@ func (r *AttackSurfaceAnalyzerReconciler) SetupWithManager(mgr ctrl.Manager) err
 		r.AnalysisInterval = 5 * time.Minute
 	}
 
+	// Named() is required: this reconciler and PahlevanPolicyReconciler both watch
+	// PahlevanPolicy, so without distinct names controller-runtime derives the same
+	// name ("pahlevanpolicy") for both and fails to start ("controller already exists").
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("attacksurface").
 		For(&policyv1alpha1.PahlevanPolicy{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.Service{}).
