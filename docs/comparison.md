@@ -201,6 +201,7 @@ which does close this loop and does it for SELinux and AppArmor as well.
 |---|---|---|---|
 | Attribution mechanism | cgroup id to cgroup path to pod UID and container id (`pkg/attribution`), then a node-scoped pod cache for name and namespace | Container runtime clients plus a Kubernetes client, exposing `k8s.*` and `container.*` fields | Kubernetes watcher with a pod and container cache, keyed by cgroup id |
 | Namespace, pod name, container id | Yes | Yes | Yes |
+| Node, owning workload, pod labels | Yes, on every exported event. The ReplicaSet a Deployment owns is unwound to the Deployment | Yes | Yes |
 | Container image | **No** | Yes | Yes |
 | Pod labels and annotations | **No** | Yes | Yes |
 | Workload owner, such as Deployment or Job | **No.** `ContainerProfile` declares `workload` and `policyRef` fields and the agent does not populate them | Yes | Yes |
@@ -380,8 +381,11 @@ Listed plainly, worst first. Every item here is real and current.
     webhook, and `pahlevan events`. There is nothing resembling
     falcosidekick's fan-out to Slack, S3, or a SIEM, so integrating means
     consuming the file or the webhook yourself.
-11. **No syscall arguments, no command-line arguments, no image, no pod labels,
-    no workload owner** on events. Both comparators have all of this.
+11. **No syscall arguments, no command-line arguments and no container image**
+    on events. Pod labels, the owning workload and the node are there now, but
+    an exec event still says which binary ran and not with what arguments,
+    which is often the part that distinguishes an attack from a cron job. Both
+    comparators have all of this.
 12. **eBPF load tests and the benchmark are not automated.** The unit suite,
     `-race`, gofmt, coverage and an arm64 cross-build all run in CI now, but
     the kernel tests need a VM with `lsm=bpf` and the competitor benchmark
