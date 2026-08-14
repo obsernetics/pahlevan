@@ -16,6 +16,7 @@ type fakeEnforcer struct {
 	enforced     map[uint64]bool
 	netEnforced  map[uint64]bool
 	execEnforced map[uint64]bool
+	capEnforced  map[uint64]bool
 }
 
 func (f *fakeEnforcer) SetFileEnforcement(cgroupID uint64, enforce bool) error {
@@ -39,6 +40,14 @@ func (f *fakeEnforcer) SetExecEnforcement(cgroupID uint64, enforce bool) error {
 		f.execEnforced = map[uint64]bool{}
 	}
 	f.execEnforced[cgroupID] = enforce
+	return nil
+}
+
+func (f *fakeEnforcer) SetCapabilityEnforcement(cgroupID uint64, enforce bool) error {
+	if f.capEnforced == nil {
+		f.capEnforced = map[uint64]bool{}
+	}
+	f.capEnforced[cgroupID] = enforce
 	return nil
 }
 

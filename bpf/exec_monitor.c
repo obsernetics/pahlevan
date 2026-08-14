@@ -27,10 +27,13 @@ char LICENSE[] SEC("license") = "GPL";
 struct exec_event {
 	__u64 cgroup_id;
 	__u64 timestamp_ns;
-	__u32 pid; /* tgid */
+	__u32 pid;  /* tgid */
+	__u32 ppid; /* parent tgid: process ancestry, so a denial can be traced
+		     * back to who spawned it (parity with Tetragon lineage). */
 	__u32 uid;
-	__u32 flags; /* bit 0x80000000 => denied */
+	__u32 flags; /* bit 0x80000000 => denied, 0x40000000 => killed */
 	__u8  comm[16];
+	__u8  pcomm[16]; /* parent comm */
 	__u8  filename[PATH_MAX_LEN];
 };
 
@@ -48,7 +51,10 @@ struct {
 	__uint(max_entries, 1 << 13);
 } exec_allowed SEC(".maps");
 
-/* Per-cgroup mode: absent/0 = learning, 1 = enforcing. */
+/* Per-cgroup mode: absent/0 = learning, 1 = enforcing, 2 = enforcing + kill.
+ * Mode 2 also sends SIGKILL to the offending task, matching Tetragon's Sigkill
+ * action, for operators who want the process terminated and not merely refused. */
+#define MODE_ENFORCE_KILL 2
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
@@ -93,6 +99,18 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	e->flags = 0;
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
+	/* Process ancestry: record the parent so an alert or denial identifies the
+	 * spawning process, not just the doomed child. */
+	e->ppid = 0;
+	e->pcomm[0] = 0;
+	{
+		struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+		if (task) {
+			e->ppid = BPF_CORE_READ(task, real_parent, tgid);
+			BPF_CORE_READ_STR_INTO(&e->pcomm, task, real_parent, comm);
+		}
+	}
+
 	/* The binary being executed. */
 	const char *fname = BPF_CORE_READ(bprm, filename);
 	e->filename[0] = 0;
@@ -105,12 +123,16 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	__u8 mode = modep ? *modep : MODE_LEARN;
 	__u8 *known = bpf_map_lookup_elem(&exec_allowed, &key);
 
-	if (mode == MODE_ENFORCE) {
+	if (mode == MODE_ENFORCE || mode == MODE_ENFORCE_KILL) {
 		if (known) {
 			bpf_ringbuf_discard(e, 0);
 			return 0;
 		}
 		e->flags |= 0x80000000; /* denied */
+		if (mode == MODE_ENFORCE_KILL) {
+			e->flags |= 0x40000000; /* killed */
+			bpf_send_signal(9);     /* SIGKILL the offending task */
+		}
 		bpf_ringbuf_submit(e, 0);
 		return -1; /* -EPERM: execve fails */
 	}
