@@ -245,7 +245,7 @@ install-all: manifests kustomize ## Install complete Pahlevan operator (CRDs, RB
 	@echo "📋 Next steps:"
 	@echo "  1. Create a PahlevanPolicy: kubectl apply -f examples/quickstart/simple-policy.yaml"
 	@echo "  2. Check status: kubectl get pahlevanpolicy"
-	@echo "  3. View logs: kubectl logs -n pahlevan-system deployment/pahlevan-controller-manager"
+	@echo "  3. View agent logs: kubectl logs -n pahlevan-system -l app.kubernetes.io/name=pahlevan-agent"
 
 .PHONY: quick-start
 quick-start: install-all ## Complete quick start installation with example

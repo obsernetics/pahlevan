@@ -11,12 +11,27 @@
   </a>
 </p>
 
-<p align="center"><b>eBPF-powered Kubernetes Security Operator</b><br/>Adaptive runtime protection & policy enforcement</p>
+<p align="center"><b>eBPF-powered Kubernetes runtime security</b><br/>Adaptive, self-learning protection with in-kernel enforcement</p>
 
 ## Why Pahlevan?
 
-Kubernetes workloads face **runtime attacks** that bypass perimeter defenses.  
-Pahlevan delivers **adaptive, kernel-level protection** by learning normal workload behavior and enforcing policies proactively.
+Kubernetes workloads face **runtime attacks** that bypass perimeter defenses.
+Pahlevan delivers **adaptive, kernel-level protection** by learning each workload's
+normal behavior and then enforcing it proactively — no hand-written rules.
+
+Unlike alert-only or observability tools, Pahlevan **blocks** in-kernel (LSM BPF +
+seccomp) the moment a workload steps outside its learned baseline, and **self-heals**
+by rolling back a policy that disrupts a workload.
+
+### Architecture
+
+Pahlevan runs as two components (like Falco and Tetragon, it must instrument every node):
+
+- **Agent** — a privileged **DaemonSet** on every node. It owns the eBPF data plane:
+  load/attach programs, learn per-container baselines, and enforce locally in-kernel.
+- **Operator** — a leader-elected **Deployment** control plane. It needs no host access
+  and runs in a **user namespace** (`hostUsers: false`); it handles policy lifecycle,
+  cluster-wide status aggregation, and CEL admission policy.
 
 <table>
 <thead>
@@ -107,9 +122,10 @@ kubectl get pahlevanpolicy nginx-security -w
 <h2 id="requirements">Requirements</h2>
 
 <ul>
-  <li>Kubernetes <b>v1.24+</b></li>
-  <li>Linux Kernel <b>4.18+</b> with eBPF enabled</li>
-  <li>Minimum: <b>256MB memory</b>, <b>100m CPU</b></li>
+  <li>Kubernetes <b>v1.24+</b> (user-namespace operator needs <b>v1.30+</b>)</li>
+  <li>Linux Kernel <b>5.8+</b> for monitoring (CO-RE, ring buffer, CAP_BPF)</li>
+  <li>Kernel <b>5.7+ with <code>CONFIG_BPF_LSM</code> and <code>lsm=bpf</code></b> for in-kernel enforcement (monitor-only mode works without it)</li>
+  <li>Minimum: <b>256MB memory</b>, <b>100m CPU</b> per node agent</li>
 </ul>
 
 
