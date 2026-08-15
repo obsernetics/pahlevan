@@ -65,6 +65,9 @@ func main() {
 
 	obs := &observer{}
 	mgr.AddEventHandler(obs)
+	// The cgroup id is filled in below, once the cgroup exists. Until then the
+	// observer records nothing, which is correct: nothing has been governed yet.
+	obs.cgroup = ^uint64(0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -79,7 +82,8 @@ func main() {
 	}
 	defer func() { _ = os.Remove(cgPath) }()
 	r.cgroupID = cgID
-	say("demo cgroup %s (id %d)", cgPath, cgID)
+	obs.cgroup = cgID
+	say("demo cgroup %s (id %d) - only this cgroup's events are recorded", cgPath, cgID)
 
 	// The workload. A static file server is not a toy here: it reads files,
 	// binds a port, accepts connections and forks nothing, which is exactly the
@@ -427,7 +431,21 @@ type snapshot struct {
 
 // observer is the event handler the manager dispatches into. It is the same
 // interface the agent's learner and export pipeline implement.
+//
+// It filters on the demo cgroup, and the first run of this harness is why.
+// The data plane reports every event on the node, because that is what a
+// node-wide agent is for; enforcement is per-cgroup, keyed by cgroup id, so
+// the denials were right. The report was not: it listed the learned baseline
+// as fwupdmgr, sysstat, iptables and k3s's ipset - the VM's own housekeeping -
+// under a heading claiming to describe the web server. A baseline report that
+// includes the whole node is worse than no baseline report, because it makes
+// the allow-set look enormous and unfocused when the thing actually being
+// enforced is a handful of paths.
 type observer struct {
+	// cgroup limits what is recorded to the governed container. Zero records
+	// everything, which is only useful for debugging the harness itself.
+	cgroup uint64
+
 	mu       sync.Mutex
 	events   int
 	denied   int
@@ -447,7 +465,15 @@ func (o *observer) init() {
 	}
 }
 
-func (o *observer) HandleSyscallEvent(*ebpf.SyscallEvent) error {
+// mine reports whether an event belongs to the governed cgroup.
+func (o *observer) mine(cgroup uint64) bool {
+	return o.cgroup == 0 || cgroup == o.cgroup
+}
+
+func (o *observer) HandleSyscallEvent(e *ebpf.SyscallEvent) error {
+	if !o.mine(e.CgroupID) {
+		return nil
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.events++
@@ -455,6 +481,9 @@ func (o *observer) HandleSyscallEvent(*ebpf.SyscallEvent) error {
 }
 
 func (o *observer) HandleProcessEvent(e *ebpf.ProcessEvent) error {
+	if !o.mine(e.CgroupID) {
+		return nil
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.init()
@@ -472,6 +501,9 @@ func (o *observer) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 }
 
 func (o *observer) HandleFileEvent(e *ebpf.FileEvent) error {
+	if !o.mine(e.CgroupID) {
+		return nil
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.init()
@@ -489,6 +521,9 @@ func (o *observer) HandleFileEvent(e *ebpf.FileEvent) error {
 }
 
 func (o *observer) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
+	if !o.mine(e.CgroupID) {
+		return nil
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.init()
@@ -503,6 +538,9 @@ func (o *observer) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 }
 
 func (o *observer) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
+	if !o.mine(e.CgroupID) {
+		return nil
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.init()
@@ -584,7 +622,7 @@ func (r *run) render() string {
 	p("| Learning window | %s |", r.learn.Round(time.Second))
 	p("| Cgroup | %d |", r.cgroupID)
 	p("| Requests served | %d (%d failed) |", r.requests, r.requestErrors)
-	p("| Events observed | %d |", r.after.Events)
+	p("| Events observed | %d (this cgroup only) |", r.after.Events)
 	p("")
 	if len(r.enforceWarnings) > 0 {
 		p("> Enforcement could not be enabled for: %s", strings.Join(r.enforceWarnings, "; "))
@@ -593,7 +631,9 @@ func (r *run) render() string {
 
 	p("## What it learned")
 	p("")
-	p("This is the whole policy. Nobody wrote it.")
+	p("This is the whole policy. Nobody wrote it, and it covers only the governed")
+	p("cgroup - the data plane sees the whole node, but enforcement and this report")
+	p("are scoped to the container.")
 	p("")
 	p("**Binaries executed (%d)**", len(r.baseline.Execs))
 	p("")
