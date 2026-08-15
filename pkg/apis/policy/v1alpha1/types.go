@@ -103,7 +103,17 @@ type LearningConfig struct {
 
 // EnforcementConfig controls enforcement behavior
 type EnforcementConfig struct {
-	// Mode specifies the enforcement mode
+	// Mode specifies the enforcement mode.
+	//
+	// The enum is load-bearing rather than decorative. Without it the API
+	// server accepts any string and the controller maps whatever it does not
+	// recognize onto Monitoring, so a typo produces a policy that looks applied
+	// and enforces nothing. The trap that found this: `mode: Off` unquoted is a
+	// YAML 1.1 boolean, so it arrives as `false` and silently became Monitoring
+	// - the opposite of switching a policy off. Quote it, or the API server now
+	// says so.
+	//
+	// +kubebuilder:validation:Enum=Off;Monitoring;Blocking
 	Mode EnforcementMode `json:"mode,omitempty"`
 
 	// GracePeriod specifies grace period before strict enforcement
