@@ -21,7 +21,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -192,6 +191,22 @@ func startApp(cgPath string, port int) (*exec.Cmd, string, error) {
 			return nil, "", err
 		}
 	}
+	// A nonce only this webroot contains. The readiness check below fetches it,
+	// which is the difference between "something is listening on this port" and
+	// "the server I just started is listening on this port".
+	//
+	// That distinction is not hypothetical. A previous run of this harness,
+	// killed before its deferred cleanup ran, left a python server bound to the
+	// same port. The next run created a fresh webroot, saw the port answer, and
+	// proceeded - learning the *old* server's file reads and then revoking a
+	// path in the new webroot that nothing was ever going to open. The report
+	// showed a MISMATCH on a mechanism that works, which is the worst kind of
+	// wrong result: it accuses the tool of a defect the harness caused.
+	nonce := fmt.Sprintf("pahlevan-%d-%d", os.Getpid(), port)
+	if err := os.WriteFile(filepath.Join(root, "nonce"), []byte(nonce), 0o600); err != nil {
+		return nil, "", err
+	}
+
 	script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec python3 -m http.server %d --directory %s",
 		cgPath, port, root)
 	cmd := exec.Command("/bin/sh", "-c", script)
@@ -199,16 +214,27 @@ func startApp(cgPath string, port int) (*exec.Cmd, string, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, "", err
 	}
-	// Wait for the listener rather than sleeping a guessed interval.
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
 	for i := 0; i < 100; i++ {
-		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/nonce", port))
 		if err == nil {
-			_ = c.Close()
-			return cmd, root, nil
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
+			_ = resp.Body.Close()
+			if strings.TrimSpace(string(body)) == nonce {
+				return cmd, root, nil
+			}
+			// Someone else owns the port. Say so precisely rather than
+			// proceeding against a server this run does not control.
+			_ = cmd.Process.Kill()
+			return nil, "", fmt.Errorf(
+				"port %d is already served by another process (its /nonce does not match "+
+					"this run's); kill the leftover server and retry", port)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return nil, "", fmt.Errorf("the application never began listening on :%d", port)
+	_ = cmd.Process.Kill()
+	return nil, "", fmt.Errorf("the application never began serving on :%d", port)
 }
 
 func driveTraffic(port int, every time.Duration, stop <-chan struct{}, r *run) {
