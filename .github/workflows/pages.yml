@@ -1,27 +1,98 @@
 name: Deploy GitHub Pages
 
+# The site borrows facts from the rest of the repository: benchmark numbers, the
+# release version, the demo GIF. It used to deploy only when pages/** changed,
+# which meant it went stale precisely when the things it displays changed - and
+# it did. The published page claimed Pahlevan blocked "4 / 4" attacks while the
+# benchmark it linked to reported 25 of 26, for as long as nobody happened to
+# edit an HTML file.
+#
+# So the trigger now includes every source the site quotes, a check re-derives
+# those values rather than trusting the checked-in HTML, and that check also
+# runs on pull requests - a change that makes the site stale should fail in
+# review rather than after it has published.
 on:
   push:
     branches: [ main ]
     paths:
       - 'pages/**'
+      - 'docs/assets/demo.gif'
+      - 'docs/benchmarks/results.md'
+      - 'Makefile'
+      - 'hack/pagesync/**'
       - '.github/workflows/pages.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'pages/**'
+      - 'docs/assets/demo.gif'
+      - 'docs/benchmarks/results.md'
+      - 'Makefile'
+      - 'hack/pagesync/**'
+      - '.github/workflows/pages.yml'
+  # A release changes the version the site tells people to pull.
+  release:
+    types: [ published ]
+  # Weekly, so a source that changed without matching a path filter - or a
+  # deploy that failed and was forgotten - is corrected within seven days
+  # rather than never.
+  schedule:
+    - cron: '17 6 * * 1'
   workflow_dispatch:
 
-# Allow the workflow to publish to GitHub Pages via OIDC.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Only one concurrent deployment; don't cancel an in-progress publish.
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
+  check:
+    name: Check the site is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.13'
+          cache: true
+
+      - name: Verify the published values match their sources
+        run: go run ./hack/pagesync -check
+
+      # A broken image on a landing page is the kind of thing nobody notices for
+      # months, because the page still loads.
+      - name: Verify every referenced asset resolves
+        run: |
+          set -euo pipefail
+          # Strip the ?v=N cache buster: it is part of the URL the browser
+          # requests, not part of the filename on disk.
+          grep -ohE '(src|href)="[^"#:]+"' pages/*.html \
+            | sed -E 's/.*="([^"]+)"/\1/' \
+            | sed -E 's/\?.*$//' \
+            | grep -v '^/' \
+            | grep -v '^$' \
+            | sort -u > /tmp/refs.txt
+          status=0
+          while read -r ref; do
+            if [ ! -e "pages/$ref" ]; then
+              echo "::error::pages/index.html references a missing asset: $ref"
+              status=1
+            fi
+          done < /tmp/refs.txt
+          exit $status
+
   deploy:
     name: Build and deploy
+    needs: check
+    # Never on a pull request: a fork PR must not be able to publish.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -29,6 +100,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.13'
+          cache: true
+
+      # `check` has already passed, so this is normally a no-op. It exists so a
+      # scheduled run still publishes correct values if a source changed in a
+      # way the path filter did not catch.
+      - name: Re-derive the published values
+        run: go run ./hack/pagesync -write
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
