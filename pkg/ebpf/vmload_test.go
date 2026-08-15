@@ -1155,3 +1155,172 @@ func TestVMOomScoreAdjStaysWritableUnderEnforcement(t *testing.T) {
 		t.Logf("/proc/self/environ still denied, exemption is narrow: %v", err)
 	}
 }
+
+// TestVMExecArgumentsAreCaptured proves argv reaches the exec event from a real
+// kernel.
+//
+// The LSM hook cannot read argv itself: by the time bprm_check runs, the
+// strings live in the new mm being constructed and bpf_probe_read_user reads
+// the current address space. The capture therefore happens at the execve
+// syscall tracepoint, where argv is still a plain userspace pointer in the
+// caller's address space, and is joined onto the event by pid_tgid within the
+// same syscall. This asserts that join actually works. VM-only.
+func TestVMExecArgumentsAreCaptured(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+
+	tp, err := link.Tracepoint("syscalls", "sys_enter_execve", coll.Programs["handle_execve_args"], nil)
+	if err != nil {
+		t.Fatalf("attach sys_enter_execve: %v", err)
+	}
+	defer tp.Close()
+
+	rd, err := ringbuf.NewReader(coll.Maps["exec_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// A distinctive argument vector, so a match cannot be coincidence.
+	const marker = "pahlevan-argv-marker"
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = exec.Command("/bin/echo", "-n", marker, "second-arg").Run()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseProcessEvent(rec.RawSample)
+		if ev == nil || !strings.HasSuffix(ev.Filename, "/echo") {
+			continue
+		}
+		if len(ev.Args) == 0 {
+			t.Fatalf("exec of %s carried no argv; the syscall tracepoint capture "+
+				"did not reach bprm_check", ev.Filename)
+		}
+		t.Logf("captured argv: %q (command line: %s)", ev.Args, ev.CommandLine())
+
+		if ev.Args[0] != "/bin/echo" {
+			t.Errorf("args[0] = %q, want the program name as the caller passed it", ev.Args[0])
+		}
+		found := false
+		for _, a := range ev.Args {
+			if a == marker {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("argv %q does not contain the marker %q", ev.Args, marker)
+		}
+		if len(ev.Args) != 4 {
+			t.Errorf("argv = %q, want 4 arguments", ev.Args)
+		}
+		return
+	}
+	t.Fatal("no exec event for /bin/echo observed")
+}
+
+// A process that execs twice must not inherit the first invocation's arguments.
+// The scratch entry is deleted on consumption precisely to prevent that.
+func TestVMExecArgumentsAreNotReusedAcrossExecs(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+	tp, err := link.Tracepoint("syscalls", "sys_enter_execve", coll.Programs["handle_execve_args"], nil)
+	if err != nil {
+		t.Fatalf("attach sys_enter_execve: %v", err)
+	}
+	defer tp.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["exec_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// The shell execs /bin/true with no arguments beyond argv[0]; if the
+			// scratch entry leaked, the shell's own argv would show up on it.
+			_ = exec.Command("/bin/sh", "-c", "unique-marker-arg; exec /bin/true").Run()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseProcessEvent(rec.RawSample)
+		if ev == nil || !strings.HasSuffix(ev.Filename, "/true") {
+			continue
+		}
+		for _, a := range ev.Args {
+			if strings.Contains(a, "unique-marker-arg") {
+				t.Fatalf("exec of %s inherited the previous exec's argv: %q", ev.Filename, ev.Args)
+			}
+		}
+		t.Logf("second exec carried its own argv: %q", ev.Args)
+		return
+	}
+	t.Skip("no exec of /bin/true observed within the window")
+}

