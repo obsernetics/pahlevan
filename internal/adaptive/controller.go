@@ -669,14 +669,26 @@ func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 		"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs), "caps", len(st.caps))
 }
 
-// applyOverrides writes the operator's corrections into the kernel allow-sets.
+// ApplyOverrides writes an operator's corrections into the kernel allow-sets for
+// one cgroup.
 //
-// Errors are logged and counted, never fatal: a node whose kernel lacks the BPF
-// LSM runs the agent in observation-only mode, and one unseeded exception must
-// not stop the other signals from being enforced. Callers must hold c.mu.
-func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
+// Exported, and separate from the controller, for one reason: the demo harness
+// in hack/demo/scenario needs to demonstrate that a policy exception really does
+// turn a denial into an allow, and a demonstration that runs its own copy of
+// this loop proves nothing about what the agent does. Both call this.
+//
+// onFailure is invoked per entry that could not be written and the count is
+// returned. Nothing here is fatal: a node whose kernel lacks the BPF LSM runs in
+// observation-only mode, and one unseeded exception must not stop the other
+// signals from being enforced.
+//
+// Order matters at the end. The process filter's allow-lists must reach the
+// kernel before its enabled mask does (see Manager.SetProcFilter), or there is
+// a window in which a dimension is enforced against an empty list - which denies
+// every exec in the container.
+func ApplyOverrides(e Enforcer, id uint64, o Overrides, onFailure func(kind, entry string, err error)) int {
 	if o.Empty() {
-		return
+		return 0
 	}
 	failed := 0
 	note := func(err error, kind, what string) {
@@ -684,46 +696,56 @@ func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
 			return
 		}
 		failed++
-		c.log.V(1).Info("could not seed allow-set entry",
-			"cgroup", id, "kind", kind, "entry", what, "error", err.Error())
+		if onFailure != nil {
+			onFailure(kind, what, err)
+		}
 	}
 
 	for _, p := range o.AllowedFiles {
-		note(c.enforcer.AllowFilePathMode(id, p, false, true), "file:read", p)
+		note(e.AllowFilePathMode(id, p, false, true), "file:read", p)
 	}
 	for _, p := range o.DeniedFiles {
-		note(c.enforcer.AllowFilePathMode(id, p, false, false), "file:read", p)
+		note(e.AllowFilePathMode(id, p, false, false), "file:read", p)
 	}
 	for _, p := range o.AllowedWriteFiles {
-		note(c.enforcer.AllowFilePathMode(id, p, true, true), "file:write", p)
+		note(e.AllowFilePathMode(id, p, true, true), "file:write", p)
 	}
 	for _, p := range o.DeniedWriteFiles {
-		note(c.enforcer.AllowFilePathMode(id, p, true, false), "file:write", p)
+		note(e.AllowFilePathMode(id, p, true, false), "file:write", p)
 	}
 	for _, p := range o.AllowedExecs {
-		note(c.enforcer.AllowExecPath(id, p, true), "exec", p)
+		note(e.AllowExecPath(id, p, true), "exec", p)
 	}
 	for _, p := range o.DeniedExecs {
-		note(c.enforcer.AllowExecPath(id, p, false), "exec", p)
+		note(e.AllowExecPath(id, p, false), "exec", p)
 	}
-	for _, cap := range o.AllowedCapabilities {
-		note(c.enforcer.AllowCapability(id, cap, true), "capability", fmt.Sprint(cap))
+	for _, capability := range o.AllowedCapabilities {
+		note(e.AllowCapability(id, capability, true), "capability", fmt.Sprint(capability))
 	}
-	for _, cap := range o.DeniedCapabilities {
-		note(c.enforcer.AllowCapability(id, cap, false), "capability", fmt.Sprint(cap))
+	for _, capability := range o.DeniedCapabilities {
+		note(e.AllowCapability(id, capability, false), "capability", fmt.Sprint(capability))
 	}
 	for _, d := range o.AllowedDestinations {
-		note(c.enforcer.AllowNetworkDestination(id, d.IP, d.Port, true), "destination", destString(d))
+		note(e.AllowNetworkDestination(id, d.IP, d.Port, true), "destination", destString(d))
 	}
 	for _, d := range o.DeniedDestinations {
-		note(c.enforcer.AllowNetworkDestination(id, d.IP, d.Port, false), "destination", destString(d))
+		note(e.AllowNetworkDestination(id, d.IP, d.Port, false), "destination", destString(d))
 	}
-	// The filter is installed last. Its allow-lists reach the kernel before its
-	// enabled mask does (see Manager.SetProcFilter), so there is never a window
-	// in which a dimension is enforced against an empty list - which would deny
-	// every exec in the container.
-	note(c.enforcer.SetProcFilter(id, o.ProcFilter), "procFilter",
+	note(e.SetProcFilter(id, o.ProcFilter), "procFilter",
 		ebpf.FilterMaskString(o.ProcFilter.Mask()))
+	return failed
+}
+
+// applyOverrides writes the operator's corrections into the kernel allow-sets.
+// Callers must hold c.mu.
+func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
+	if o.Empty() {
+		return
+	}
+	failed := ApplyOverrides(c.enforcer, id, o, func(kind, entry string, err error) {
+		c.log.V(1).Info("could not seed allow-set entry",
+			"cgroup", id, "kind", kind, "entry", entry, "error", err.Error())
+	})
 
 	c.log.Info("applied policy overrides to the kernel allow-sets",
 		"cgroup", id, "pod", st.ref.PodUID, "policy", st.policyName,

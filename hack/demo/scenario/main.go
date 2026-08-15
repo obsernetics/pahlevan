@@ -31,6 +31,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/obsernetics/pahlevan/internal/adaptive"
+	"github.com/obsernetics/pahlevan/internal/policy"
+	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
@@ -151,6 +154,7 @@ func main() {
 	}
 
 	r.scenarios = runScenarios(cgPath, *appPort, obs)
+	r.exceptions = runExceptionPhase(mgr, cgPath, cgID, obs)
 
 	close(stopTraffic)
 	trafficWG.Wait()
@@ -425,6 +429,143 @@ func quoteShell(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// --- policy exceptions ---------------------------------------------------------
+
+// runExceptionPhase demonstrates that an operator can correct the learned
+// baseline at both edges: grant something the window missed, and revoke
+// something the window caught.
+//
+// This is the half of the model that gets least attention and matters most in
+// practice. A baseline is a summary of one observation window, so it will be
+// wrong sometimes - a backup path that runs nightly, a failure handler that
+// never fired. Without a way to correct it, the only options are a broken
+// workload or no enforcement.
+//
+// The demonstration runs the real path rather than a convincing imitation:
+// the policy fragment below is a genuine PahlevanPolicySpec, it goes through
+// internal/policy.Translate exactly as the agent's resolver does, and the
+// resulting Overrides are written by adaptive.ApplyOverrides - the same
+// function the controller calls before a container flips to enforcing. A demo
+// that seeded the maps directly would prove nothing about what the agent does.
+func runExceptionPhase(mgr *ebpf.Manager, cgPath string, cgID uint64, obs *observer) []scenario {
+	var out []scenario
+
+	inCgroup := func(shell string) (string, error) {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && %s", cgPath, shell)
+		outB, err := exec.Command("/bin/sh", "-c", script).CombinedOutput()
+		text := strings.TrimSpace(string(outB))
+		if len(text) > 300 {
+			text = text[:300] + "..."
+		}
+		return text, err
+	}
+
+	// A file a real workload plausibly needs on a code path that did not run
+	// during the window. Nothing about it is special to the harness: it is
+	// simply a path the application never opened.
+	const missed = "/etc/ssl/certs/ca-certificates.crt"
+	probe := fmt.Sprintf("python3 -c %s",
+		quoteShell(fmt.Sprintf("print(len(open('%s').read()))", missed)))
+
+	record := func(name, story, cmd, expect string) {
+		before := obs.denials()
+		detail, err := inCgroup(cmd)
+		time.Sleep(400 * time.Millisecond)
+		sc := scenario{Name: name, Story: story, Command: cmd, Expect: expect, Allowed: err == nil}
+		switch {
+		case err != nil && detail != "":
+			sc.Detail = fmt.Sprintf("%v\n%s", err, detail)
+		case err != nil:
+			sc.Detail = err.Error()
+		default:
+			sc.Detail = detail
+		}
+		if n := obs.denials() - before; n > 0 {
+			sc.Detail += fmt.Sprintf("\n[%d in-kernel denial(s) recorded]", n)
+		}
+		out = append(out, sc)
+		status := "ALLOWED"
+		if !sc.Allowed {
+			status = "DENIED "
+		}
+		say("  %s  %s", status, name)
+	}
+
+	record("A legitimate path the learning window missed",
+		"Before any exception. The workload has a code path that reads the "+
+			"system trust store, and it did not run during the window - so the "+
+			"path is not in the baseline and the read is refused. This is the "+
+			"false denial every learned-baseline tool has to have an answer for.",
+		probe, "denied")
+
+	// The operator's answer, written as they would write it.
+	spec := policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{
+			Mode: policyv1alpha1.EnforcementModeBlocking,
+			Exceptions: []policyv1alpha1.EnforcementException{{
+				Type:     policyv1alpha1.ExceptionTypeFile,
+				Patterns: []string{missed},
+				Reason:   "TLS trust store, read on a code path the learning window did not exercise",
+			}},
+		},
+	}
+	decision, warnings := policy.Translate("demo-exception", spec, time.Now())
+	for _, w := range warnings {
+		say("  policy warning: %s", w)
+	}
+	failed := adaptive.ApplyOverrides(mgr, cgID, decision.Overrides,
+		func(kind, entry string, err error) {
+			say("  could not seed %s %s: %v", kind, entry, err)
+		})
+	say("  applied the exception: %d entries failed", failed)
+
+	record("The same read, after the exception is applied",
+		"Nothing changed except the policy. The command is byte for byte the "+
+			"one refused above, the container was not restarted, and enforcement "+
+			"was never switched off - the entry was written into the same kernel "+
+			"allow-set the learning window populates, using the same key "+
+			"derivation, by the same function the controller calls.",
+		probe, "allowed")
+
+	// The other edge. A deny list revokes something the window did learn, which
+	// is what an operator reaches for when the learning window caught behavior
+	// it should not have.
+	learned := "/etc/hostname"
+	warm := fmt.Sprintf("python3 -c %s",
+		quoteShell(fmt.Sprintf("print(open('%s').read().strip())", learned)))
+	if _, err := inCgroup(warm); err != nil {
+		say("  note: could not establish a learned read of %s: %v", learned, err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	record("A path the workload really does use",
+		"Read once here so it is unambiguously in the allow-set, and allowed "+
+			"because of that.",
+		warm, "allowed")
+
+	denySpec := policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		FilePolicy: &policyv1alpha1.FilePolicy{
+			DeniedPaths: []string{learned},
+		},
+	}
+	denyDecision, denyWarnings := policy.Translate("demo-deny", denySpec, time.Now())
+	for _, w := range denyWarnings {
+		say("  policy warning: %s", w)
+	}
+	adaptive.ApplyOverrides(mgr, cgID, denyDecision.Overrides, nil)
+	say("  applied filePolicy.deniedPaths")
+
+	record("The same path, after deniedPaths revokes it",
+		"The other edge, and the one that matters when a learning window "+
+			"captured something it should not have. A deny list removes the entry "+
+			"even though the behavior was observed, so 'we saw it happen' stops "+
+			"being the same thing as 'it is permitted'.",
+		warm, "denied")
+
+	return out
+}
+
 // --- observation --------------------------------------------------------------
 
 type snapshot struct {
@@ -562,12 +703,6 @@ func (o *observer) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
 	return nil
 }
 
-func (o *observer) total() int {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.events
-}
-
 func (o *observer) denials() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -608,6 +743,7 @@ type run struct {
 	baseline        snapshot
 	after           snapshot
 	scenarios       []scenario
+	exceptions      []scenario
 	enforceWarnings []string
 }
 
@@ -694,6 +830,45 @@ func (r *run) render() string {
 		p("%s", s.Detail)
 		p("```")
 		p("")
+	}
+
+	if len(r.exceptions) > 0 {
+		p("## Correcting the baseline")
+		p("")
+		p("A baseline is a summary of one observation window, so it will sometimes be")
+		p("wrong. Without a way to correct it the only options are a broken workload or")
+		p("no enforcement, which is why this half of the model matters as much as the")
+		p("learning does.")
+		p("")
+		p("Everything below went through the real path: a PahlevanPolicySpec, through")
+		p("internal/policy.Translate, applied by adaptive.ApplyOverrides - the same")
+		p("function the controller calls before a container flips to enforcing.")
+		p("")
+		p("| Step | Expected | Result |")
+		p("|---|---|---|")
+		for _, s := range r.exceptions {
+			got := "denied"
+			if s.Allowed {
+				got = "allowed"
+			}
+			mark := "MATCH"
+			if got != s.Expect {
+				mark = "**MISMATCH**"
+			}
+			p("| %s | %s | %s (%s) |", s.Name, s.Expect, got, mark)
+		}
+		p("")
+		for _, s := range r.exceptions {
+			p("### %s", s.Name)
+			p("")
+			p("%s", s.Story)
+			p("")
+			p("```")
+			p("$ %s", s.Command)
+			p("%s", s.Detail)
+			p("```")
+			p("")
+		}
 	}
 
 	p("## In-kernel denials recorded")
