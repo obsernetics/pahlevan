@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -91,7 +92,7 @@ func main() {
 	// The workload. A static file server is not a toy here: it reads files,
 	// binds a port, accepts connections and forks nothing, which is exactly the
 	// behavioral profile of the web tier Pahlevan is usually pointed at.
-	app, err := startApp(cgPath, *appPort)
+	app, webroot, err := startApp(cgPath, *appPort)
 	if err != nil {
 		fatal("starting the demo application: %v", err)
 	}
@@ -154,7 +155,7 @@ func main() {
 	}
 
 	r.scenarios = runScenarios(cgPath, *appPort, obs)
-	r.exceptions = runExceptionPhase(mgr, cgPath, cgID, obs)
+	r.exceptions = runExceptionPhase(mgr, cgPath, cgID, *appPort, webroot, obs)
 
 	close(stopTraffic)
 	trafficWG.Wait()
@@ -176,10 +177,10 @@ func main() {
 // The shell wrapper is how the process joins the cgroup before exec'ing: there
 // is no way to ask exec.Command to place the child in a cgroup, and moving it
 // afterwards would mean the exec itself was never observed.
-func startApp(cgPath string, port int) (*exec.Cmd, error) {
+func startApp(cgPath string, port int) (*exec.Cmd, string, error) {
 	root, err := os.MkdirTemp("", "pahlevan-webroot")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	pages := map[string]string{
 		"index.html":  "<h1>demo</h1>",
@@ -188,7 +189,7 @@ func startApp(cgPath string, port int) (*exec.Cmd, error) {
 	}
 	for name, body := range pages {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec python3 -m http.server %d --directory %s",
@@ -196,18 +197,18 @@ func startApp(cgPath string, port int) (*exec.Cmd, error) {
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// Wait for the listener rather than sleeping a guessed interval.
 	for i := 0; i < 100; i++ {
 		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
 		if err == nil {
 			_ = c.Close()
-			return cmd, nil
+			return cmd, root, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("the application never began listening on :%d", port)
+	return nil, "", fmt.Errorf("the application never began listening on :%d", port)
 }
 
 func driveTraffic(port int, every time.Duration, stop <-chan struct{}, r *run) {
@@ -447,7 +448,7 @@ func quoteShell(s string) string {
 // resulting Overrides are written by adaptive.ApplyOverrides - the same
 // function the controller calls before a container flips to enforcing. A demo
 // that seeded the maps directly would prove nothing about what the agent does.
-func runExceptionPhase(mgr *ebpf.Manager, cgPath string, cgID uint64, obs *observer) []scenario {
+func runExceptionPhase(mgr *ebpf.Manager, cgPath string, cgID uint64, port int, webroot string, obs *observer) []scenario {
 	var out []scenario
 
 	inCgroup := func(shell string) (string, error) {
@@ -527,41 +528,93 @@ func runExceptionPhase(mgr *ebpf.Manager, cgPath string, cgID uint64, obs *obser
 			"derivation, by the same function the controller calls.",
 		probe, "allowed")
 
-	// The other edge. A deny list revokes something the window did learn, which
-	// is what an operator reaches for when the learning window caught behavior
-	// it should not have.
-	learned := "/etc/hostname"
-	warm := fmt.Sprintf("python3 -c %s",
-		quoteShell(fmt.Sprintf("print(open('%s').read().strip())", learned)))
-	if _, err := inCgroup(warm); err != nil {
-		say("  note: could not establish a learned read of %s: %v", learned, err)
+	// The other edge, and the more interesting one: revoking something the
+	// window did learn. The file is one the application itself serves, so it
+	// was read hundreds of times during learning and is unambiguously in the
+	// allow-set - and the effect is visible from outside the container, in the
+	// response the workload gives, rather than in a shell command.
+	served := filepath.Join(webroot, "config.json")
+	client := &http.Client{Timeout: 3 * time.Second}
+	fetch := func() (string, error) {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/config.json", port))
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Sprintf("HTTP %d", resp.StatusCode),
+				fmt.Errorf("the application could not serve the file: HTTP %d", resp.StatusCode)
+		}
+		return fmt.Sprintf("HTTP %d  %s", resp.StatusCode, strings.TrimSpace(string(body))), nil
 	}
-	time.Sleep(300 * time.Millisecond)
 
-	record("A path the workload really does use",
-		"Read once here so it is unambiguously in the allow-set, and allowed "+
-			"because of that.",
-		warm, "allowed")
+	recordFetch := func(name, story, expect string) {
+		before := obs.denials()
+		detail, err := fetch()
+		time.Sleep(400 * time.Millisecond)
+		sc := scenario{
+			Name: name, Story: story, Expect: expect, Allowed: err == nil,
+			Command: fmt.Sprintf("GET /config.json  (the app reads %s)", served),
+		}
+		sc.Detail = detail
+		if err != nil {
+			sc.Detail = fmt.Sprintf("%v\n%s", err, detail)
+		}
+		if n := obs.denials() - before; n > 0 {
+			sc.Detail += fmt.Sprintf("\n[%d in-kernel denial(s) recorded]", n)
+		}
+		out = append(out, sc)
+		status := "ALLOWED"
+		if !sc.Allowed {
+			status = "DENIED "
+		}
+		say("  %s  %s", status, name)
+	}
+
+	recordFetch("A file the application really does serve",
+		"Requested hundreds of times during the learning window, so the read is "+
+			"unambiguously in the allow-set. The request comes from outside the "+
+			"container; the read it causes happens inside.",
+		"allowed")
 
 	denySpec := policyv1alpha1.PahlevanPolicySpec{
 		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
-		FilePolicy: &policyv1alpha1.FilePolicy{
-			DeniedPaths: []string{learned},
-		},
+		FilePolicy:        &policyv1alpha1.FilePolicy{DeniedPaths: []string{served}},
 	}
 	denyDecision, denyWarnings := policy.Translate("demo-deny", denySpec, time.Now())
 	for _, w := range denyWarnings {
 		say("  policy warning: %s", w)
 	}
 	adaptive.ApplyOverrides(mgr, cgID, denyDecision.Overrides, nil)
-	say("  applied filePolicy.deniedPaths")
+	say("  applied filePolicy.deniedPaths for %s", served)
 
-	record("The same path, after deniedPaths revokes it",
-		"The other edge, and the one that matters when a learning window "+
-			"captured something it should not have. A deny list removes the entry "+
-			"even though the behavior was observed, so 'we saw it happen' stops "+
-			"being the same thing as 'it is permitted'.",
-		warm, "denied")
+	recordFetch("The same file, after deniedPaths revokes it",
+		"The application can no longer read what it was serving a second ago, "+
+			"and the failure is visible in its response rather than in a log. This "+
+			"is the edge that matters when a learning window captured something it "+
+			"should not have: a deny list removes the entry even though the "+
+			"behavior was observed, so \"we saw it happen\" stops being the same "+
+			"thing as \"it is permitted\".",
+		"denied")
+
+	// Put it back. Leaving a demo in a state where the workload is broken would
+	// make every later reading of the report wrong about what enforcement did.
+	restore := policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{
+			Mode: policyv1alpha1.EnforcementModeBlocking,
+			Exceptions: []policyv1alpha1.EnforcementException{{
+				Type: policyv1alpha1.ExceptionTypeFile, Patterns: []string{served},
+				Reason: "restoring the demo's own workload",
+			}},
+		},
+	}
+	restoreDecision, _ := policy.Translate("demo-restore", restore, time.Now())
+	adaptive.ApplyOverrides(mgr, cgID, restoreDecision.Overrides, nil)
+	recordFetch("And restored, so the workload ends the run healthy",
+		"The revocation is undone the same way it was applied. An operator who "+
+			"denies the wrong path is one exception away from undoing it.",
+		"allowed")
 
 	return out
 }
