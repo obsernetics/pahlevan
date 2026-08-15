@@ -392,7 +392,7 @@ func (c *Controller) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// An exit is not an exec. Learning it would put an empty filename in the
-	// allow-set, and counting it as behaviour would make every terminating
+	// allow-set, and counting it as behavior would make every terminating
 	// process look like new activity.
 	if e.IsExit() {
 		return nil
@@ -938,12 +938,15 @@ func (c *Controller) writeSeccompProfile(st *cgState) {
 	if name == "" {
 		name = fmt.Sprintf("cgroup-%d", st.firstSeen.UnixNano())
 	}
-	if err := os.MkdirAll(c.SeccompDir, 0o755); err != nil {
+	// 0o700/0o600: the only reader is the kubelet, which is root. A profile
+	// is not secret, but it is the enforcement baseline for a workload and
+	// nothing else on the node has any business reading or replacing it.
+	if err := os.MkdirAll(c.SeccompDir, 0o700); err != nil {
 		c.log.Error(err, "failed to create seccomp dir", "dir", c.SeccompDir)
 		return
 	}
 	path := filepath.Join(c.SeccompDir, "pahlevan-"+name+".json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		c.log.Error(err, "failed to write seccomp profile", "path", path)
 		return
 	}
