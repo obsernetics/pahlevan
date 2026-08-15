@@ -431,11 +431,12 @@ func TestNewEventsCommandFlags(t *testing.T) {
 	if got := cmd.Flags().Lookup("file").DefValue; got != export.DefaultEventLogPath {
 		t.Errorf("default --file = %q", got)
 	}
-	if cmd.PersistentPreRunE == nil {
-		t.Fatal("the command must override the Kubernetes client bootstrap")
-	}
-	if err := cmd.PersistentPreRunE(cmd, nil); err != nil {
-		t.Errorf("PersistentPreRunE = %v", err)
+	// The property, not the mechanism: this command reads a local file or dials
+	// an address the user names, so it must work with no kubeconfig. It used to
+	// assert on a PersistentPreRunE override, which was one of two ad-hoc
+	// workarounds that the offline annotation replaced.
+	if !IsOffline(cmd) {
+		t.Error("the events command must not require a Kubernetes client")
 	}
 }
 

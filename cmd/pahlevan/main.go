@@ -28,7 +28,11 @@ import (
 )
 
 var (
-	version   = "v1.0.0"
+	// Overridden at build time by the Dockerfile's -ldflags. The default is
+	// "dev" rather than a version number: a binary built from a working tree
+	// has no release identity, and one that claims v1.0.0 is lying to whoever
+	// is trying to work out what they are running.
+	version   = "dev"
 	buildDate = "unknown"
 	gitCommit = "unknown"
 )
@@ -65,6 +69,13 @@ The Pahlevan operator provides proactive attack surface minimization through ada
 enforcement, and real-time monitoring of container behavior using eBPF technology.`,
 		Version: fmt.Sprintf("%s (built %s, commit %s)", version, buildDate, gitCommit),
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// A command that reads a file or prints a constant must not need a
+			// cluster. `pahlevan version` failing with "no configuration has
+			// been provided" on a laptop is the first thing a new user sees,
+			// and it says the tool is broken when it is not.
+			if commands.IsOffline(cmd) {
+				return nil
+			}
 			// Initialize global configuration using configFlags
 			kubeconfig := ""
 			if configFlags.KubeConfig != nil && *configFlags.KubeConfig != "" {
@@ -98,8 +109,10 @@ enforcement, and real-time monitoring of container behavior using eBPF technolog
 		commands.NewLogsCommand(),
 		commands.NewMetricsCommand(),
 		commands.NewDebugCommand(),
-		commands.NewCompletionCommand(),
-		commands.NewVersionCommand(version, buildDate, gitCommit),
+		// Neither touches the cluster: one writes a shell script, the other
+		// prints constants compiled into the binary.
+		commands.Offline(commands.NewCompletionCommand()),
+		commands.Offline(commands.NewVersionCommand(version, buildDate, gitCommit)),
 	)
 
 	return cmd
