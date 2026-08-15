@@ -420,12 +420,16 @@ func (*Event_Exec) isEvent_Detail() {}
 func (*Event_Capability) isEvent_Detail() {}
 
 type ProcessInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Pid           uint32                 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
-	Tgid          uint32                 `protobuf:"varint,2,opt,name=tgid,proto3" json:"tgid,omitempty"`
-	Uid           uint32                 `protobuf:"varint,3,opt,name=uid,proto3" json:"uid,omitempty"`
-	Gid           uint32                 `protobuf:"varint,4,opt,name=gid,proto3" json:"gid,omitempty"`
-	Comm          string                 `protobuf:"bytes,5,opt,name=comm,proto3" json:"comm,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Pid   uint32                 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
+	Tgid  uint32                 `protobuf:"varint,2,opt,name=tgid,proto3" json:"tgid,omitempty"`
+	Uid   uint32                 `protobuf:"varint,3,opt,name=uid,proto3" json:"uid,omitempty"`
+	Gid   uint32                 `protobuf:"varint,4,opt,name=gid,proto3" json:"gid,omitempty"`
+	Comm  string                 `protobuf:"bytes,5,opt,name=comm,proto3" json:"comm,omitempty"`
+	// Whoever caused this. A denied file open attributed only to "cat" says what
+	// was refused and not who tried; with the parent it says a shell did.
+	Ppid          uint32 `protobuf:"varint,6,opt,name=ppid,proto3" json:"ppid,omitempty"`
+	ParentComm    string `protobuf:"bytes,7,opt,name=parent_comm,json=parentComm,proto3" json:"parent_comm,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -491,6 +495,20 @@ func (x *ProcessInfo) GetGid() uint32 {
 func (x *ProcessInfo) GetComm() string {
 	if x != nil {
 		return x.Comm
+	}
+	return ""
+}
+
+func (x *ProcessInfo) GetPpid() uint32 {
+	if x != nil {
+		return x.Ppid
+	}
+	return 0
+}
+
+func (x *ProcessInfo) GetParentComm() string {
+	if x != nil {
+		return x.ParentComm
 	}
 	return ""
 }
@@ -1189,13 +1207,16 @@ const file_api_v1alpha1_events_proto_rawDesc = "" +
 	"\n" +
 	"capability\x18\x0e \x01(\v2!.pahlevan.v1alpha1.CapabilityInfoH\x00R\n" +
 	"capabilityB\b\n" +
-	"\x06detail\"k\n" +
+	"\x06detail\"\xa0\x01\n" +
 	"\vProcessInfo\x12\x10\n" +
 	"\x03pid\x18\x01 \x01(\rR\x03pid\x12\x12\n" +
 	"\x04tgid\x18\x02 \x01(\rR\x04tgid\x12\x10\n" +
 	"\x03uid\x18\x03 \x01(\rR\x03uid\x12\x10\n" +
 	"\x03gid\x18\x04 \x01(\rR\x03gid\x12\x12\n" +
-	"\x04comm\x18\x05 \x01(\tR\x04comm\"\xc5\x03\n" +
+	"\x04comm\x18\x05 \x01(\tR\x04comm\x12\x12\n" +
+	"\x04ppid\x18\x06 \x01(\rR\x04ppid\x12\x1f\n" +
+	"\vparent_comm\x18\a \x01(\tR\n" +
+	"parentComm\"\xc5\x03\n" +
 	"\rKubernetesRef\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x10\n" +
 	"\x03pod\x18\x02 \x01(\tR\x03pod\x12\x1c\n" +

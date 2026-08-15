@@ -141,7 +141,7 @@ This deserves its own row because it is the clearest capability gap.
 | Immediate parent | Yes, on exec events: parent tgid and parent comm | Yes | Yes |
 | Full ancestor chain | **Yes, up to four levels.** `bprm_check` walks `real_parent` in-kernel and the chain ships with the event, structured and rendered (`nginx -> sh -> curl`). Bounded by the verifier's need for an unrolled loop; there is no process cache, so the depth is fixed rather than unlimited | Yes. `proc.aname[n]` and `proc.apid[n]` address ancestors by depth, backed by a maintained process tree | **Yes, and this is Tetragon's signature strength.** Stable execution ids, a process cache, and an unbounded ancestor chain on every event |
 | Ancestry usable in policy | **No.** The chain is reported, not matched on. Enforcement keys on the cgroup and the binary path | Yes, directly in rule conditions | Yes, in selectors |
-| Ancestry on non-exec events | **No.** File, network, and syscall events carry pid, comm, and cgroup, but no parent | Yes | Yes |
+| Ancestry on non-exec events | **One hop.** File, network and capability events carry the parent pid and comm, so a denial names who caused it. These events are deduplicated in-kernel, so the credentials walk costs once per new path or destination rather than per operation. Syscall events still carry no parent, and the full chain remains exec-only | Yes | Yes |
 
 Pahlevan now answers "what chain of processes led to this exec" to a depth of
 four. Tetragon still wins on unlimited depth, ancestry on every event type, and

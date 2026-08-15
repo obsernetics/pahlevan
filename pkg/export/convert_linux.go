@@ -69,11 +69,13 @@ func FromFileEvent(e *ebpf.FileEvent, now time.Time) *Event {
 		CgroupID:     e.CgroupID,
 		KernelTimeNs: e.Timestamp,
 		Process: ProcessInfo{
-			PID:  e.PID,
-			TGID: e.TGID,
-			UID:  e.UID,
-			GID:  e.GID,
-			Comm: e.Comm,
+			PID:        e.PID,
+			TGID:       e.TGID,
+			UID:        e.UID,
+			GID:        e.GID,
+			Comm:       e.Comm,
+			PPID:       e.PPID,
+			ParentComm: e.ParentComm,
 		},
 		File: file,
 	}
@@ -106,6 +108,12 @@ func FromNetworkEvent(e *ebpf.NetworkEvent, now time.Time) *Event {
 		Process: ProcessInfo{
 			PID:  e.PID,
 			TGID: e.TGID,
+			// The kernel already sends comm on network events; it was simply
+			// not being carried through, so every exported egress denial named
+			// a pid and no process.
+			Comm:       e.Comm,
+			PPID:       e.PPID,
+			ParentComm: e.ParentComm,
 		},
 		Network: &NetworkInfo{
 			SourceIP:        src,
@@ -180,8 +188,10 @@ func FromCapabilityEvent(e *ebpf.CapabilityEvent, now time.Time) *Event {
 		CgroupID:     e.CgroupID,
 		KernelTimeNs: e.Timestamp,
 		Process: ProcessInfo{
-			PID:  e.PID,
-			Comm: e.Comm,
+			PID:        e.PID,
+			Comm:       e.Comm,
+			PPID:       e.PPID,
+			ParentComm: e.ParentComm,
 		},
 		Capability: &CapabilityInfo{
 			Number: e.Capability,

@@ -140,6 +140,12 @@ type ProcessInfo struct {
 	UID  uint32 `json:"uid"`
 	GID  uint32 `json:"gid,omitempty"`
 	Comm string `json:"comm"`
+
+	// PPID and ParentComm name whoever caused this. A denied file open
+	// attributed only to "cat" says what was refused and not who tried; with
+	// the parent it says a shell did.
+	PPID       uint32 `json:"ppid,omitempty"`
+	ParentComm string `json:"parentComm,omitempty"`
 }
 
 // SyscallInfo describes an observed syscall.

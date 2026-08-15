@@ -40,6 +40,9 @@ struct file_event {
 	__u32 gid;
 	__u32 flags; /* file->f_flags, plus EV_DENIED and EV_WRITE below */
 	__u8  comm[16];
+	__u32 ppid;       /* parent tgid, so a denial names who caused it */
+	__u32 pad;
+	__u8  pcomm[16];  /* parent comm */
 	__u8  path[PATH_MAX_LEN];
 };
 
@@ -150,6 +153,27 @@ static __always_inline int is_oom_score_adj(const __u8 *p, int n)
 	return 1;
 }
 
+
+/* Parent identity, for tracing a denial back to whoever caused it.
+ *
+ * These events are deduplicated in-kernel, so this runs once per new path,
+ * destination or capability rather than on every operation, which is what
+ * makes the two credential reads affordable here. Exec events carry a full
+ * lineage; one hop is what the other signals need to stop being anonymous. */
+static __always_inline void fill_parent(__u32 *ppid, __u8 *pcomm, int pcomm_sz)
+{
+	*ppid = 0;
+	pcomm[0] = 0;
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	if (!task)
+		return;
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+	if (!parent)
+		return;
+	*ppid = BPF_CORE_READ(parent, tgid);
+	bpf_probe_read_kernel_str(pcomm, pcomm_sz, BPF_CORE_READ(parent, comm));
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(file_open, struct file *file)
 {
@@ -186,6 +210,8 @@ int BPF_PROG(file_open, struct file *file)
 		e->flags |= EV_WRITE;
 
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	e->pad = 0;
+	fill_parent(&e->ppid, e->pcomm, sizeof(e->pcomm));
 
 	/* Resolve the path. bpf_d_path is permitted on security_file_open. */
 	long n = bpf_d_path((struct path *)&file->f_path, (char *)e->path, sizeof(e->path));

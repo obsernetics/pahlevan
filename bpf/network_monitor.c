@@ -37,6 +37,9 @@ struct network_event {
 	__u8  family;     /* AF_INET or AF_INET6 */
 	__u8  pad;
 	__u8  daddr6[16]; /* IPv6 destination, zero when family is AF_INET */
+	__u32 ppid;       /* parent tgid, so a denial names who caused it */
+	__u32 pad2;
+	__u8  pcomm[16];  /* parent comm */
 	__u8  comm[16];
 };
 
@@ -61,6 +64,27 @@ struct {
 	__type(value, __u8);
 	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } network_mode SEC(".maps");
+
+
+/* Parent identity, for tracing a denial back to whoever caused it.
+ *
+ * These events are deduplicated in-kernel, so this runs once per new path,
+ * destination or capability rather than on every operation, which is what
+ * makes the two credential reads affordable here. Exec events carry a full
+ * lineage; one hop is what the other signals need to stop being anonymous. */
+static __always_inline void fill_parent(__u32 *ppid, __u8 *pcomm, int pcomm_sz)
+{
+	*ppid = 0;
+	pcomm[0] = 0;
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	if (!task)
+		return;
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+	if (!parent)
+		return;
+	*ppid = BPF_CORE_READ(parent, tgid);
+	bpf_probe_read_kernel_str(pcomm, pcomm_sz, BPF_CORE_READ(parent, comm));
+}
 
 SEC("lsm/socket_connect")
 int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
@@ -141,6 +165,8 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 			e->direction = 0x80; /* denied marker */
 			e->family = (__u8)family;
 			e->pad = 0;
+			e->pad2 = 0;
+			fill_parent(&e->ppid, e->pcomm, sizeof(e->pcomm));
 			bpf_get_current_comm(&e->comm, sizeof(e->comm));
 			bpf_ringbuf_submit(e, 0);
 		}
@@ -168,6 +194,8 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 	e->direction = 0;
 	e->family = (__u8)family;
 	e->pad = 0;
+	e->pad2 = 0;
+	fill_parent(&e->ppid, e->pcomm, sizeof(e->pcomm));
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 	bpf_ringbuf_submit(e, 0);
 	return 0;

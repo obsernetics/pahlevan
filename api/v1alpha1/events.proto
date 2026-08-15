@@ -90,6 +90,11 @@ message ProcessInfo {
   uint32 uid = 3;
   uint32 gid = 4;
   string comm = 5;
+
+  // Whoever caused this. A denied file open attributed only to "cat" says what
+  // was refused and not who tried; with the parent it says a shell did.
+  uint32 ppid = 6;
+  string parent_comm = 7;
 }
 
 message KubernetesRef {

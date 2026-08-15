@@ -244,6 +244,13 @@ type CapabilityEvent struct {
 	CapEffective   uint64
 	CapPermitted   uint64
 	CapInheritable uint64
+
+	// PPID and ParentComm name the process that caused this. Exec events carry
+	// a full lineage; one hop is what keeps the other signals from being
+	// anonymous, and these events are deduplicated in-kernel so the two
+	// credential reads happen per new entry, not per operation.
+	PPID       uint32
+	ParentComm string
 }
 
 // CapabilityNames expands a capability bitmask into names, lowest bit first.
@@ -292,6 +299,13 @@ type NetworkEvent struct {
 	Timestamp   uint64
 	CgroupID    uint64 // real attribution key from bpf_get_current_cgroup_id()
 	ContainerID string
+
+	// PPID and ParentComm name the process that caused this. Exec events carry
+	// a full lineage; one hop is what keeps the other signals from being
+	// anonymous, and these events are deduplicated in-kernel so the two
+	// credential reads happen per new entry, not per operation.
+	PPID       uint32
+	ParentComm string
 }
 
 type FileEvent struct {
@@ -308,6 +322,13 @@ type FileEvent struct {
 	CgroupID    uint64 // real attribution key from bpf_get_current_cgroup_id()
 	ContainerID string
 	Path        string
+
+	// PPID and ParentComm name the process that caused this. Exec events carry
+	// a full lineage; one hop is what keeps the other signals from being
+	// anonymous, and these events are deduplicated in-kernel so the two
+	// credential reads happen per new path or destination, not per operation.
+	PPID       uint32
+	ParentComm string
 }
 
 type ContainerPolicy struct {
@@ -1164,11 +1185,23 @@ func indexZero(b []byte) int {
 
 func parseNetworkEvent(data []byte) *NetworkEvent {
 	// CO-RE `struct network_event` from bpf/network_monitor.c:
-	//   __u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 saddr; __u32 daddr;
-	//   __u16 sport; __u16 dport; __u8 protocol; __u8 direction; __u8 family;
-	//   __u8 pad; __u8 daddr6[16]; __u8 comm[16];   // 72 bytes
-	const size = 8 + 8 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 1 + 1 + 16 + 16
-	if len(data) < size {
+	//   __u64 cgroup_id, timestamp_ns;        // 0, 8
+	//   __u32 pid, saddr, daddr;              // 16
+	//   __u16 sport, dport;                   // 28
+	//   __u8  protocol, direction, family, pad; // 32
+	//   __u8  daddr6[16];                     // 36
+	//   __u32 ppid, pad2;                     // 52
+	//   __u8  pcomm[16];                      // 60
+	//   __u8  comm[16];                       // 76
+	//                                         // 96 total
+	const (
+		netOffDstIP6 = 36
+		netOffPPID   = 52
+		netOffPComm  = 60
+		netOffComm   = 76
+		netSize      = netOffComm + 16
+	)
+	if len(data) < netSize {
 		return nil
 	}
 	event := &NetworkEvent{
@@ -1183,12 +1216,16 @@ func parseNetworkEvent(data []byte) *NetworkEvent {
 		Direction: data[33],
 		Family:    data[34],
 	}
-	copy(event.DstIP6[:], data[36:52])
-	comm := data[52:68]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
+	copy(event.DstIP6[:], data[netOffDstIP6:netOffDstIP6+16])
+	cut := func(b []byte) string {
+		if i := indexZero(b); i >= 0 {
+			b = b[:i]
+		}
+		return string(b)
 	}
-	event.Comm = string(comm)
+	event.PPID = binary.LittleEndian.Uint32(data[netOffPPID : netOffPPID+4])
+	event.ParentComm = cut(data[netOffPComm : netOffPComm+16])
+	event.Comm = cut(data[netOffComm:netSize])
 	event.TGID = event.PID
 	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
 	return event
@@ -1218,10 +1255,22 @@ func (e *NetworkEvent) DestinationString() string {
 
 func parseFileEvent(data []byte) *FileEvent {
 	// CO-RE `struct file_event` from bpf/file_monitor.c:
-	//   __u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 uid; __u32 gid;
-	//   __u32 flags; __u8 comm[16]; __u8 path[128];   // 176 bytes
-	const size = 8 + 8 + 4 + 4 + 4 + 4 + 16 + 128
-	if len(data) < size {
+	//   __u64 cgroup_id;  // 0
+	//   __u64 timestamp_ns; // 8
+	//   __u32 pid, uid, gid, flags; // 16
+	//   __u8  comm[16];   // 32
+	//   __u32 ppid, pad;  // 48
+	//   __u8  pcomm[16];  // 56
+	//   __u8  path[128];  // 72
+	//                     // 200 total
+	const (
+		fileOffComm  = 32
+		fileOffPPID  = 48
+		fileOffPComm = 56
+		fileOffPath  = 72
+		fileSize     = fileOffPath + 128
+	)
+	if len(data) < fileSize {
 		return nil
 	}
 	event := &FileEvent{
@@ -1233,16 +1282,16 @@ func parseFileEvent(data []byte) *FileEvent {
 		Flags:     binary.LittleEndian.Uint32(data[28:32]),
 	}
 	event.TGID = event.PID
-	comm := data[32:48]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
+	cut := func(b []byte) string {
+		if i := indexZero(b); i >= 0 {
+			b = b[:i]
+		}
+		return string(b)
 	}
-	event.Comm = string(comm)
-	path := data[48:176]
-	if i := indexZero(path); i >= 0 {
-		path = path[:i]
-	}
-	event.Path = string(path)
+	event.Comm = cut(data[fileOffComm : fileOffComm+16])
+	event.PPID = binary.LittleEndian.Uint32(data[fileOffPPID : fileOffPPID+4])
+	event.ParentComm = cut(data[fileOffPComm : fileOffPComm+16])
+	event.Path = cut(data[fileOffPath:fileSize])
 	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
 	return event
 }
@@ -1523,7 +1572,9 @@ const (
 	capOffInheritable = 32
 	capOffPID         = 40
 	capOffComm        = 56
-	capEventSize      = capOffComm + 16
+	capOffPPID        = 72
+	capOffPComm       = 80
+	capEventSize      = capOffPComm + 16
 )
 
 func parseCapabilityEvent(data []byte) *CapabilityEvent {
@@ -1540,6 +1591,12 @@ func parseCapabilityEvent(data []byte) *CapabilityEvent {
 		Capability:     binary.LittleEndian.Uint32(data[capOffPID+4 : capOffPID+8]),
 		Flags:          binary.LittleEndian.Uint32(data[capOffPID+8 : capOffPID+12]),
 	}
+	ev.PPID = binary.LittleEndian.Uint32(data[capOffPPID : capOffPPID+4])
+	pcomm := data[capOffPComm : capOffPComm+16]
+	if i := indexZero(pcomm); i >= 0 {
+		pcomm = pcomm[:i]
+	}
+	ev.ParentComm = string(pcomm)
 	comm := data[capOffComm : capOffComm+16]
 	if i := indexZero(comm); i >= 0 {
 		comm = comm[:i]
