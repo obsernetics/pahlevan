@@ -1,205 +1,260 @@
+# A production policy, written the way one should actually be rolled out.
+#
+# The temptation with a tool like this is to write the strictest possible policy
+# and apply it everywhere. That reliably produces one outage and then permanent
+# distrust. What works is a staged rollout where each stage answers a question
+# before the next stage acts on the answer, and where every stage is a real
+# object you can apply rather than a paragraph of advice.
+#
+# The three stages are in this file. Move a workload between them by changing
+# one label.
+#
+#   security.pahlevan.io/stage: observe   nothing is denied; you learn the cost
+#   security.pahlevan.io/stage: alert     denials are counted and alerted, not enforced
+#   security.pahlevan.io/stage: enforce   the kernel refuses
+#
+# The middle stage is the one people skip and the one that matters. Between
+# observe and enforce there is a period where you want the alert to fire and
+# nothing to break, so that the on-call engineer sees what enforcement will do
+# to them before it does it.
+---
 apiVersion: policy.pahlevan.io/v1alpha1
 kind: PahlevanPolicy
 metadata:
-  name: production-web-app
+  name: production-stage-1-observe
   namespace: production
+  labels:
+    app.kubernetes.io/name: production-policy
+    app.kubernetes.io/component: security-policy
+    security.pahlevan.io/stage: observe
+  annotations:
+    policy.pahlevan.io/description: >-
+      Stage one. Learns a baseline and denies nothing. The denial counters tell
+      you what stages two and three would cost.
 spec:
-  # Target production web application
   selector:
     matchLabels:
-      app: web-app
-      tier: production
+      security.pahlevan.io/stage: observe
 
-  # Shorter learning period for production
-  learning:
-    enabled: true
-    duration: 2m
-    autoTransition: true
-    minSamples: 50
-    syscalls: true
-    network: true
-    files: true
+  learningConfig:
+    # Long, because the question this stage answers is "has the workload shown
+    # us everything it does", and the honest answer for most production
+    # services takes hours rather than minutes.
+    duration: "4h"
+    windowSize: "5m"
+    minSamples: 1000
+    autoTransition: false
+    lifecycleAware: true
 
-  # Strict enforcement mode
-  enforcement:
-    mode: "enforce"
-    blockUnknown: true
-    gracePeriod: 10s
+  enforcementConfig:
+    mode: Monitoring
 
-    # Specific syscall policies
-    syscalls:
-      defaultAction: "deny"
-      allowedSyscalls:
-        - "read"
-        - "write"
-        - "open"
-        - "close"
-        - "stat"
-        - "fstat"
-        - "lstat"
-        - "mmap"
-        - "munmap"
-        - "brk"
-        - "rt_sigaction"
-        - "rt_sigprocmask"
-        - "ioctl"
-        - "socket"
-        - "connect"
-        - "accept"
-        - "sendto"
-        - "recvfrom"
-      deniedSyscalls:
-        - "ptrace"
-        - "process_vm_readv"
-        - "process_vm_writev"
-        - "module_init"
-        - "create_module"
+  # Stated even here. In Monitoring these produce would-have-denied counts,
+  # which is exactly the number you need to decide whether stage three is safe.
+  filePolicy:
+    deniedPaths:
+    - "/var/lib/kubelet"
+    - "/var/run/docker.sock"
+    - "/root/.ssh"
+    - "/etc/shadow"
 
-    # Network policies
-    network:
-      defaultAction: "deny"
-      allowedEgressPorts: [80, 443, 53, 5432]  # HTTP, HTTPS, DNS, PostgreSQL
-      allowedIngressPorts: [8080]
-      allowedDestinations:
-        - "postgresql.production.svc.cluster.local"
-        - "*.amazonaws.com"
-        - "api.example.com"
-
-    # File access policies
-    files:
-      defaultAction: "deny"
-      allowedPaths:
-        - "/app/*"
-        - "/usr/lib/*"
-        - "/lib/*"
-        - "/etc/ssl/*"
-        - "/tmp/*"
-      protectedPaths:
-        - "/etc/passwd"
-        - "/etc/shadow"
-        - "/proc/*/mem"
-        - "/sys/kernel/*"
-
-  # Advanced self-healing
   selfHealing:
-    enabled: true
-    rollbackThreshold: 2
-    rollbackWindow: 5m
-    recoveryStrategy: "Rollback"
-    notifications:
-      slack:
-        webhookURL: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
-        channel: "#security-alerts"
+    enabled: false
 
-  # Comprehensive observability
-  observability:
+  observabilityConfig:
     metrics:
       enabled: true
-      interval: 30s
-      exporters:
-        - type: "prometheus"
-          endpoint: "http://prometheus.monitoring.svc.cluster.local:9090"
-        - type: "datadog"
-          apiKey: "${DD_API_KEY}"
-
-    traces:
-      enabled: true
-      exporters:
-        - type: "jaeger"
-          endpoint: "http://jaeger.monitoring.svc.cluster.local:14268"
-
-    alerts:
-      enabled: true
-      rules:
-        - name: "high-violation-rate"
-          condition: "violations_per_minute > 10"
-          severity: "warning"
-        - name: "enforcement-failure"
-          condition: "enforcement_failures > 0"
-          severity: "critical"
-
-  # Compliance settings
-  compliance:
-    standards:
-      - "PCI-DSS"
-      - "SOC2"
-    reporting:
-      enabled: true
-      schedule: "0 0 * * 0"  # Weekly reports
-      recipients:
-        - "security@example.com"
-        - "compliance@example.com"
-
+      interval: "30s"
 ---
-apiVersion: v1
-kind: Namespace
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
 metadata:
-  name: production
-  labels:
-    security.pahlevan.io/enforced: "true"
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web-app
+  name: production-stage-2-alert
   namespace: production
+  labels:
+    app.kubernetes.io/name: production-policy
+    security.pahlevan.io/stage: alert
+  annotations:
+    policy.pahlevan.io/description: >-
+      Stage two. The policy is written as Blocking but alertOnly downgrades it,
+      so the configuration you will run in stage three is the configuration
+      being exercised here - only the last switch differs.
 spec:
-  replicas: 3
   selector:
     matchLabels:
-      app: web-app
-      tier: production
-  template:
-    metadata:
-      labels:
-        app: web-app
-        tier: production
-      annotations:
-        security.pahlevan.io/policy: "production-web-app"
-    spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 2000
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-      - name: web-app
-        image: myapp:v1.2.3
-        ports:
-        - containerPort: 8080
-          name: http
-        env:
-        - name: DB_HOST
-          value: "postgresql.production.svc.cluster.local"
-        - name: DD_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: datadog-secret
-              key: api-key
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-            - ALL
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
+      security.pahlevan.io/stage: alert
+
+  learningConfig:
+    duration: "1h"
+    windowSize: "5m"
+    minSamples: 500
+    autoTransition: true
+    lifecycleAware: true
+
+  enforcementConfig:
+    mode: Blocking
+    blockUnknown: true
+    gracePeriod: "60s"
+    # The one field that separates this stage from the next. Everything else in
+    # this object is identical to stage three, deliberately: an alert stage that
+    # tests a different configuration than the one you will enforce tells you
+    # nothing about the one you will enforce.
+    alertOnly: true
+
+  filePolicy:
+    readOnlyPaths:
+    - "/etc"
+    - "/usr"
+    writeAllowedPaths:
+    - "/tmp"
+    - "/var/log"
+    - "/var/cache"
+    deniedPaths:
+    - "/var/lib/kubelet"
+    - "/var/run/docker.sock"
+    - "/root/.ssh"
+    - "/etc/shadow"
+    executableFilter:
+      deniedExecutables:
+      - "/usr/bin/curl"
+      - "/usr/bin/wget"
+      - "/usr/bin/nc"
+      - "/usr/bin/socat"
+
+  networkPolicy:
+    allowDNS: true
+    allowLoopback: true
+    egressRules:
+    - peers:
+      - ipBlock:
+          cidr: "10.0.0.0/8"
+      ports:
+      - port: 443
+        protocol: TCP
+      - port: 8080
+        protocol: TCP
+      action: Allow
+    defaultAction: Deny
+
+  syscallPolicy:
+    deniedSyscalls:
+    - "ptrace"
+    - "process_vm_readv"
+    - "process_vm_writev"
+    - "init_module"
+    - "finit_module"
+    - "delete_module"
+    - "kexec_load"
+    - "pivot_root"
+
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 5
+    rollbackWindow: "10m"
+    recoveryStrategy: Rollback
+
+  observabilityConfig:
+    metrics:
+      enabled: true
+      interval: "30s"
+    logging:
+      level: "info"
+      format: "json"
+---
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: production-stage-3-enforce
+  namespace: production
+  labels:
+    app.kubernetes.io/name: production-policy
+    security.pahlevan.io/stage: enforce
+  annotations:
+    policy.pahlevan.io/description: >-
+      Stage three. Byte for byte the stage-two policy with alertOnly removed.
+      If stage two was quiet for a week, this changes nothing except that the
+      kernel now refuses.
+spec:
+  selector:
+    matchLabels:
+      security.pahlevan.io/stage: enforce
+
+  learningConfig:
+    duration: "1h"
+    windowSize: "5m"
+    minSamples: 500
+    autoTransition: true
+    lifecycleAware: true
+
+  enforcementConfig:
+    mode: Blocking
+    blockUnknown: true
+    gracePeriod: "60s"
+    exceptions:
+    # Exceptions belong here rather than in stage two, because stage two is what
+    # tells you which ones you need. Adding them speculatively defeats the
+    # purpose of having run it.
+    - type: File
+      patterns:
+      - "/var/run/secrets/kubernetes.io/serviceaccount/*"
+      reason: "Projected token, refreshed by the kubelet on its own schedule"
+
+  filePolicy:
+    readOnlyPaths:
+    - "/etc"
+    - "/usr"
+    writeAllowedPaths:
+    - "/tmp"
+    - "/var/log"
+    - "/var/cache"
+    deniedPaths:
+    - "/var/lib/kubelet"
+    - "/var/run/docker.sock"
+    - "/root/.ssh"
+    - "/etc/shadow"
+    executableFilter:
+      deniedExecutables:
+      - "/usr/bin/curl"
+      - "/usr/bin/wget"
+      - "/usr/bin/nc"
+      - "/usr/bin/socat"
+
+  networkPolicy:
+    allowDNS: true
+    allowLoopback: true
+    egressRules:
+    - peers:
+      - ipBlock:
+          cidr: "10.0.0.0/8"
+      ports:
+      - port: 443
+        protocol: TCP
+      - port: 8080
+        protocol: TCP
+      action: Allow
+    defaultAction: Deny
+
+  syscallPolicy:
+    deniedSyscalls:
+    - "ptrace"
+    - "process_vm_readv"
+    - "process_vm_writev"
+    - "init_module"
+    - "finit_module"
+    - "delete_module"
+    - "kexec_load"
+    - "pivot_root"
+
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 5
+    rollbackWindow: "10m"
+    recoveryStrategy: Rollback
+
+  observabilityConfig:
+    metrics:
+      enabled: true
+      interval: "30s"
+    logging:
+      level: "info"
+      format: "json"
