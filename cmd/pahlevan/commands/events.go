@@ -89,9 +89,6 @@ run where the log lives (on the node, or against a copy of the file).`,
 
   # Only file and process events, last 20 of them
   pahlevan events --type=file --type=process --tail=20`,
-		// The events command reads a local file; skip the parent's Kubernetes
-		// client bootstrap so it works off-cluster too.
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return nil },
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if ctx == nil {
@@ -110,6 +107,10 @@ run where the log lives (on the node, or against a copy of the file).`,
 			return runEvents(ctx, opts, cmd.OutOrStdout())
 		},
 	}
+
+	// Reads a local JSON-lines file, or dials the gRPC address the user names.
+	// Neither needs a kubeconfig.
+	Offline(cmd)
 
 	flags := cmd.Flags()
 	flags.StringVar(&opts.file, "file", opts.file, "Path to the JSON-lines event log written by the agent's file sink")
