@@ -186,7 +186,7 @@ nothing.
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | Generates a seccomp profile from observed behavior | **Yes**, from the learned syscall set (`pkg/seccomp`), written to a node directory when `--seccomp-dir` is set | No | No |
-| Applies the generated profile | **No, but no longer invisible.** The profile is reported on `ContainerProfile` with its `localhostProfile` value, node and syscall counts, and `pahlevan profile patch` prints the exact securityContext change. Nothing applies it: a pod's `seccompProfile` cannot change after admission and the operator runs without a mutating webhook, so the rollout is yours | n/a | n/a |
+| Applies the generated profile | **Not automatically, but the loop is closed up to the rollout.** Every agent materialises every learned profile onto its own node, so a pod referencing one starts wherever it is scheduled; the profile is reported on `ContainerProfile` and `pahlevan profile patch` prints the exact securityContext change. The last step is a rollout you perform: a pod's `seccompProfile` cannot change after admission and the operator runs without a mutating webhook | n/a | n/a |
 | Architectures in the generated profile | Matches the build architecture: `SCMP_ARCH_X86_64`/`X86`/`X32` on amd64, `SCMP_ARCH_AARCH64` on arm64. It was hardcoded to x86-64 regardless of target, which produced a profile naming the wrong ABI on arm64 | n/a | n/a |
 
 Automatic seccomp profile generation is genuinely something neither Falco nor
@@ -372,13 +372,13 @@ Listed plainly, worst first. Every item here is real and current.
 8. **Only two enforcement actions.** `EPERM`, and `SIGKILL` on exec under
    enforcement mode 2. No audit action, no per-rule response. Tetragon offers a
    genuine action set.
-9. **Applying a seccomp profile is still manual.** Profiles are generated,
-   honour the policy's syscall lists, are reported on `ContainerProfile` and
-   are rendered as a ready-to-apply patch by `pahlevan profile patch`, but
-   nothing applies them. A pod's `seccompProfile` cannot be changed after
-   admission and the operator deliberately runs without a mutating webhook, so
-   the last step is a rollout you perform. The file also lives only on the node
-   that wrote it, so a multi-node workload needs it distributed.
+9. **Applying a seccomp profile is still a rollout you perform.** Profiles are
+   generated, honour the policy's syscall lists, are reported on
+   `ContainerProfile`, are materialised on every node so a pod starts wherever
+   it is scheduled, and are rendered as a ready-to-apply patch by
+   `pahlevan profile patch`. Nothing applies them: a pod's `seccompProfile`
+   cannot be changed after admission and the operator deliberately runs without
+   a mutating webhook.
 10. **The gRPC API is unauthenticated.** It serves plaintext on whatever
     address `--grpc-bind-address` names, with no TLS and no authorization, so
     it must be bound to localhost or a trusted network. Tetragon's equivalent

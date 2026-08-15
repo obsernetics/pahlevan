@@ -21,6 +21,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	"github.com/obsernetics/pahlevan/internal/controller"
+	"github.com/obsernetics/pahlevan/internal/profilesync"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/obsernetics/pahlevan/pkg/export"
@@ -46,6 +47,12 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("agent-setup")
+
+	// profileSyncInterval is how often every learned profile is re-materialised
+	// on this node. Slower than the adaptive reconcile because a profile only
+	// changes when a container finishes learning, and the cost is a list plus a
+	// content comparison per profile.
+	profileSyncInterval = 60 * time.Second
 
 	// version is stamped at build time by the Dockerfile's -ldflags
 	// (-X main.version). It is reported over the gRPC status RPC so a client
@@ -298,6 +305,49 @@ func main() {
 		}
 	})); err != nil {
 		fatalf(err, "unable to add adaptive controller runnable")
+	}
+
+	// Materialise every learned profile onto this node.
+	//
+	// A profile generated here is useless to a pod scheduled elsewhere, and a
+	// rollout can land anywhere, so referencing one that exists on a single
+	// node means the pod fails to start on all the others. Generation is
+	// deterministic given the learned set and the policy's syscall lists, both
+	// of which the API server already replicates, so every agent can rebuild
+	// every profile locally.
+	if seccompDir != "" {
+		syncer := &profilesync.Syncer{
+			Client: mgr.GetClient(),
+			Log:    ctrl.Log.WithName("profilesync"),
+			Dir:    seccompDir,
+		}
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			ticker := time.NewTicker(profileSyncInterval)
+			defer ticker.Stop()
+			sync := func() {
+				res, err := syncer.Sync(ctx)
+				if err != nil {
+					setupLog.V(1).Info("profile sync failed", "error", err.Error())
+					return
+				}
+				if res.Written > 0 || res.Removed > 0 || res.Errors > 0 {
+					setupLog.Info("synced seccomp profiles",
+						"written", res.Written, "removed", res.Removed,
+						"skipped", res.Skipped, "errors", res.Errors, "dir", seccompDir)
+				}
+			}
+			sync()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					sync()
+				}
+			}
+		})); err != nil {
+			fatalf(err, "unable to add profile sync runnable")
+		}
 	}
 
 	if err = (&controller.PahlevanPolicyReconciler{

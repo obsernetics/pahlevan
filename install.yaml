@@ -1668,6 +1668,11 @@ spec:
         - --learning-window=5m
         - --enforcement-delay=30s
         - --observability-exports=prometheus,otel
+        # Generated seccomp profiles are written under the kubelet's seccomp
+        # root so the kubelet can actually resolve them as a localhostProfile.
+        # Writing them anywhere else produces a file nothing can reference.
+        - --seccomp-root=/var/lib/kubelet/seccomp
+        - --seccomp-dir=/var/lib/kubelet/seccomp/pahlevan
         # The gRPC event stream is off by default because it is plaintext and
         # unauthenticated: anything that can reach the port receives every
         # security event this node sees. Uncomment, and add the port below, only
@@ -1748,10 +1753,19 @@ spec:
         - name: proc
           mountPath: /host/proc
           readOnly: true
+        # Writable, and deliberately scoped to pahlevan's own subdirectory
+        # rather than the whole seccomp root: the agent needs to create the
+        # profiles it generates and nothing else there.
+        - name: seccomp-profiles
+          mountPath: /var/lib/kubelet/seccomp/pahlevan
       volumes:
       - name: bpffs
         hostPath:
           path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: seccomp-profiles
+        hostPath:
+          path: /var/lib/kubelet/seccomp/pahlevan
           type: DirectoryOrCreate
       - name: btf
         hostPath:
