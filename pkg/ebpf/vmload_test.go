@@ -1664,10 +1664,13 @@ func TestVMProcFilterEnforcedInKernel(t *testing.T) {
 	}
 	cgID := st.Ino
 
-	// The parent of the exec is the shell that joins the cgroup, so its comm is
-	// "sh". Everything below turns on whether "sh" is in the allow-list.
+	// The nested shell is what makes the parent deterministic. With a bare
+	// `exec`, the shell replaces itself and the parent of the execve is the Go
+	// test binary, whose comm depends on how the test was built. Here the outer
+	// sh joins the cgroup and forks an inner sh, so every exec inside has parent
+	// comm "sh" - which is the value the filter is asserted against.
 	runIn := func(bin string) error {
-		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec %s", cg, bin)
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && /bin/sh -c 'exec %s'", cg, bin)
 		return exec.Command("/bin/sh", "-c", script).Run()
 	}
 
