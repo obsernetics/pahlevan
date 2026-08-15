@@ -82,7 +82,13 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
-      check-blank: true
+      # check-blank is deliberately off. It flags `_ = f()`, which is the
+      # language's own way of saying "ignored on purpose"; with it on there is
+      # no way to express that except a nolint on every line. It was run once
+      # with check-blank enabled to audit the existing ignores, which is how the
+      # dropped event-handler errors were found - those are now counted by
+      # pahlevan_ebpf_handler_errors_total rather than discarded.
+      check-blank: false
 
     gocritic:
       enabled-tags:
@@ -91,6 +97,9 @@ linters:
       disabled-checks:
         # Fires on any if/else chain of three, which is idiomatic here.
         - ifElseChain
+        # Reads arithmetic in a comment as code: "// (90 + 65 + 10) / 3 = 55.0"
+        # next to the assertion it explains is exactly the comment we want.
+        - commentedOutCode
         # hugeParam and rangeValCopy account for 137 of this linter's 156
         # findings, essentially all in CLI rendering and status aggregation
         # that runs once per command or once per reconcile. The hot paths that
@@ -102,8 +111,14 @@ linters:
         - rangeValCopy
 
     govet:
-      enable:
-        - shadow
+      # shadow is deliberately not enabled. It was run once over the tree and
+      # produced 39 findings, every one of them either `if err := f(); err != nil`
+      # - the idiom the standard library uses throughout - or a local named
+      # after a package-level variable it intentionally replaces. Zero defects.
+      # The Go team leaves shadow out of `go vet` by default for the same
+      # reason; enabling it here would buy 39 permanent nolint comments on
+      # correct code.
+      enable: []
 
     misspell:
       locale: US
@@ -133,8 +148,13 @@ linters:
 
       # Tests legitimately ignore returns they are not asserting on, and a test
       # helper that returns an unused value is usually deliberate.
+      #
+      # noctx: the VM suite shells out to qemu and ssh and dials the guest; the
+      #   timeouts that matter there are the test's own, not a context.
+      # promlinter: a test that registers a deliberately conflicting collector
+      #   has to reuse the real metric's name - that is the thing under test.
       - path: _test\.go
-        linters: [errcheck, gosec, unparam, forcetypeassert]
+        linters: [errcheck, gosec, unparam, forcetypeassert, noctx, promlinter]
 
       # G103: unsafe.Pointer is how BPF map keys and values are addressed.
       # G115: integer conversions are inherent to reading fixed-width kernel

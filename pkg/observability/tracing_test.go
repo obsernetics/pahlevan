@@ -54,7 +54,7 @@ func TestStartSpanRecordsSpans(t *testing.T) {
 	}
 	attrs := map[string]string{}
 	for _, a := range got.Attributes() {
-		attrs[string(a.Key)] = a.Value.Emit()
+		attrs[string(a.Key)] = a.Value.String()
 	}
 	if attrs["pod"] != "nginx-1" {
 		t.Errorf("pod attribute = %q", attrs["pod"])
