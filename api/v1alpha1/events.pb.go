@@ -775,8 +775,18 @@ type NetworkInfo struct {
 	ProtocolNumber  uint32                 `protobuf:"varint,4,opt,name=protocol_number,json=protocolNumber,proto3" json:"protocol_number,omitempty"`
 	Direction       string                 `protobuf:"bytes,5,opt,name=direction,proto3" json:"direction,omitempty"`
 	AddressFamily   string                 `protobuf:"bytes,6,opt,name=address_family,json=addressFamily,proto3" json:"address_family,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// What the cluster says the far end is: "prod/postgres", "node-3", or empty
+	// when nothing knows it. An address alone is something the reader has to go
+	// and look up before they can decide whether it matters.
+	DestinationName string `protobuf:"bytes,7,opt,name=destination_name,json=destinationName,proto3" json:"destination_name,omitempty"`
+	// service, pod, node, loopback or external. This is the field to alert on:
+	// "external" is the shape exfiltration takes, and it is a different finding
+	// from a denied connect to a Service the workload simply may not use.
+	DestinationKind string `protobuf:"bytes,8,opt,name=destination_kind,json=destinationKind,proto3" json:"destination_kind,omitempty"`
+	// The Service port's name, when it had one.
+	DestinationPortName string `protobuf:"bytes,9,opt,name=destination_port_name,json=destinationPortName,proto3" json:"destination_port_name,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *NetworkInfo) Reset() {
@@ -847,6 +857,27 @@ func (x *NetworkInfo) GetDirection() string {
 func (x *NetworkInfo) GetAddressFamily() string {
 	if x != nil {
 		return x.AddressFamily
+	}
+	return ""
+}
+
+func (x *NetworkInfo) GetDestinationName() string {
+	if x != nil {
+		return x.DestinationName
+	}
+	return ""
+}
+
+func (x *NetworkInfo) GetDestinationKind() string {
+	if x != nil {
+		return x.DestinationKind
+	}
+	return ""
+}
+
+func (x *NetworkInfo) GetDestinationPortName() string {
+	if x != nil {
+		return x.DestinationPortName
 	}
 	return ""
 }
@@ -1260,14 +1291,17 @@ const file_api_v1alpha1_events_proto_rawDesc = "" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n" +
 	"\x05flags\x18\x02 \x01(\rR\x05flags\x12\x12\n" +
 	"\x04mode\x18\x03 \x01(\rR\x04mode\x12\x14\n" +
-	"\x05write\x18\x04 \x01(\bR\x05write\"\xe9\x01\n" +
+	"\x05write\x18\x04 \x01(\bR\x05write\"\xf3\x02\n" +
 	"\vNetworkInfo\x12%\n" +
 	"\x0edestination_ip\x18\x01 \x01(\tR\rdestinationIp\x12)\n" +
 	"\x10destination_port\x18\x02 \x01(\rR\x0fdestinationPort\x12\x1a\n" +
 	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12'\n" +
 	"\x0fprotocol_number\x18\x04 \x01(\rR\x0eprotocolNumber\x12\x1c\n" +
 	"\tdirection\x18\x05 \x01(\tR\tdirection\x12%\n" +
-	"\x0eaddress_family\x18\x06 \x01(\tR\raddressFamily\"\x8a\x02\n" +
+	"\x0eaddress_family\x18\x06 \x01(\tR\raddressFamily\x12)\n" +
+	"\x10destination_name\x18\a \x01(\tR\x0fdestinationName\x12)\n" +
+	"\x10destination_kind\x18\b \x01(\tR\x0fdestinationKind\x122\n" +
+	"\x15destination_port_name\x18\t \x01(\tR\x13destinationPortName\"\x8a\x02\n" +
 	"\bExecInfo\x12\x16\n" +
 	"\x06binary\x18\x01 \x01(\tR\x06binary\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12!\n" +
