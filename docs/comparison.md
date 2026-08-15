@@ -241,7 +241,7 @@ This is the largest gap, so it gets the most detail.
 
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
-| gRPC streaming API | **No. Planned.** Events leave the process over a JSON-lines file and an HTTP webhook instead | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
+| gRPC streaming API | Yes, `pahlevan.v1alpha1.EventService`. Subscribe streams events with server-side filtering by type, denials-only, namespace and pod; GetStatus reports whether the agent is enforcing anything. Health and reflection are registered, so grpcurl and generic collectors discover it without the .proto. Plaintext and unauthenticated, so bind it to localhost or a trusted network | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
 | JSON event output | Yes. `pkg/export` provides a versioned envelope covering all five event types with Kubernetes attribution, wired into the agent behind `--export-file`. Size-based rotation, and a bounded queue that drops rather than blocking the ring-buffer readers, with the drops counted | Yes, mature | Yes, including JSON export to file with rotation |
 | Webhook or HTTP output | Yes, `--export-webhook`. Batched POSTs, retries on 5xx/408/429 with capped backoff, no retry on other 4xx | Yes | Via the export pipeline |
 | Syslog, file, program outputs | File and stdout sinks are wired. No syslog or program output yet | Yes, all of them | File yes |
@@ -262,7 +262,7 @@ which is not a story.
 | CLI binary | `pahlevan` | `falco`, plus `falcoctl` for rule and plugin management | `tetra` |
 | What works | All nine top-level subcommands: `policy` (list, get, describe, create, delete, update, status), `status`, `events`, `attack-surface` (analyze, report), `profile` (list, get, patch), `logs`, `metrics`, `debug`, `version`, `completion` | Running the engine, validating rules, listing fields, plus full artifact management in `falcoctl` | `getevents` streaming, `status`, `tracingpolicy` management, `bugtool` |
 | What is a stub | **None.** `attack-surface`, `logs`, `metrics` and `debug` used to print "to be implemented" and exit 0; they are implemented | n/a | n/a |
-| Live event streaming | Yes, `pahlevan events` with `--follow`, `--type`, `--denials-only`, `--pod`, and `--tail`. It tails the JSON-lines log rather than a gRPC stream, so it handles rotation and partial lines | Yes | Yes, `tetra getevents` is the standard workflow |
+| Live event streaming | Yes, two ways. `pahlevan events --grpc host:port` subscribes to the agent's streaming API with the filter applied server-side; `--file` tails the JSON-lines log instead, handling rotation and partial lines. Both print the same shape | Yes | Yes, `tetra getevents` is the standard workflow |
 | Troubleshooting bundle | Yes, `pahlevan debug`: component pods, node kernels and BPF LSM verdict, CRD presence and object counts, recent events, metric highlights. It never reads Secrets, tokens or env vars, and the LSM verdict is labelled with how it was inferred | Yes, through supportability tooling | Yes, `tetra bugtool` |
 
 ## Metrics and observability
@@ -344,11 +344,11 @@ Listed plainly, worst first. Every item here is real and current.
    `v1alpha1` API, and a security process that has never been used. Falco is
    CNCF Graduated. Tetragon sits under a Graduated project. Nothing in this
    document changes that gap.
-2. **No gRPC event API, and no integration ecosystem.** JSON-lines file and
-   HTTP webhook export are wired into the agent, and `pahlevan events` streams
-   them, so events do leave the process. What is still missing is a streaming
-   gRPC API and anything resembling falcosidekick's fan-out to Slack, S3, or a
-   SIEM. Integrating means consuming the file or the webhook yourself.
+2. **No integration ecosystem.** A gRPC streaming API now exists, alongside
+   JSON-lines file and HTTP webhook export, so a collector can subscribe
+   directly. What is still missing is anything resembling falcosidekick's
+   fan-out to Slack, S3, PagerDuty and the rest: integrating means writing the
+   consumer, even though subscribing to it is now a few lines.
 3. **No rule or content ecosystem.** By design there are no rules to share, but
    the consequence is real: there is no community content, no detection
    coverage you can adopt, and nothing to compare against MITRE ATT&CK coverage.
@@ -378,10 +378,10 @@ Listed plainly, worst first. Every item here is real and current.
    admission and the operator deliberately runs without a mutating webhook, so
    the last step is a rollout you perform. The file also lives only on the node
    that wrote it, so a multi-node workload needs it distributed.
-10. **No integration with anything downstream.** Events reach a file, a
-    webhook, and `pahlevan events`. There is nothing resembling
-    falcosidekick's fan-out to Slack, S3, or a SIEM, so integrating means
-    consuming the file or the webhook yourself.
+10. **The gRPC API is unauthenticated.** It serves plaintext on whatever
+    address `--grpc-bind-address` names, with no TLS and no authorization, so
+    it must be bound to localhost or a trusted network. Tetragon's equivalent
+    has the same default, but that is not an argument for leaving it.
 11. **No syscall arguments** on events. Command-line arguments, the container
     image, pod labels, the owning workload and the node are all there now, but
     a syscall event still reports only the number and not what was passed to

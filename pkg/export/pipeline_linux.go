@@ -37,6 +37,12 @@ type Config struct {
 	// Source identifies this agent in the webhook payload (use the node name).
 	Source string
 
+	// Tee are live consumers fed alongside the batching sinks, such as the
+	// gRPC event server. They receive the same event, with the same filter and
+	// the same attribution applied, rather than tapping the eBPF stream
+	// separately and risking a second, divergent view of the same denial.
+	Tee []Enqueuer
+
 	// QueueCapacity is the bounded buffer size. Zero uses
 	// DefaultQueueCapacity.
 	QueueCapacity int
@@ -61,7 +67,32 @@ type Config struct {
 
 // Enabled reports whether any sink is configured.
 func (c Config) Enabled() bool {
-	return c.Stdout || c.FilePath != "" || c.WebhookURL != ""
+	return c.Stdout || c.FilePath != "" || c.WebhookURL != "" || len(c.Tee) > 0
+}
+
+// Tee is a Sink that fans one event out to several Enqueuers.
+//
+// It exists so a live consumer such as the gRPC server sits on the same
+// pipeline as the file and webhook sinks rather than tapping the eBPF stream
+// separately. One path means every consumer sees the same event with the same
+// attribution and the same filter applied, instead of two representations
+// drifting into telling different stories about the same denial.
+type Tee []Enqueuer
+
+// Enqueue forwards to every sink. It returns false if any sink refused, but
+// always offers the event to all of them: one full queue must not silently
+// deprive the others.
+func (t Tee) Enqueue(ev *Event) bool {
+	ok := true
+	for _, s := range t {
+		if s == nil {
+			continue
+		}
+		if !s.Enqueue(ev) {
+			ok = false
+		}
+	}
+	return ok
 }
 
 // Pipeline holds the constructed sinks, the bounded queue and the
@@ -141,7 +172,13 @@ func New(cfg Config) (*Pipeline, error) {
 		ExportTimeout: cfg.ExportTimeout,
 		OnError:       cfg.OnError,
 	})
-	handler := NewHandler(queue, HandlerOptions{
+	// Live consumers are teed off the same handler, so they see the same
+	// event, filtered and attributed identically, as the batching sinks do.
+	var sink Enqueuer = queue
+	if len(cfg.Tee) > 0 {
+		sink = append(Tee{queue}, cfg.Tee...)
+	}
+	handler := NewHandler(sink, HandlerOptions{
 		Filter:      filter,
 		Attribution: cfg.Attribution,
 	})

@@ -77,6 +77,17 @@ help: ## Display this help.
 # API types and the controllers anyway.
 GEN_PATHS ?= paths="./pkg/apis/..." paths="./internal/..."
 
+.PHONY: proto
+proto: ## Regenerate the gRPC API from api/v1alpha1/events.proto (needs protoc)
+	@command -v protoc >/dev/null || { echo "protoc not found"; exit 1; }
+	GOBIN=$(LOCALBIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+	GOBIN=$(LOCALBIN) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+	PATH=$(LOCALBIN):$$PATH protoc \
+		--go_out=. --go_opt=module=github.com/obsernetics/pahlevan \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/obsernetics/pahlevan \
+		api/v1alpha1/events.proto
+	@echo "regenerated api/v1alpha1/*.pb.go"
+
 .PHONY: demo-gif
 demo-gif: ## Re-render docs/assets/demo.gif from the vhs tape (needs vhs + ffmpeg)
 	@command -v vhs >/dev/null || { echo "vhs not found: https://github.com/charmbracelet/vhs"; exit 1; }

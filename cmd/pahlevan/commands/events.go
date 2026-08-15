@@ -43,7 +43,11 @@ const maxEventLine = 1 << 20
 
 // eventsOptions holds the parsed flags of `pahlevan events`.
 type eventsOptions struct {
-	file        string
+	file string
+	// grpcAddr subscribes to an agent's gRPC stream instead of reading the
+	// file sink. Filtering then happens server-side, which is the point: on a
+	// busy node the observation stream dwarfs the denials.
+	grpcAddr    string
 	follow      bool
 	types       []string
 	denialsOnly bool
@@ -93,10 +97,15 @@ run where the log lives (on the node, or against a copy of the file).`,
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			if opts.follow {
+			// A gRPC subscription is inherently a follow, so Ctrl-C has to be
+			// handled for it too.
+			if opts.follow || opts.grpcAddr != "" {
 				var stop context.CancelFunc
 				ctx, stop = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 				defer stop()
+			}
+			if opts.grpcAddr != "" {
+				return runEventsGRPC(ctx, opts, cmd.OutOrStdout())
 			}
 			return runEvents(ctx, opts, cmd.OutOrStdout())
 		},
@@ -104,6 +113,8 @@ run where the log lives (on the node, or against a copy of the file).`,
 
 	flags := cmd.Flags()
 	flags.StringVar(&opts.file, "file", opts.file, "Path to the JSON-lines event log written by the agent's file sink")
+	flags.StringVar(&opts.grpcAddr, "grpc", "", "Subscribe to an agent's gRPC event stream (host:port) instead of reading --file. "+
+		"Filters are applied by the agent rather than locally, so only matching events cross the network.")
 	flags.BoolVarP(&opts.follow, "follow", "f", false, "Keep the file open and print events as they are appended")
 	flags.StringSliceVar(&opts.types, "type", nil, fmt.Sprintf("Only show these event types (%s); repeatable", export.EventTypeNames()))
 	flags.BoolVar(&opts.denialsOnly, "denials-only", false, "Only show events the kernel denied")
