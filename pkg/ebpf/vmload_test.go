@@ -536,6 +536,22 @@ func TestVMCapabilityMonitor(t *testing.T) {
 	}
 	t.Logf("observed capability event: cap=%d (%s) comm=%q pid=%d cgroup=%d",
 		ev.Capability, CapabilityName(ev.Capability), ev.Comm, ev.PID, ev.CgroupID)
+
+	// The sets are what answer "what could this have done", so a real kernel
+	// must actually populate them. The helper runs as root here, so its
+	// effective set is non-empty and contains the capability being checked.
+	if ev.CapEffective == 0 && ev.CapPermitted == 0 {
+		t.Error("capability sets are empty; the credentials read did not resolve")
+	}
+	t.Logf("effective set: %v", CapabilityNames(ev.CapEffective))
+	if ev.CapEffective&(1<<uint(ev.Capability)) == 0 {
+		t.Errorf("effective set %v does not contain the capability being checked (%s)",
+			CapabilityNames(ev.CapEffective), CapabilityName(ev.Capability))
+	}
+	// Permitted is a superset of effective by construction.
+	if ev.CapEffective&^ev.CapPermitted != 0 {
+		t.Errorf("effective %#x is not a subset of permitted %#x", ev.CapEffective, ev.CapPermitted)
+	}
 }
 
 // TestVMProcessAncestry verifies exec events carry the parent pid and comm, which

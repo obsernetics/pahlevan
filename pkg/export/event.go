@@ -210,6 +210,13 @@ type AncestorInfo struct {
 type CapabilityInfo struct {
 	Number uint32 `json:"number"`
 	Name   string `json:"name"`
+
+	// The task's capability sets at the time of the check, as names. The
+	// checked capability says what the workload wanted; these say what it
+	// could have done, which is what decides whether it is over-privileged.
+	Effective   []string `json:"effective,omitempty"`
+	Permitted   []string `json:"permitted,omitempty"`
+	Inheritable []string `json:"inheritable,omitempty"`
 }
 
 // KubernetesRef is the optional pod attribution for an event. It is filled in

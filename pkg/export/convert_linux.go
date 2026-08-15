@@ -186,6 +186,11 @@ func FromCapabilityEvent(e *ebpf.CapabilityEvent, now time.Time) *Event {
 		Capability: &CapabilityInfo{
 			Number: e.Capability,
 			Name:   ebpf.CapabilityName(e.Capability),
+			// Rendered as names rather than bitmasks: a consumer should not
+			// have to know the capability numbering to read the event.
+			Effective:   ebpf.CapabilityNames(e.CapEffective),
+			Permitted:   ebpf.CapabilityNames(e.CapPermitted),
+			Inheritable: ebpf.CapabilityNames(e.CapInheritable),
 		},
 	}
 }
