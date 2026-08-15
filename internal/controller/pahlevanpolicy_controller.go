@@ -58,6 +58,13 @@ type PahlevanPolicyReconciler struct {
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;update;patch
 
+// requeueImmediately replaces the deprecated Result.Requeue field, which
+// controller-runtime removed in favor of RequeueAfter. It is used where the
+// reconcile has just written the object and wants to see its own write: a
+// second is long enough for the cache to catch up and short enough that a
+// policy moving through its phases is not visibly stalled.
+const requeueImmediately = time.Second
+
 func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -78,7 +85,7 @@ func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.Update(ctx, &policy); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	// Handle deletion
@@ -101,7 +108,7 @@ func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.Status().Update(ctx, &policy); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	// Main reconciliation logic
@@ -109,7 +116,12 @@ func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		logger.Error(err, "Failed to reconcile PahlevanPolicy")
 		r.updateCondition(&policy, policyv1alpha1.PolicyConditionError, policyv1alpha1.ConditionTrue, "ReconciliationFailed", err.Error())
-		r.Status().Update(ctx, &policy)
+		// The status write is the only record an operator has that the
+		// reconcile failed; if it too fails, say so rather than returning the
+		// original error alone and leaving a policy that looks healthy.
+		if uerr := r.Status().Update(ctx, &policy); uerr != nil {
+			logger.Error(uerr, "Failed to record the reconciliation error on the policy status")
+		}
 		return result, err
 	}
 
@@ -222,7 +234,7 @@ func (r *PahlevanPolicyReconciler) handleLearning(ctx context.Context, policy *p
 				return ctrl.Result{}, err
 			}
 
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 		}
 	}
 
@@ -319,7 +331,7 @@ func (r *PahlevanPolicyReconciler) handleEnforcement(ctx context.Context, policy
 			return ctrl.Result{}, err
 		}
 
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil

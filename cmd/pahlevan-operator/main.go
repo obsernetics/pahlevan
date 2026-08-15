@@ -75,7 +75,7 @@ func main() {
 		setupLog.Error(err, "unable to setup observability")
 		os.Exit(1)
 	}
-	defer observabilityManager.Shutdown()
+	defer func() { _ = observabilityManager.Shutdown() }()
 
 	// os.Exit skips deferred calls, so a fatal startup error would drop every
 	// buffered span and metric - precisely the evidence needed to work out why
