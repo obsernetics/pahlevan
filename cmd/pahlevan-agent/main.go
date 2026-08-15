@@ -192,13 +192,16 @@ func main() {
 				return export.KubernetesRef{}, false
 			}
 			ns, pod, _ := polResolver.PodMeta(ref.PodUID)
-			kind, workload, labels, _ := polResolver.PodDetail(ref.PodUID)
+			detail, _ := polResolver.PodDetail(ref.PodUID)
+			name, image, _ := polResolver.ContainerDetail(ref.PodUID, ref.ContainerID)
 			return export.KubernetesRef{
 				Namespace: ns, Pod: pod, PodUID: ref.PodUID,
 				ContainerID: ref.ContainerID, Runtime: ref.Runtime, QoSClass: ref.QoSClass,
 				Node:         nodeName,
-				WorkloadKind: kind, WorkloadName: workload,
-				Labels: labels,
+				WorkloadKind: detail.WorkloadKind, WorkloadName: detail.WorkloadName,
+				Labels:    detail.Labels,
+				Container: name,
+				Image:     image,
 			}, true
 		},
 		OnError: func(err error) { setupLog.Error(err, "event export failed") },

@@ -106,13 +106,13 @@ func TestPodDetail(t *testing.T) {
 		pod("nginx-1", "prod", "uid-1", labels, controllerRef("ReplicaSet", "nginx-6799fc88d8")),
 	}, nil, nil)
 
-	kind, name, got, ok := r.PodDetail("uid-1")
+	d, ok := r.PodDetail("uid-1")
 	require.True(t, ok)
-	assert.Equal(t, "Deployment", kind)
-	assert.Equal(t, "nginx", name)
-	assert.Equal(t, labels, got)
+	assert.Equal(t, "Deployment", d.WorkloadKind)
+	assert.Equal(t, "nginx", d.WorkloadName)
+	assert.Equal(t, labels, d.Labels)
 
-	_, _, _, ok = r.PodDetail("missing")
+	_, ok = r.PodDetail("missing")
 	assert.False(t, ok)
 }
 
@@ -122,9 +122,9 @@ func TestPodDetailCopiesLabels(t *testing.T) {
 	labels := map[string]string{"app": "nginx"}
 	r := resolverWith([]*corev1.Pod{pod("nginx-1", "prod", "uid-1", labels)}, nil, nil)
 
-	_, _, got, ok := r.PodDetail("uid-1")
+	d, ok := r.PodDetail("uid-1")
 	require.True(t, ok)
-	got["app"] = "tampered"
+	d.Labels["app"] = "tampered"
 	assert.Equal(t, "nginx", labels["app"], "mutating the result must not reach the cache")
 }
 
@@ -305,6 +305,6 @@ func BenchmarkPodDetail(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _, _ = r.PodDetail("uid-1")
+		_, _ = r.PodDetail("uid-1")
 	}
 }
