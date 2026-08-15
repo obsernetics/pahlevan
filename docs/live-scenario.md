@@ -80,6 +80,30 @@ Scenario 7 exists because the question comes up. Renaming a binary changes
 nothing: the allow-set keys on the resolved path, not on a signature or a name
 list, so there is no name that makes an unlearned binary permitted.
 
+## The run that produced [`scenario-report.md`](scenario-report.md)
+
+| | |
+|---|---|
+| Learning window | 50 minutes under continuous traffic |
+| Requests served | 1510, none failed |
+| Learned | 1 binary, 119 files, 6 destinations, 1 capability |
+| Attacks refused | 8 of 8 |
+| Controls still served | 2 of 2 |
+| Baseline corrections | 5 of 5 behaved as expected |
+
+The learned set is worth looking at before the attack results, because it is
+the entire policy and nobody wrote it. One binary: `python3`. A hundred and
+nineteen files, almost all of them the interpreter's own imports and locale
+data. Six destinations. One capability. That is what a static file server does,
+and everything outside it was refused.
+
+The denial list at the bottom of the report shows something the summary does
+not. The reverse-shell scenario produced a connect denial *and* a handful of
+file denials, because Python tried to import `traceback` to print the exception
+the denial raised - and those imports were not in the baseline either. An
+attacker's tooling has a footprint of its own, and enforcement catches it
+several times over.
+
 ## Reading the report
 
 The report the harness writes has two halves.
