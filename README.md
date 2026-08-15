@@ -31,7 +31,7 @@ Pahlevan learns what a workload does, then blocks the rest in-kernel.
 - **Auto-learning, not manual rules.** Files opened, destinations dialed, binaries executed, and capabilities used during a learning window become a per-cgroup allow-set.
 - **Real in-kernel enforcement.** LSM BPF hooks deny unlearned file opens, egress (IPv4 and IPv6), execs, and capability use with `EPERM`. The syscall never succeeds.
 - **Accurate attribution.** Events tie to the container via `bpf_get_current_cgroup_id()`; paths resolve in-kernel with `bpf_d_path()`.
-- **Events leave the process.** JSON-lines file and webhook export with Kubernetes attribution, streamed by `pahlevan events` (`--follow`, `--denials-only`, `--pod`).
+- **Events leave the process.** A gRPC streaming API with server-side filtering, plus JSON-lines file and webhook export. Every event carries the node, pod, image, owning workload, labels, the process lineage, and for an exec its full command line. Stream it with `pahlevan events --grpc host:port` or `--file`.
 - **Kubernetes-native and self-healing.** Three CRDs drive the lifecycle, a seccomp profile is generated from the learned syscalls, and enforcement rolls back automatically if it disrupts the workload.
 
 | | **Pahlevan** | Falco | Tetragon | Cilium |

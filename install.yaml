@@ -1668,6 +1668,11 @@ spec:
         - --learning-window=5m
         - --enforcement-delay=30s
         - --observability-exports=prometheus,otel
+        # The gRPC event stream is off by default because it is plaintext and
+        # unauthenticated: anything that can reach the port receives every
+        # security event this node sees. Uncomment, and add the port below, only
+        # behind a NetworkPolicy or on a trusted network.
+        # - --grpc-bind-address=:9090
         securityContext:
           # eBPF program load/attach and LSM/seccomp enforcement need real
           # privilege in the init namespace. CAP_BPF + CAP_PERFMON is the modern
@@ -1700,6 +1705,9 @@ spec:
           containerPort: 8080
         - name: health
           containerPort: 8081
+        # Uncomment alongside --grpc-bind-address above.
+        # - name: grpc
+        #   containerPort: 9090
         livenessProbe:
           httpGet:
             path: /healthz
