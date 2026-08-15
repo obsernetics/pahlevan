@@ -8,9 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
-	"go.opentelemetry.io/otel/metric"
 )
 
 // SyscallLearner implements adaptive syscall learning and baseline profiling
@@ -25,7 +26,6 @@ type SyscallLearner struct {
 	phaseTransitionDelay  time.Duration
 	syscallCounter        metric.Int64Counter
 	learningProgressGauge metric.Float64Gauge
-	baselineQuality       metric.Float64Gauge
 }
 
 // ContainerLearningState tracks the learning state for a container
@@ -612,7 +612,7 @@ func (sl *SyscallLearner) StopLearning(containerID string) error {
 	if state.Phase != PhaseProfileGenerated {
 		_, err := sl.generateProfileLocked(containerID)
 		if err != nil {
-			return fmt.Errorf("failed to generate final profile: %v", err)
+			return fmt.Errorf("failed to generate final profile: %w", err)
 		}
 	}
 
@@ -751,7 +751,7 @@ func (sl *SyscallLearner) calculateSyscallFrequencyStability(obs *SyscallObserva
 	// Compare with recorded frequency
 	frequencyDifference := obs.Frequency - expectedFrequency
 	if expectedFrequency > 0 {
-		frequencyDifference = frequencyDifference / expectedFrequency
+		frequencyDifference /= expectedFrequency
 	}
 
 	// Convert frequency difference to stability score
@@ -955,9 +955,10 @@ func (sl *SyscallLearner) generateRecommendations(state *ContainerLearningState,
 }
 
 // Utility functions
+// ipToString defers to the one owner of this conversion; shifting the uint32
+// as if it were host-order rendered every address backwards.
 func (sl *SyscallLearner) ipToString(ip uint32) string {
-	return fmt.Sprintf("%d.%d.%d.%d",
-		(ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF)
+	return ebpf.IPv4String(ip)
 }
 
 func (sl *SyscallLearner) protocolToString(proto uint8) string {

@@ -89,11 +89,11 @@ func NewPolicyListCommand() *cobra.Command {
 			if selector != "" {
 				labelSelector, err := metav1.ParseToLabelSelector(selector)
 				if err != nil {
-					return fmt.Errorf("invalid selector: %v", err)
+					return fmt.Errorf("invalid selector: %w", err)
 				}
 				selector, err := metav1.LabelSelectorAsSelector(labelSelector)
 				if err != nil {
-					return fmt.Errorf("failed to convert label selector: %v", err)
+					return fmt.Errorf("failed to convert label selector: %w", err)
 				}
 				listOpts = append(listOpts, client.MatchingLabelsSelector{
 					Selector: selector,
@@ -103,7 +103,7 @@ func NewPolicyListCommand() *cobra.Command {
 			// Get policies
 			policies := &policyv1alpha1.PahlevanPolicyList{}
 			if err := k8sClient.List(context.Background(), policies, listOpts...); err != nil {
-				return fmt.Errorf("failed to list policies: %v", err)
+				return fmt.Errorf("failed to list policies: %w", err)
 			}
 
 			// Handle output format
@@ -181,7 +181,7 @@ func NewPolicyGetCommand() *cobra.Command {
 				Namespace: namespace,
 			}, policy)
 			if err != nil {
-				return fmt.Errorf("failed to get policy %s: %v", policyName, err)
+				return fmt.Errorf("failed to get policy %s: %w", policyName, err)
 			}
 
 			return writer.WriteObject(policy)
@@ -213,7 +213,7 @@ func NewPolicyDescribeCommand() *cobra.Command {
 				Namespace: namespace,
 			}, policy)
 			if err != nil {
-				return fmt.Errorf("failed to get policy %s: %v", policyName, err)
+				return fmt.Errorf("failed to get policy %s: %w", policyName, err)
 			}
 
 			// Print policy details
@@ -239,7 +239,8 @@ func NewPolicyDescribeCommand() *cobra.Command {
 			fmt.Fprintf(writer.Writer, "    Lifecycle Aware:\t%t\n", policy.Spec.LearningConfig.LifecycleAware)
 			fmt.Fprintf(writer.Writer, "  Enforcement Config:\n")
 			fmt.Fprintf(writer.Writer, "    Mode:\t\t%s\n", policy.Spec.EnforcementConfig.Mode)
-			fmt.Fprintf(writer.Writer, "    Block Unknown:\t%t\n", policy.Spec.EnforcementConfig.BlockUnknown)
+			fmt.Fprintf(writer.Writer, "    Block Unknown:\t%s\n",
+				describeBlockUnknown(policy.Spec.EnforcementConfig))
 			fmt.Fprintf(writer.Writer, "\n")
 
 			// Status section
@@ -314,13 +315,13 @@ func NewPolicyCreateCommand() *cobra.Command {
 				// Create policy from file
 				policy, err = createPolicyFromFile(filename)
 				if err != nil {
-					return fmt.Errorf("failed to create policy from file: %v", err)
+					return fmt.Errorf("failed to create policy from file: %w", err)
 				}
 			} else {
 				// Create policy from command line flags
 				policy, err = createPolicyFromFlags(learningTime, enforcementMode, selector, namespace)
 				if err != nil {
-					return fmt.Errorf("failed to create policy from flags: %v", err)
+					return fmt.Errorf("failed to create policy from flags: %w", err)
 				}
 			}
 
@@ -331,7 +332,7 @@ func NewPolicyCreateCommand() *cobra.Command {
 
 			// Validate the policy
 			if err := validatePolicy(policy); err != nil {
-				return fmt.Errorf("policy validation failed: %v", err)
+				return fmt.Errorf("policy validation failed: %w", err)
 			}
 
 			if k8sClient == nil {
@@ -343,7 +344,7 @@ func NewPolicyCreateCommand() *cobra.Command {
 				// and defaults the object (running admission) but persists
 				// nothing. The returned object reflects server-side defaulting.
 				if err := k8sClient.Create(context.Background(), policy, client.DryRunAll); err != nil {
-					return fmt.Errorf("dry-run create failed: %v", err)
+					return fmt.Errorf("dry-run create failed: %w", err)
 				}
 				writer.PrintInfo("Dry run: policy accepted by the API server (not persisted)")
 				return cli.NewOutputWriter("yaml").WriteObject(policy)
@@ -351,7 +352,7 @@ func NewPolicyCreateCommand() *cobra.Command {
 
 			// Create the policy in the cluster
 			if err := k8sClient.Create(context.Background(), policy); err != nil {
-				return fmt.Errorf("failed to create policy: %v", err)
+				return fmt.Errorf("failed to create policy: %w", err)
 			}
 
 			writer.PrintSuccess(fmt.Sprintf("Policy %s/%s created", policy.Namespace, policy.Name))
@@ -390,12 +391,12 @@ func NewPolicyDeleteCommand() *cobra.Command {
 				Namespace: namespace,
 			}, policy)
 			if err != nil {
-				return fmt.Errorf("failed to get policy %s: %v", policyName, err)
+				return fmt.Errorf("failed to get policy %s: %w", policyName, err)
 			}
 
 			// Delete the policy
 			if err := k8sClient.Delete(context.Background(), policy); err != nil {
-				return fmt.Errorf("failed to delete policy %s: %v", policyName, err)
+				return fmt.Errorf("failed to delete policy %s: %w", policyName, err)
 			}
 
 			writer.PrintSuccess(fmt.Sprintf("Policy %s deleted", policyName))
@@ -436,7 +437,7 @@ func NewPolicyUpdateCommand() *cobra.Command {
 				Namespace: namespace,
 			}, policy)
 			if err != nil {
-				return fmt.Errorf("failed to get policy %s: %v", policyName, err)
+				return fmt.Errorf("failed to get policy %s: %w", policyName, err)
 			}
 
 			// Update fields if flags were provided
@@ -445,7 +446,7 @@ func NewPolicyUpdateCommand() *cobra.Command {
 			if cmd.Flags().Changed("learning-time") {
 				duration, err := parseDuration(learningTime)
 				if err != nil {
-					return fmt.Errorf("invalid learning time: %v", err)
+					return fmt.Errorf("invalid learning time: %w", err)
 				}
 				policy.Spec.LearningConfig.Duration = duration
 				updated = true
@@ -454,14 +455,14 @@ func NewPolicyUpdateCommand() *cobra.Command {
 			if cmd.Flags().Changed("enforcement-mode") {
 				mode, err := parseEnforcementMode(enforcementMode)
 				if err != nil {
-					return fmt.Errorf("invalid enforcement mode: %v", err)
+					return fmt.Errorf("invalid enforcement mode: %w", err)
 				}
 				policy.Spec.EnforcementConfig.Mode = mode
 				updated = true
 			}
 
 			if cmd.Flags().Changed("block-unknown") {
-				policy.Spec.EnforcementConfig.BlockUnknown = blockUnknown
+				policy.Spec.EnforcementConfig.BlockUnknown = &blockUnknown
 				updated = true
 			}
 
@@ -482,7 +483,7 @@ func NewPolicyUpdateCommand() *cobra.Command {
 
 			// Update the policy
 			if err := k8sClient.Update(context.Background(), policy); err != nil {
-				return fmt.Errorf("failed to update policy %s: %v", policyName, err)
+				return fmt.Errorf("failed to update policy %s: %w", policyName, err)
 			}
 
 			writer.PrintSuccess(fmt.Sprintf("Policy %s updated", policyName))
@@ -525,7 +526,7 @@ func NewPolicyStatusCommand() *cobra.Command {
 				Namespace: namespace,
 			}, policy)
 			if err != nil {
-				return fmt.Errorf("failed to get policy %s: %v", policyName, err)
+				return fmt.Errorf("failed to get policy %s: %w", policyName, err)
 			}
 
 			// Display status information
@@ -649,19 +650,19 @@ func createPolicyFromFlags(learningTime, enforcementMode, selector, namespace st
 	// Parse learning duration
 	duration, err := parseDuration(learningTime)
 	if err != nil {
-		return nil, fmt.Errorf("invalid learning time: %v", err)
+		return nil, fmt.Errorf("invalid learning time: %w", err)
 	}
 
 	// Parse enforcement mode
 	mode, err := parseEnforcementMode(enforcementMode)
 	if err != nil {
-		return nil, fmt.Errorf("invalid enforcement mode: %v", err)
+		return nil, fmt.Errorf("invalid enforcement mode: %w", err)
 	}
 
 	// Parse selector
 	matchLabels, err := parseSelector(selector)
 	if err != nil {
-		return nil, fmt.Errorf("invalid selector: %v", err)
+		return nil, fmt.Errorf("invalid selector: %w", err)
 	}
 
 	// Generate a policy name if not provided
@@ -686,8 +687,9 @@ func createPolicyFromFlags(learningTime, enforcementMode, selector, namespace st
 				LifecycleAware: true,
 			},
 			EnforcementConfig: policyv1alpha1.EnforcementConfig{
-				Mode:         mode,
-				BlockUnknown: mode == "Blocking",
+				Mode: mode,
+				// Left nil so the mode's default applies; setting it explicitly
+				// would pin the policy against a later change of that default.
 			},
 		},
 	}
@@ -726,7 +728,7 @@ func watchPolicyStatus(k8sClient client.Client, policyName, namespace string, wr
 	// of this custom resource).
 	watchClient, err := client.NewWithWatch(restCfg, client.Options{Scheme: cli.GetScheme()})
 	if err != nil {
-		return fmt.Errorf("failed to create watch client: %v", err)
+		return fmt.Errorf("failed to create watch client: %w", err)
 	}
 
 	// Stop cleanly on Ctrl+C.
@@ -744,7 +746,7 @@ func watchPolicyStatus(k8sClient client.Client, policyName, namespace string, wr
 	list := &policyv1alpha1.PahlevanPolicyList{}
 	w, err := watchClient.Watch(ctx, list, client.InNamespace(namespace))
 	if err != nil {
-		return fmt.Errorf("failed to start watch: %v", err)
+		return fmt.Errorf("failed to start watch: %w", err)
 	}
 	defer w.Stop()
 
@@ -845,7 +847,7 @@ func parseDuration(durationStr string) (*metav1.Duration, error) {
 
 	duration, err := time.ParseDuration(durationStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid duration format: %v", err)
+		return nil, fmt.Errorf("invalid duration format: %w", err)
 	}
 
 	return &metav1.Duration{Duration: duration}, nil
@@ -881,4 +883,16 @@ func parseSelector(selectorStr string) (map[string]string, error) {
 	}
 
 	return matchLabels, nil
+}
+
+// describeBlockUnknown renders the tri-state field. Unset is not the same as
+// false: it means the mode's default applies, which is block under Blocking.
+func describeBlockUnknown(c policyv1alpha1.EnforcementConfig) string {
+	if c.BlockUnknown != nil {
+		return fmt.Sprintf("%t", *c.BlockUnknown)
+	}
+	if c.Mode == policyv1alpha1.EnforcementModeBlocking {
+		return "true (default for Blocking)"
+	}
+	return "false (default for " + string(c.Mode) + ")"
 }

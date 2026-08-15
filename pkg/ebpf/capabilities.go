@@ -319,7 +319,7 @@ func (c *CapabilityChecker) getKernelVersion() (string, error) {
 	cmd := exec.Command("uname", "-r")
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to get kernel version: %v", err)
+		return "", fmt.Errorf("failed to get kernel version: %w", err)
 	}
 	return strings.TrimSpace(string(output)), nil
 }

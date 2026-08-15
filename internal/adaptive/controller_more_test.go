@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -25,22 +26,41 @@ type fakePoliciesMeta struct {
 	metaOK   bool
 }
 
-func (p fakePoliciesMeta) Resolve(uint64, attribution.ContainerRef) (time.Duration, bool, bool) {
-	return p.window, p.blocking, p.ok
+func (p fakePoliciesMeta) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
+	mode := ModeMonitoring
+	if p.blocking {
+		mode = ModeBlocking
+	}
+	return Decision{
+		PolicyName:  "test",
+		Mode:        mode,
+		Window:      p.window,
+		SelfHealing: SelfHealingDecision{Enabled: true},
+	}, p.ok
 }
 
 func (p fakePoliciesMeta) PodMeta(string) (string, string, bool) {
 	return p.ns, p.name, p.metaOK
 }
 
-func newTestScheme(t *testing.T) *fake.ClientBuilder {
+// newRuntimeScheme returns a scheme with the Pahlevan CRDs and core/v1, so both
+// ContainerProfile persistence and pod reads / Event writes can be faked.
+func newRuntimeScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := policyv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1 AddToScheme: %v", err)
+	}
+	return s
+}
+
+func newTestScheme(t *testing.T) *fake.ClientBuilder {
+	t.Helper()
 	return fake.NewClientBuilder().
-		WithScheme(s).
+		WithScheme(newRuntimeScheme(t)).
 		WithStatusSubresource(&policyv1alpha1.ContainerProfile{})
 }
 
@@ -69,7 +89,10 @@ func TestHandleNetworkEvent_Learning(t *testing.T) {
 	if netKey(1, 80) == netKey(1, 81) {
 		t.Error("netKey should differ by port")
 	}
-	if netKey(1, 80) != netKey(1, 80) {
+	// Compare separately-computed keys rather than one expression against
+	// itself, which the compiler folds into a tautology.
+	first, second := netKey(1, 80), netKey(1, 80)
+	if first != second {
 		t.Error("netKey should be deterministic")
 	}
 }
@@ -99,7 +122,7 @@ func TestPersistProfile_CreatesContainerProfile(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	c.now = func() time.Time { return base }
 
-	// Attach a resolvable pod to cgroup 77 and learn some behaviour.
+	// Attach a resolvable pod to cgroup 77 and learn some behavior.
 	c.mu.Lock()
 	st := c.track(77)
 	st.ref.PodUID = "pod-uid-xyz"

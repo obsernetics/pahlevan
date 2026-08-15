@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/pkg/learner"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/pkg/learner"
 )
 
 func TestAttackSurfaceAnalyzer_NewAttackSurfaceAnalyzer(t *testing.T) {

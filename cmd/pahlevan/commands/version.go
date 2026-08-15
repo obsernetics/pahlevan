@@ -110,7 +110,7 @@ PowerShell:
 `,
 		DisableFlagsInUseLine: true,
 		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
-		Args:                  cobra.ExactValidArgs(1),
+		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
 		Run: func(cmd *cobra.Command, args []string) {
 			switch args[0] {
 			case "bash":
@@ -122,102 +122,6 @@ PowerShell:
 			case "powershell":
 				_ = cmd.Root().GenPowerShellCompletionWithDesc(cmd.OutOrStdout()) //nolint:errcheck // Completion errors are not critical
 			}
-		},
-	}
-
-	return cmd
-}
-
-// NewAttackSurfaceCommand creates the attack surface command
-func NewAttackSurfaceCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "attack-surface",
-		Short: "Analyze attack surface",
-		Long:  "Analyze and display attack surface information for workloads and policies.",
-	}
-
-	cmd.AddCommand(
-		NewAttackSurfaceAnalyzeCommand(),
-		NewAttackSurfaceReportCommand(),
-	)
-
-	return cmd
-}
-
-// NewAttackSurfaceAnalyzeCommand creates the attack surface analyze command
-func NewAttackSurfaceAnalyzeCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "analyze",
-		Short: "Analyze attack surface",
-		Long:  "Perform attack surface analysis for the cluster or specific workloads.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			writer := cli.NewOutputWriter("table")
-			writer.PrintInfo("Attack surface analysis functionality to be implemented")
-			return nil
-		},
-	}
-
-	return cmd
-}
-
-// NewAttackSurfaceReportCommand creates the attack surface report command
-func NewAttackSurfaceReportCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "report",
-		Short: "Generate attack surface report",
-		Long:  "Generate a comprehensive attack surface report.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			writer := cli.NewOutputWriter("table")
-			writer.PrintInfo("Attack surface reporting functionality to be implemented")
-			return nil
-		},
-	}
-
-	return cmd
-}
-
-// NewLogsCommand creates the logs command
-func NewLogsCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "logs",
-		Short: "View operator logs",
-		Long:  "View logs from the Pahlevan operator.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			writer := cli.NewOutputWriter("table")
-			writer.PrintInfo("Logs functionality to be implemented")
-			return nil
-		},
-	}
-
-	return cmd
-}
-
-// NewMetricsCommand creates the metrics command
-func NewMetricsCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "metrics",
-		Short: "View metrics",
-		Long:  "View metrics and statistics from the Pahlevan operator.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			writer := cli.NewOutputWriter("table")
-			writer.PrintInfo("Metrics functionality to be implemented")
-			return nil
-		},
-	}
-
-	return cmd
-}
-
-// NewDebugCommand creates the debug command
-func NewDebugCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "debug",
-		Short: "Debug utilities",
-		Long:  "Debug utilities for troubleshooting Pahlevan operator issues.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			writer := cli.NewOutputWriter("table")
-			writer.PrintInfo("Debug functionality to be implemented")
-			return nil
 		},
 	}
 

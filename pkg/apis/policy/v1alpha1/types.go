@@ -42,8 +42,28 @@ type LabelSelector struct {
 	// MatchExpressions is a list of label selector requirements
 	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty"`
 
-	// NamespaceSelector specifies target namespaces
-	NamespaceSelector *LabelSelector `json:"namespaceSelector,omitempty"`
+	// NamespaceSelector specifies target namespaces, matched against the
+	// namespace's own labels.
+	NamespaceSelector *NamespaceSelector `json:"namespaceSelector,omitempty"`
+}
+
+// NamespaceSelector selects namespaces by their labels.
+//
+// It is a distinct type from LabelSelector rather than a self-reference, for
+// two reasons. A namespace selector that itself carried a namespace selector
+// is meaningless. And the self-reference made the CRD uninstallable:
+// controller-gen cannot express infinite recursion, so it truncated the chain
+// into a node carrying a description and no type, and the API server rejects
+// that with "must have a type". Applying install.yaml failed partway through
+// and left a half-installed cluster.
+type NamespaceSelector struct {
+	// MatchLabels is a map of {key,value} pairs matched against namespace labels.
+	// Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+	// selecting a namespace by name works through this field.
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+
+	// MatchExpressions is a list of namespace label selector requirements.
+	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty"`
 }
 
 // LabelSelectorRequirement contains a key, operator, and values for label selection
@@ -92,8 +112,13 @@ type EnforcementConfig struct {
 	// AlertOnly enables alert-only mode for testing
 	AlertOnly bool `json:"alertOnly,omitempty"`
 
-	// BlockUnknown blocks unknown syscalls/access patterns
-	BlockUnknown bool `json:"blockUnknown,omitempty"`
+	// BlockUnknown blocks behavior outside the learned baseline. Nil means
+	// "the default for the mode", which is true under Blocking: default-deny of
+	// unlearned behavior is the only enforcement the data plane performs, so a
+	// Blocking policy that did not block it would enforce nothing. Explicitly
+	// false downgrades the policy to Monitoring. A bare bool could not express
+	// the difference between unset and false.
+	BlockUnknown *bool `json:"blockUnknown,omitempty"`
 
 	// Exceptions defines enforcement exceptions
 	Exceptions []EnforcementException `json:"exceptions,omitempty"`
@@ -224,10 +249,16 @@ type IPBlock struct {
 
 // FilePolicy defines file access policies
 type FilePolicy struct {
-	// AllowedPaths explicitly allows specific paths
+	// AllowedPaths explicitly allows specific paths.
+	//
+	// Paths must be fully resolved and exact. Enforcement keys on the path the
+	// kernel resolves, which follows symlinks, so "/etc/os-release" grants
+	// nothing where it links to /usr/lib/os-release. Wildcards are not
+	// supported and are matched literally.
 	AllowedPaths []string `json:"allowedPaths,omitempty"`
 
-	// DeniedPaths explicitly denies specific paths
+	// DeniedPaths explicitly denies specific paths, removing them from the
+	// learned baseline. The same resolution rules as AllowedPaths apply.
 	DeniedPaths []string `json:"deniedPaths,omitempty"`
 
 	// DefaultAction specifies default action for unknown paths
@@ -516,14 +547,35 @@ type EnforcementStatus struct {
 	// StartTime indicates when enforcement started
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 
-	// BlockedSyscalls indicates blocked syscall count
+	// BlockedSyscalls indicates blocked syscall count.
+	//
+	// Always zero today, and kept for API compatibility. Syscalls are confined
+	// by the generated seccomp profile, whose denials the kernel does not
+	// report back to this agent, while the BPF syscall program is observation
+	// only. The counters below are the ones that carry real numbers.
 	BlockedSyscalls int64 `json:"blockedSyscalls,omitempty"`
 
-	// BlockedNetworkConnections indicates blocked network connections
+	// BlockedNetworkConnections indicates connect() calls denied in-kernel.
 	BlockedNetworkConnections int64 `json:"blockedNetworkConnections,omitempty"`
 
-	// BlockedFileAccess indicates blocked file access count
+	// BlockedFileAccess indicates file opens denied in-kernel.
 	BlockedFileAccess int64 `json:"blockedFileAccess,omitempty"`
+
+	// BlockedExecs indicates execve calls denied in-kernel.
+	BlockedExecs int64 `json:"blockedExecs,omitempty"`
+
+	// BlockedCapabilities indicates capability checks denied in-kernel.
+	BlockedCapabilities int64 `json:"blockedCapabilities,omitempty"`
+
+	// BlockedTotal is the sum of every in-kernel denial across the containers
+	// this policy governs. It exists so the printed column reports the whole
+	// picture rather than one signal.
+	BlockedTotal int64 `json:"blockedTotal,omitempty"`
+
+	// EnforcingContainers and TotalContainers describe how many of the
+	// containers this policy selects have actually reached enforcement.
+	EnforcingContainers int32 `json:"enforcingContainers,omitempty"`
+	TotalContainers     int32 `json:"totalContainers,omitempty"`
 
 	// AlertsGenerated indicates alerts generated count
 	AlertsGenerated int64 `json:"alertsGenerated,omitempty"`
@@ -576,7 +628,7 @@ type WorkloadReference struct {
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Learning",type=string,JSONPath=`.status.learningStatus.progress`
-// +kubebuilder:printcolumn:name="Blocked",type=integer,JSONPath=`.status.enforcementStatus.blockedSyscalls`
+// +kubebuilder:printcolumn:name="Blocked",type=integer,JSONPath=`.status.enforcementStatus.blockedTotal`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PahlevanPolicy is the Schema for the pahlevanpolicies API

@@ -1,0 +1,56 @@
+# Prometheus Operator scrape configuration for the agent and the operator.
+#
+# Both already expose :8080/metrics and are fronted by the headless and
+# ClusterIP services in deploy/base/service.yaml, so this only tells Prometheus
+# where to look. Apply it only if the Prometheus Operator CRDs are installed;
+# without them, scrape the pods directly using the prometheus.io/* annotations
+# the workloads already carry.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pahlevan-agent
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-agent
+    app.kubernetes.io/part-of: pahlevan
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-agent
+  namespaceSelector:
+    matchNames:
+    - pahlevan-system
+  endpoints:
+  - port: metrics
+    # The agent's series are per node, and the node label is what makes a
+    # denial spike attributable to one kernel rather than the fleet.
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: node
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pahlevan-operator
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/part-of: pahlevan
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-operator
+  namespaceSelector:
+    matchNames:
+    - pahlevan-system
+  endpoints:
+  - port: metrics
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+    interval: 30s
+    scrapeTimeout: 10s

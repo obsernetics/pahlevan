@@ -35,16 +35,25 @@ struct syscall_event {
 /* Ring buffer of syscall_event. */
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 << 24); /* 16 MiB */
+	__uint(max_entries, 1 << 18); /* 256 KiB: events are deduped in-kernel, so
+				       * userspace volume is low and a large ring only
+				       * wastes preallocated memory. */
 } events SEC(".maps");
 
-/* Dedup: key = (cgroup_id << 16) | (syscall_nr & 0xffff) -> seen flag.
- * Bounds userspace event volume to one event per (cgroup, syscall). */
+/* Dedup and counting: key = (cgroup_id << 16) | (syscall_nr & 0xffff) -> count.
+ *
+ * The event is emitted only the first time a (cgroup, syscall) pair is seen,
+ * which is what bounds userspace volume, but the counter keeps incrementing.
+ * That gives the frequency of each syscall for free: no extra events, no extra
+ * map, and it answers "which syscalls does this workload actually lean on",
+ * which the learned set alone cannot. Userspace reads the map on demand. */
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, __u64);
-	__type(value, __u8);
-	__uint(max_entries, 1 << 20);
+	__type(value, __u64);
+	/* ~400 syscall numbers per cgroup; a node's working set fits easily and
+	 * the LRU evicts the tail. 1M entries preallocated ~60 MiB for nothing. */
+	__uint(max_entries, 1 << 14);
 } syscall_seen SEC(".maps");
 
 /* Optional runtime knobs (single element). ARRAY maps are pre-populated with
@@ -84,12 +93,17 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 	if (tgid == 0)
 		return 0;
 
-	/* Dedup per (cgroup, syscall). */
+	/* Count every occurrence; emit only the first. */
 	__u64 key = (cgroup_id << 16) | (syscall_nr & 0xffff);
-	__u8 *seen = bpf_map_lookup_elem(&syscall_seen, &key);
-	if (seen)
+	__u64 *count = bpf_map_lookup_elem(&syscall_seen, &key);
+	if (count) {
+		/* Not atomic: an exact count is not worth a contended atomic on the
+		 * hottest path in the program. A lost increment under concurrency
+		 * changes a frequency ranking by one, which nothing acts on. */
+		(*count)++;
 		return 0;
-	__u8 one = 1;
+	}
+	__u64 one = 1;
 	bpf_map_update_elem(&syscall_seen, &key, &one, BPF_ANY);
 
 	struct syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);

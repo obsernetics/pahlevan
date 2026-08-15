@@ -49,6 +49,31 @@ jobs:
         go build -o bin/pahlevan-operator ./cmd/pahlevan-operator
         go build -o bin/pahlevan ./cmd/pahlevan
 
+    # The build alone never caught a regression. Vet, test, race, and format are
+    # what actually gate quality, so they run here rather than only locally.
+    - name: Vet
+      run: go vet ./...
+
+    - name: Test
+      run: go test -count=1 -coverprofile=coverage.out ./...
+
+    - name: Test (race)
+      run: go test -count=1 -race ./...
+
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v zz_generated))
+        if [ -n "$unformatted" ]; then
+          echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+        fi
+
+    - name: Coverage summary
+      run: go tool cover -func=coverage.out | tail -1
+
+    # arm64 is a supported target claim, so prove it still compiles.
+    - name: Cross-compile arm64
+      run: GOOS=linux GOARCH=arm64 go build ./...
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v7
       with:
@@ -65,6 +90,9 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v6
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -84,10 +112,14 @@ jobs:
         tags: |
           type=ref,event=branch
           type=ref,event=pr
-          # Branch-prefixed sha only makes sense on branch builds: on a tag push
-          # {{branch}} is empty, which yielded the invalid tag ":-<sha>".
-          type=sha,prefix={{branch}}-,enable=${{ github.ref_type == 'branch' }}
-          type=sha,prefix=sha-,enable=${{ github.ref_type == 'tag' }}
+          # {{branch}} is only non-empty on a push to a branch. On a tag push
+          # and on a pull_request it expands to nothing, producing the invalid
+          # tag ":-<sha>" and failing the whole build. Gating on ref_type alone
+          # was not enough: a pull_request has ref_type 'branch' but no branch
+          # name, so the PR case still broke. Everything that is not a branch
+          # push gets the plain sha- prefix.
+          type=sha,prefix={{branch}}-,enable=${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+          type=sha,prefix=sha-,enable=${{ !(github.event_name == 'push' && github.ref_type == 'branch') }}
           type=raw,value=latest,enable={{is_default_branch}}
           # Version tags (v2.0.0) publish 2.0.0, 2.0, 2 and the raw tag name.
           type=ref,event=tag
@@ -100,6 +132,8 @@ jobs:
       with:
         context: .
         push: true
+        # arm64 is a supported target: the agent ships per-arch BPF objects.
+        platforms: linux/amd64,linux/arm64
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha

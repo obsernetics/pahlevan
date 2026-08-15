@@ -3,7 +3,7 @@
 ##################################################
 # Build Stage: Go application (static, no cgo)
 ##################################################
-FROM golang:1.26-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-builder
 
 RUN apk add --no-cache git ca-certificates
 
@@ -22,15 +22,20 @@ ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
 
+# Cross-compile to the target arch from the native builder rather than running
+# the toolchain under QEMU. Go needs no cross toolchain with CGO off, and
+# bpf2go emits per-arch BPF objects, so GOARCH selects the right ones.
+ARG TARGETARCH
+
 # cilium/ebpf is pure Go (no cgo needed to load eBPF), so build static binaries.
 # Three binaries ship in one image; the DaemonSet/Deployment pick which to run.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o pahlevan-agent ./cmd/pahlevan-agent && \
-    CGO_ENABLED=0 GOOS=linux go build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o pahlevan-operator ./cmd/pahlevan-operator && \
-    CGO_ENABLED=0 GOOS=linux go build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o pahlevan ./cmd/pahlevan
 

@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func newTestLearner() *SyscallLearner {
@@ -68,7 +69,7 @@ func TestStartLearning_NilAndPolicy(t *testing.T) {
 		t.Fatalf("expected ContainerStarted lifecycle event, got %+v", state.LifecycleEvents)
 	}
 
-	// Policy with a window override should be honoured.
+	// Policy with a window override should be honored.
 	win := metav1.Duration{Duration: 5 * time.Minute}
 	policy := &policyv1alpha1.PahlevanPolicy{
 		Spec: policyv1alpha1.PahlevanPolicySpec{
@@ -392,8 +393,15 @@ func TestDetectFileType(t *testing.T) {
 func TestUtilityConversions(t *testing.T) {
 	sl := newTestLearner()
 
-	if got := sl.ipToString(0x01020304); got != "1.2.3.4" {
-		t.Errorf("ipToString=%s", got)
+	// The uint32 holds sin_addr.s_addr decoded little-endian, so its bytes are
+	// already in network order: 0x04030201 is 1.2.3.4 on the wire. The old
+	// implementation shifted it as a host-order number and rendered every
+	// address backwards.
+	if got := sl.ipToString(0x04030201); got != "1.2.3.4" {
+		t.Errorf("ipToString=%s, want 1.2.3.4", got)
+	}
+	if got := sl.ipToString(0x0100007f); got != "127.0.0.1" {
+		t.Errorf("ipToString(loopback)=%s, want 127.0.0.1", got)
 	}
 	if got := sl.protocolToString(6); got != "tcp" {
 		t.Errorf("protocol tcp=%s", got)

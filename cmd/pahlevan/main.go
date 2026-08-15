@@ -92,7 +92,9 @@ enforcement, and real-time monitoring of container behavior using eBPF technolog
 	cmd.AddCommand(
 		commands.NewPolicyCommand(),
 		commands.NewAttackSurfaceCommand(),
+		commands.NewProfileCommand(),
 		commands.NewStatusCommand(),
+		commands.NewEventsCommand(),
 		commands.NewLogsCommand(),
 		commands.NewMetricsCommand(),
 		commands.NewDebugCommand(),

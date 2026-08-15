@@ -19,7 +19,6 @@ package visualization
 import (
 	"testing"
 
-	"github.com/obsernetics/pahlevan/internal/learner"
 	v1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -29,6 +28,8 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/obsernetics/pahlevan/internal/learner"
 )
 
 func int64Ptr(v int64) *int64 { return &v }

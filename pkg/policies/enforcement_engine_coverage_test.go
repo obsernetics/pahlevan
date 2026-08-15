@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/internal/learner"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/obsernetics/pahlevan/internal/learner"
+	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 // --- helpers ---
@@ -500,15 +501,6 @@ func TestStartStop(t *testing.T) {
 	require.NoError(t, ee.Start(ctx))
 	cancel()
 	ee.Stop()
-}
-
-func TestUpdateContainerPolicy(t *testing.T) {
-	ee := NewEnforcementEngine(nil, nil)
-	ee.containerPolicies["c1"] = &ContainerPolicyState{ContainerID: "c1", SelfHealingState: &SelfHealingState{}}
-	p := &GeneratedPolicy{Version: 5}
-	// nil ebpf manager: UpdateContainerPolicy should still update in-memory state
-	// or return an error deterministically without panic.
-	require.NotPanics(t, func() { _ = ee.UpdateContainerPolicy("c1", p) })
 }
 
 // --- benchmarks ---

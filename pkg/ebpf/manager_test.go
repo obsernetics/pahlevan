@@ -22,10 +22,12 @@ func TestNewManager(t *testing.T) {
 
 	// Check that basic fields are initialized
 	assert.NotNil(t, manager.stopCh)
-	assert.NotNil(t, manager.syscallEventCounter)
-	assert.NotNil(t, manager.networkEventCounter)
-	assert.NotNil(t, manager.fileEventCounter)
-	assert.NotNil(t, manager.enforcementCounter)
+	assert.Len(t, manager.counters, len(eventKinds))
+	for _, k := range eventKinds {
+		assert.NotNil(t, manager.counters[k].events, k)
+		assert.NotNil(t, manager.counters[k].denials, k)
+		assert.NotNil(t, manager.counters[k].decodeErrors, k)
+	}
 	assert.NotNil(t, manager.capabilities)
 	assert.NotNil(t, manager.capabilityChecker)
 
@@ -167,6 +169,10 @@ func (m *mockEventHandler) HandleFileEvent(event *FileEvent) error {
 }
 
 func (m *mockEventHandler) HandleProcessEvent(event *ProcessEvent) error {
+	return nil
+}
+
+func (m *mockEventHandler) HandleCapabilityEvent(event *CapabilityEvent) error {
 	return nil
 }
 

@@ -4,10 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/internal/learner"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/internal/learner"
+	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 )
 
 // TestCreateTightenedPolicy_NarrowsToBaseline verifies that tightening narrows

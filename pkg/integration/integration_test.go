@@ -143,17 +143,26 @@ func (m *MockLearningEngine) HandleProcessEvent(event *ebpf.ProcessEvent) error 
 	return nil
 }
 
+func (m *MockLearningEngine) HandleCapabilityEvent(event *ebpf.CapabilityEvent) error {
+	return nil
+}
+
 func (m *MockLearningEngine) GetProfile(containerID string) *learner.LearningProfile {
 	args := m.Called(containerID)
-	if args.Get(0) == nil {
-		return m.profiles[containerID]
+	if args.Get(0) != nil {
+		return args.Get(0).(*learner.LearningProfile)
 	}
-	return args.Get(0).(*learner.LearningProfile)
+	// The event handlers write this map from the agent's goroutines, so the
+	// read needs the same lock they take.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.profiles[containerID]
 }
 
 // MockObservabilityManager implements a mock observability manager
 type MockObservabilityManager struct {
 	mock.Mock
+	mu      sync.Mutex
 	metrics map[string]*observability.SecurityMetrics
 	alerts  []*observability.Alert
 }
@@ -167,6 +176,9 @@ func NewMockObservabilityManager() *MockObservabilityManager {
 
 func (m *MockObservabilityManager) RecordViolation(containerID string, violation interface{}) {
 	m.Called(containerID, violation)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	if metrics, exists := m.metrics[containerID]; exists {
 		if metrics.ViolationCounts == nil {
@@ -190,11 +202,15 @@ func (m *MockObservabilityManager) CreateAlert(alertType observability.AlertType
 		Timestamp: time.Now(),
 		Severity:  observability.SeverityMedium,
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.alerts = append(m.alerts, alert)
 }
 
 func (m *MockObservabilityManager) GetMetrics(containerID string) *observability.SecurityMetrics {
 	m.Called(containerID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.metrics[containerID]
 }
 
