@@ -204,6 +204,11 @@ type ExecInfo struct {
 	// capture buffer, so Args is a prefix. Reading a truncated line as the
 	// whole invocation is exactly the mistake this prevents.
 	ArgsTruncated bool `json:"argsTruncated,omitempty"`
+
+	// Exited marks the record as a process exit rather than an exec. An exit
+	// carries no binary, argv or ancestry, so a consumer must check this
+	// before reading them.
+	Exited bool `json:"exited,omitempty"`
 }
 
 // AncestorInfo is one link in an exec's process lineage.

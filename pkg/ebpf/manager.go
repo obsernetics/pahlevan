@@ -139,6 +139,12 @@ const (
 	// KilledFlag is set on ProcessEvent.Flags when the process was also killed
 	// (enforcement mode 2, bpf_send_signal(SIGKILL)).
 	KilledFlag uint32 = 0x40000000
+	// ExitedFlag is set on ProcessEvent.Flags when the record is a process
+	// exit rather than an exec. Exits ride the same ring buffer and struct: a
+	// separate one would need its own reader, decode path and metrics for no
+	// benefit, since the fields that matter on an exit are ones an exec
+	// already carries.
+	ExitedFlag uint32 = 0x20000000
 	// DeniedDirection is set on NetworkEvent.Direction when the connect was
 	// denied. Network events carry no Flags field, so the bit rides here.
 	DeniedDirection uint8 = 0x80
@@ -156,6 +162,17 @@ func (e *FileEvent) IsWrite() bool { return e.Flags&WriteFlag != 0 }
 
 // IsDenied reports whether the open was refused in-kernel.
 func (e *FileEvent) IsDenied() bool { return e.Flags&DeniedFlag != 0 }
+
+// IsExit reports whether the record is a process exit rather than an exec.
+// An exit carries no filename, argv or ancestry chain, so a consumer must
+// check this before reading them.
+func (e *ProcessEvent) IsExit() bool { return e.Flags&ExitedFlag != 0 }
+
+// IsDenied reports whether the exec was refused in-kernel.
+func (e *ProcessEvent) IsDenied() bool { return e.Flags&DeniedFlag != 0 }
+
+// WasKilled reports whether the process was also sent SIGKILL.
+func (e *ProcessEvent) WasKilled() bool { return e.Flags&KilledFlag != 0 }
 
 type EventHandler interface {
 	HandleSyscallEvent(event *SyscallEvent) error
@@ -547,18 +564,21 @@ func (m *Manager) AttachPrograms() error {
 		// the caller's address space. Attaching these is best-effort and
 		// separate from the LSM hook: without them exec events still carry the
 		// binary, just not its arguments.
-		for tp, prog := range map[string]string{
-			"sys_enter_execve":   "handle_execve_args",
-			"sys_enter_execveat": "handle_execveat_args",
+		for _, tp := range []struct{ group, name, prog, note string }{
+			{"syscalls", "sys_enter_execve", "handle_execve_args", "exec events will carry no argv"},
+			{"syscalls", "sys_enter_execveat", "handle_execveat_args", "exec events will carry no argv"},
+			// Exit tracking is what lets a process lifetime be computed and a
+			// pid be retired rather than assumed still live.
+			{"sched", "sched_process_exit", "handle_sched_exit", "process exits will not be reported"},
 		} {
-			p := m.execCollection.Programs[prog]
+			p := m.execCollection.Programs[tp.prog]
 			if p == nil {
 				continue
 			}
-			l, err := link.Tracepoint("syscalls", tp, p, nil)
+			l, err := link.Tracepoint(tp.group, tp.name, p, nil)
 			if err != nil {
-				log.Log.V(0).Info("execve argument capture unavailable; exec events will carry no argv",
-					"tracepoint", tp, "error", err.Error())
+				log.Log.V(0).Info("tracepoint attach failed; "+tp.note,
+					"tracepoint", tp.group+"/"+tp.name, "error", err.Error())
 				continue
 			}
 			m.execLinks = append(m.execLinks, l)

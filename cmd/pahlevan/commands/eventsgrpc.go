@@ -173,6 +173,9 @@ func protoEventToJSON(ev *apiv1alpha1.Event) map[string]interface{} {
 		}
 	case *apiv1alpha1.Event_Exec:
 		exec := map[string]interface{}{"binary": d.Exec.GetBinary()}
+		if d.Exec.GetExited() {
+			exec["exited"] = true
+		}
 		if args := d.Exec.GetArgs(); len(args) > 0 {
 			exec["args"] = args
 			exec["commandLine"] = d.Exec.GetCommandLine()

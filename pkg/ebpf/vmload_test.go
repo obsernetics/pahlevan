@@ -1493,3 +1493,93 @@ func TestVMNonExecEventsCarryParent(t *testing.T) {
 	}
 	t.Fatal("no file event from cat observed")
 }
+
+// TestVMProcessExitIsReported proves exits reach userspace from a real kernel.
+//
+// Exit tracking is what lets a process lifetime be computed and a pid be
+// retired rather than assumed still live. Exits share the exec ring buffer and
+// struct, so this also checks the marker really distinguishes them: an exit
+// read as an exec would look like a process running a binary with no name.
+// VM-only.
+func TestVMProcessExitIsReported(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	tp, err := link.Tracepoint("sched", "sched_process_exit", coll.Programs["handle_sched_exit"], nil)
+	if err != nil {
+		t.Fatalf("attach sched_process_exit: %v", err)
+	}
+	defer tp.Close()
+
+	rd, err := ringbuf.NewReader(coll.Maps["exec_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = exec.Command("/bin/true").Run()
+			time.Sleep(30 * time.Millisecond)
+		}
+	}()
+
+	deadline := time.Now().Add(15 * time.Second)
+	sawExit := false
+	for time.Now().Before(deadline) {
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseProcessEvent(rec.RawSample)
+		if ev == nil || !ev.IsExit() {
+			continue
+		}
+		sawExit = true
+		t.Logf("exit: comm=%q pid=%d ppid=%d parent=%q cgroup=%d",
+			ev.Comm, ev.PID, ev.PPID, ev.ParentComm, ev.CgroupID)
+
+		if ev.PID == 0 {
+			t.Error("exit event carries no pid")
+		}
+		if ev.Comm == "" {
+			t.Error("exit event carries no comm")
+		}
+		// An exit is not an exec: reading one as the other would present a
+		// process running a binary with no name.
+		if ev.Filename != "" {
+			t.Errorf("exit event carries a filename %q; the marker is not separating them", ev.Filename)
+		}
+		if len(ev.Args) != 0 {
+			t.Errorf("exit event carries argv %q", ev.Args)
+		}
+		if ev.IsDenied() || ev.WasKilled() {
+			t.Error("an exit must not read as a denial or a kill")
+		}
+		break
+	}
+	if !sawExit {
+		t.Fatal("no process exit observed")
+	}
+}

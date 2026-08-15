@@ -864,6 +864,9 @@ type ExecInfo struct {
 	// Process lineage, nearest ancestor first.
 	Ancestry      []*Ancestor `protobuf:"bytes,5,rep,name=ancestry,proto3" json:"ancestry,omitempty"`
 	AncestryChain string      `protobuf:"bytes,6,opt,name=ancestry_chain,json=ancestryChain,proto3" json:"ancestry_chain,omitempty"`
+	// The record is a process exit rather than an exec. An exit carries no
+	// binary, argv or ancestry, so a client must check this before reading them.
+	Exited        bool `protobuf:"varint,7,opt,name=exited,proto3" json:"exited,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -938,6 +941,13 @@ func (x *ExecInfo) GetAncestryChain() string {
 		return x.AncestryChain
 	}
 	return ""
+}
+
+func (x *ExecInfo) GetExited() bool {
+	if x != nil {
+		return x.Exited
+	}
+	return false
 }
 
 type Ancestor struct {
@@ -1248,14 +1258,15 @@ const file_api_v1alpha1_events_proto_rawDesc = "" +
 	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12'\n" +
 	"\x0fprotocol_number\x18\x04 \x01(\rR\x0eprotocolNumber\x12\x1c\n" +
 	"\tdirection\x18\x05 \x01(\tR\tdirection\x12%\n" +
-	"\x0eaddress_family\x18\x06 \x01(\tR\raddressFamily\"\xe0\x01\n" +
+	"\x0eaddress_family\x18\x06 \x01(\tR\raddressFamily\"\xf8\x01\n" +
 	"\bExecInfo\x12\x16\n" +
 	"\x06binary\x18\x01 \x01(\tR\x06binary\x12\x12\n" +
 	"\x04args\x18\x02 \x03(\tR\x04args\x12!\n" +
 	"\fcommand_line\x18\x03 \x01(\tR\vcommandLine\x12%\n" +
 	"\x0eargs_truncated\x18\x04 \x01(\bR\rargsTruncated\x127\n" +
 	"\bancestry\x18\x05 \x03(\v2\x1b.pahlevan.v1alpha1.AncestorR\bancestry\x12%\n" +
-	"\x0eancestry_chain\x18\x06 \x01(\tR\rancestryChain\"0\n" +
+	"\x0eancestry_chain\x18\x06 \x01(\tR\rancestryChain\x12\x16\n" +
+	"\x06exited\x18\a \x01(\bR\x06exited\"0\n" +
 	"\bAncestor\x12\x10\n" +
 	"\x03pid\x18\x01 \x01(\rR\x03pid\x12\x12\n" +
 	"\x04comm\x18\x02 \x01(\tR\x04comm\"<\n" +

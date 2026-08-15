@@ -391,6 +391,12 @@ func (c *Controller) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// An exit is not an exec. Learning it would put an empty filename in the
+	// allow-set, and counting it as behaviour would make every terminating
+	// process look like new activity.
+	if e.IsExit() {
+		return nil
+	}
 	st := c.track(e.CgroupID)
 	if e.Flags&DeniedFlag != 0 {
 		c.recordDenial(st, DenialKindExec)
