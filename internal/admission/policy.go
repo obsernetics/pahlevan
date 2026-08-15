@@ -114,7 +114,7 @@ func DesiredBinding() *admissionregistrationv1.ValidatingAdmissionPolicyBinding 
 // clusters return a NoKindMatch/NotFound on the GVK, which is reported as
 // ErrUnsupported rather than a hard failure.
 func Ensure(ctx context.Context, c client.Client) error {
-	if !supported(ctx, c) {
+	if !supported(c) {
 		return ErrUnsupported
 	}
 	if err := upsert(ctx, c, DesiredPolicy()); err != nil {
@@ -126,7 +126,9 @@ func Ensure(ctx context.Context, c client.Client) error {
 // ErrUnsupported is returned when the cluster lacks the ValidatingAdmissionPolicy API.
 var ErrUnsupported = errors.New("ValidatingAdmissionPolicy API not available (requires Kubernetes 1.30+)")
 
-func supported(ctx context.Context, c client.Client) bool {
+// supported takes no context: RESTMapper resolution is served from the
+// client's cached mapper and never issues a request.
+func supported(c client.Client) bool {
 	gvk := schema.GroupVersionKind{
 		Group:   admissionregistrationv1.SchemeGroupVersion.Group,
 		Version: admissionregistrationv1.SchemeGroupVersion.Version,

@@ -518,18 +518,10 @@ func (ee *EnforcementEngine) GeneratePolicy(containerID string) (*GeneratedPolic
 	policy.SyscallPolicy = ee.generateSyscallPolicy(profile, state.PahlevanPolicy)
 
 	// Generate network policy
-	networkPolicy, err := ee.generateNetworkPolicy(profile, state.PahlevanPolicy)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate network policy: %w", err)
-	}
-	policy.NetworkPolicy = networkPolicy
+	policy.NetworkPolicy = ee.generateNetworkPolicy(profile, state.PahlevanPolicy)
 
 	// Generate file policy
-	filePolicy, err := ee.generateFilePolicy(profile, state.PahlevanPolicy)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate file policy: %w", err)
-	}
-	policy.FilePolicy = filePolicy
+	policy.FilePolicy = ee.generateFilePolicy(profile, state.PahlevanPolicy)
 
 	// Calculate policy quality
 	policy.Quality = ee.calculatePolicyQuality(policy, profile)
@@ -830,7 +822,7 @@ func (ee *EnforcementEngine) generateSyscallPolicy(profile *learner.LearningProf
 	}
 }
 
-func (ee *EnforcementEngine) generateNetworkPolicy(profile *learner.LearningProfile, policy *policyv1alpha1.PahlevanPolicy) (*NetworkEnforcementPolicy, error) {
+func (ee *EnforcementEngine) generateNetworkPolicy(profile *learner.LearningProfile, policy *policyv1alpha1.PahlevanPolicy) *NetworkEnforcementPolicy {
 	log.Log.Info("Generating network policy", "containerID", profile.ContainerID)
 
 	var egressRules []*NetworkRule
@@ -908,13 +900,13 @@ func (ee *EnforcementEngine) generateNetworkPolicy(profile *learner.LearningProf
 		IngressRules:         ingressRules,
 		DefaultEgressAction:  PolicyActionDeny,
 		DefaultIngressAction: PolicyActionDeny,
-	}, nil
+	}
 }
 
 func (ee *EnforcementEngine) generateFilePolicy(
 	profile *learner.LearningProfile,
 	policy *policyv1alpha1.PahlevanPolicy,
-) (*FileEnforcementPolicy, error) {
+) *FileEnforcementPolicy {
 	allowedPaths := make(map[string]*FileRule)
 	deniedPaths := make(map[string]*FileRule)
 
@@ -968,7 +960,7 @@ func (ee *EnforcementEngine) generateFilePolicy(
 		PathPatterns:     make([]*PathPattern, 0),
 		AccessModeRules:  make(map[string]*AccessModeRule),
 		SizeRestrictions: make(map[string]*SizeRestriction),
-	}, nil
+	}
 }
 
 // ensureFileRule creates or augments an allow rule for a path with the given
@@ -1895,6 +1887,6 @@ func (ee *EnforcementEngine) parseSyscallName(syscallName string) uint64 {
 		"syscallName", syscallName)
 
 	h := fnv.New64()
-	h.Write([]byte(syscallName))
-	return h.Sum64() % 400 // Keep it in syscall range
+	_, _ = h.Write([]byte(syscallName)) // hash.Write never errors
+	return h.Sum64() % 400              // Keep it in syscall range
 }
