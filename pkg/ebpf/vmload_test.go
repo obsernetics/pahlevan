@@ -1822,3 +1822,94 @@ func TestVMProcFilterUIDDenialIsFlagged(t *testing.T) {
 		t.Error("no denial event arrived for the filtered exec")
 	}
 }
+
+// TestVMRevokingALearnedPathDeniesIt proves the other half of the override
+// mechanism.
+//
+// Seeding an allow-set entry is well covered; revoking one is not, and it is
+// the half an operator reaches for when the learning window captured behavior
+// it should not have. If a deny list cannot remove a learned entry, then "we
+// observed it" and "it is permitted" are the same thing, and there is no way
+// back from a baseline that learned something wrong.
+func TestVMRevokingALearnedPathDeniesIt(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadFileMonitor()
+	if err != nil {
+		t.Fatalf("LoadFileMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(file_open): %v", err)
+	}
+	defer l.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-revoke-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	target := fmt.Sprintf("/tmp/pahlevan-revoke-%d.txt", os.Getpid())
+	if err := os.WriteFile(target, []byte("content\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	defer os.Remove(target)
+
+	// Shell builtins only: a nested exec would be governed by a different hook
+	// and would confuse which one refused.
+	readIn := func() error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && read -r line < %s", cg, target)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// LEARN.
+	if err := readIn(); err != nil {
+		t.Fatalf("learning read failed: %v", err)
+	}
+	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce: %v", err)
+	}
+	if err := readIn(); err != nil {
+		t.Fatalf("a learned path must still be readable under enforcement: %v", err)
+	}
+	t.Log("learned path allowed under enforcement")
+
+	// REVOKE, exactly as AllowFilePathMode(..., allowed=false) does: delete the
+	// entry under the key the kernel computes.
+	key := FileAllowKeyMode(cgID, target, false)
+	if err := coll.Maps["file_allowed"].Delete(key); err != nil {
+		t.Fatalf("revoking the learned entry: %v", err)
+	}
+
+	if err := readIn(); err == nil {
+		t.Error("expected the revoked path to be DENIED under enforcement")
+	} else {
+		t.Logf("DENIED in-kernel after revocation as expected: %v", err)
+	}
+
+	// And re-seeding must bring it back, which is what makes a mistaken denial
+	// recoverable.
+	if err := coll.Maps["file_allowed"].Put(key, uint8(1)); err != nil {
+		t.Fatalf("re-seeding: %v", err)
+	}
+	if err := readIn(); err != nil {
+		t.Errorf("expected the re-seeded path allowed again, got: %v", err)
+	} else {
+		t.Log("allowed again after re-seeding")
+	}
+}
