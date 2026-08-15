@@ -24,6 +24,7 @@ import (
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/obsernetics/pahlevan/pkg/export"
+	"github.com/obsernetics/pahlevan/pkg/grpcapi"
 	"github.com/obsernetics/pahlevan/pkg/metrics"
 	"github.com/obsernetics/pahlevan/pkg/observability"
 
@@ -45,6 +46,11 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("agent-setup")
+
+	// version is stamped at build time by the Dockerfile's -ldflags
+	// (-X main.version). It is reported over the gRPC status RPC so a client
+	// can tell which agent it is talking to without reading the pod spec.
+	version = "dev"
 )
 
 func init() {
@@ -66,6 +72,7 @@ func main() {
 		exportDenialsOnly    bool
 		metricsDetail        string
 		seccompRoot          string
+		grpcAddr             string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -84,6 +91,9 @@ func main() {
 		"Write JSON-lines security events to this file for `pahlevan events` and log shippers (empty disables).")
 	flag.StringVar(&exportWebhook, "export-webhook", os.Getenv("PAHLEVAN_EXPORT_WEBHOOK"),
 		"POST batched JSON security events to this URL (empty disables).")
+	flag.StringVar(&grpcAddr, "grpc-bind-address", "",
+		"Address for the gRPC event stream (for example :9090). Empty disables it. "+
+			"Clients subscribe with `pahlevan events --grpc <addr>`.")
 	flag.StringVar(&seccompRoot, "seccomp-root", "/var/lib/kubelet/seccomp",
 		"The kubelet's seccomp root. Only used to render the localhostProfile value "+
 			"reported on ContainerProfile; the agent never reads this path.")
@@ -176,9 +186,34 @@ func main() {
 	adaptiveCtl.Node = nodeName
 	adaptiveCtl.Metrics = metricsManager
 
+	// The gRPC event stream is a live consumer on the same pipeline as the file
+	// and webhook sinks, so a subscriber sees exactly the events those sinks
+	// see, filtered and attributed the same way.
+	var grpcServer *grpcapi.Server
+	var grpcTee []export.Enqueuer
+	if grpcAddr != "" {
+		grpcServer = grpcapi.New(grpcapi.Options{
+			Status: func() grpcapi.Status {
+				st := grpcapi.Status{Node: nodeName, Version: version}
+				for _, p := range adaptiveCtl.Snapshot() {
+					st.ContainersTracked++
+					switch p.Phase {
+					case adaptive.PhaseLearning:
+						st.ContainersLearning++
+					case adaptive.PhaseEnforcing:
+						st.ContainersEnforcing++
+					}
+				}
+				return st
+			},
+		})
+		grpcTee = append(grpcTee, grpcServer)
+	}
+
 	// Event export: JSON-lines file and/or webhook, so events leave the process
 	// for `pahlevan events`, log shippers, and SIEMs.
 	exportPipeline, err := export.New(export.Config{
+		Tee:           grpcTee,
 		FilePath:      exportFile,
 		WebhookURL:    exportWebhook,
 		QueueCapacity: 8192,
@@ -226,6 +261,17 @@ func main() {
 		fatalf(err, "unable to start eBPF event readers")
 	}
 	setupLog.Info("eBPF data plane attached and running")
+
+	if grpcServer != nil {
+		go func() {
+			setupLog.Info("gRPC event stream listening", "address", grpcAddr)
+			if err := grpcServer.Serve(dataCtx, grpcAddr); err != nil {
+				// A failed event stream must not take the data plane down with
+				// it: enforcement keeps working, subscribers do not.
+				setupLog.Error(err, "gRPC event stream stopped", "address", grpcAddr)
+			}
+		}()
+	}
 
 	// Run the adaptive control loop once the cache is synced (mgr.Add starts it
 	// after leader-election/cache readiness).
