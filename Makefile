@@ -4,7 +4,7 @@
 # Variables
 BINARY_NAME=pahlevan-operator
 CONTAINER_NAME=pahlevan/operator
-VERSION?=v1.0.0
+VERSION?=v2.0.0
 BUILD_DIR=bin
 BPF_DIR=bpf
 PKG_DIR=pkg/ebpf
@@ -88,6 +88,14 @@ proto: ## Regenerate the gRPC API from api/v1alpha1/events.proto (needs protoc)
 		api/v1alpha1/events.proto
 	@echo "regenerated api/v1alpha1/*.pb.go"
 
+.PHONY: pages-check
+pages-check: ## Fail if the GitHub Pages site has drifted from its sources
+	go run ./hack/pagesync -check
+
+.PHONY: pages-sync
+pages-sync: ## Re-derive the values the GitHub Pages site borrows, and copy the GIF
+	go run ./hack/pagesync -write
+
 .PHONY: demo-gif
 demo-gif: ## Re-render docs/assets/demo.gif from the vhs tape (needs vhs + ffmpeg)
 	@command -v vhs >/dev/null || { echo "vhs not found: https://github.com/charmbracelet/vhs"; exit 1; }
@@ -99,7 +107,9 @@ demo-gif: ## Re-render docs/assets/demo.gif from the vhs tape (needs vhs + ffmpe
 		-vf "fps=12,scale=1000:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" \
 		docs/assets/demo.opt.gif
 	mv docs/assets/demo.opt.gif docs/assets/demo.gif
-	cp docs/assets/demo.gif pages/assets/demo.gif
+	@# Through pagesync rather than cp, so there is one code path keeping the
+	@# published copy identical to the source and one place that checks it.
+	go run ./hack/pagesync -write
 	@echo "rendered $$(du -h docs/assets/demo.gif | cut -f1) docs/assets/demo.gif (and the pages copy)"
 
 .PHONY: manifests
