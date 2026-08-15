@@ -180,12 +180,78 @@ func applySyscallPolicy(o *adaptive.Overrides, sp *policyv1alpha1.SyscallPolicy)
 		}
 		o.AllowedCapabilities = append(o.AllowedCapabilities, num)
 	}
-	if sp.ProcessFilter != nil {
-		warnings = append(warnings,
-			"syscallPolicy.processFilter is not enforced: the data plane keys on cgroup, "+
-				"not on process attributes")
+	warnings = append(warnings, applyProcessFilter(o, sp.ProcessFilter)...)
+	return warnings
+}
+
+// applyProcessFilter turns the CRD's process filter into the kernel-enforced
+// one.
+//
+// The mapping is not one field per dimension. Commands names the binaries that
+// may be executed, which is exactly what the exec allow-set already keys on, so
+// it becomes AllowedExecs rather than a fourth filter dimension - one mechanism
+// instead of two that would have to agree. Users, Groups and ParentProcesses
+// have no allow-set equivalent and become the filter proper.
+//
+// Users and Groups are numeric here. The kernel sees uids, not names: it has no
+// view of the container's /etc/passwd, and resolving a name on the node would
+// resolve it against the wrong passwd file. A non-numeric entry is reported
+// rather than guessed at.
+func applyProcessFilter(o *adaptive.Overrides, pf *policyv1alpha1.ProcessFilter) []string {
+	if pf == nil {
+		return nil
+	}
+	var warnings []string
+
+	// Commands are binaries, which the exec allow-set already governs.
+	for _, c := range cleanPaths(pf.Commands) {
+		if !strings.HasPrefix(c, "/") {
+			warnings = append(warnings, fmt.Sprintf(
+				"syscallPolicy.processFilter.commands[%q] is ignored: the kernel matches the "+
+					"resolved binary path, so this must be absolute", c))
+			continue
+		}
+		o.AllowedExecs = append(o.AllowedExecs, c)
+	}
+	if warn := warnGlobs("syscallPolicy.processFilter.commands", pf.Commands); warn != "" {
+		warnings = append(warnings, warn)
+	}
+
+	f := &ebpf.ProcFilter{}
+	f.ParentProcesses = cleanNames(pf.ParentProcesses)
+	for _, p := range f.ParentProcesses {
+		if len(p) > 15 {
+			warnings = append(warnings, fmt.Sprintf(
+				"syscallPolicy.processFilter.parentProcesses[%q] is matched on its first 15 "+
+					"characters: the kernel's comm field is TASK_COMM_LEN", p))
+		}
+	}
+
+	f.UIDs, warnings = parseIDs("users", pf.Users, warnings)
+	f.GIDs, warnings = parseIDs("groups", pf.Groups, warnings)
+
+	if !f.Empty() {
+		o.ProcFilter = f
 	}
 	return warnings
+}
+
+// parseIDs converts the numeric uid/gid strings the CRD accepts, reporting the
+// ones it cannot.
+func parseIDs(field string, values []string, warnings []string) ([]uint32, []string) {
+	var out []uint32
+	for _, v := range cleanNames(values) {
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf(
+				"syscallPolicy.processFilter.%s[%q] is ignored: the kernel matches numeric ids, "+
+					"and a name cannot be resolved against the container's passwd file from the node",
+				field, v))
+			continue
+		}
+		out = append(out, uint32(n))
+	}
+	return out, warnings
 }
 
 func applyNetworkPolicy(o *adaptive.Overrides, np *policyv1alpha1.NetworkPolicy) []string {

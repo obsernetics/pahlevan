@@ -1606,3 +1606,216 @@ func TestVMProcessExitIsReported(t *testing.T) {
 		t.Fatal("no process exit observed")
 	}
 }
+
+// drainRing empties whatever the setup execs left in the ring buffer, so the
+// assertion below reads only the event the test provoked.
+func drainRing(t *testing.T, rd *ringbuf.Reader) {
+	t.Helper()
+	for {
+		rd.SetDeadline(time.Now().Add(200 * time.Millisecond))
+		if _, err := rd.Read(); err != nil {
+			return
+		}
+	}
+}
+
+// TestVMProcFilterEnforcedInKernel proves the process filter is enforced by the
+// kernel, not merely written into a map.
+//
+// The distinction matters because a filter that is installed and never
+// consulted looks identical from userspace: the map entries are there, the mask
+// is set, and every exec still succeeds. Only running a real execve can tell
+// the two apart. VM-only: attaching an LSM program is exactly what must never
+// happen on the host.
+func TestVMProcFilterEnforcedInKernel(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			t.Fatalf("verifier: %+v", ve)
+		}
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-pf-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	// The parent of the exec is the shell that joins the cgroup, so its comm is
+	// "sh". Everything below turns on whether "sh" is in the allow-list.
+	runIn := func(bin string) error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec %s", cg, bin)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// LEARN, so the allow-set is not what denies anything below.
+	if err := runIn("/bin/true"); err != nil {
+		t.Fatalf("learn run failed: %v", err)
+	}
+	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce: %v", err)
+	}
+	if err := runIn("/bin/true"); err != nil {
+		t.Fatalf("learned binary must run before the filter is installed: %v", err)
+	}
+
+	// A mask with no matching entries denies: the parent is "sh", the allow-list
+	// holds only "supervisord".
+	if err := coll.Maps["exec_filter_allowed"].Put(
+		ParentFilterKey(cgID, "supervisord"), uint8(1)); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	if err := coll.Maps["exec_filter_on"].Put(cgID, FilterParent); err != nil {
+		t.Fatalf("set filter mask: %v", err)
+	}
+	if err := runIn("/bin/true"); err == nil {
+		t.Error("expected a learned binary launched by the wrong parent to be DENIED")
+	} else {
+		t.Logf("DENIED in-kernel as expected: parent sh not in the filter -> %v", err)
+	}
+
+	// Adding the real parent lets the same exec through, which is what proves
+	// the denial came from the filter and not from something incidental.
+	if err := coll.Maps["exec_filter_allowed"].Put(
+		ParentFilterKey(cgID, "sh"), uint8(1)); err != nil {
+		t.Fatalf("seed parent sh: %v", err)
+	}
+	if err := runIn("/bin/true"); err != nil {
+		t.Errorf("expected the exec allowed once its parent is in the filter, got: %v", err)
+	} else {
+		t.Log("allowed once the real parent was added to the filter")
+	}
+
+	// Clearing the mask must disable the dimension entirely, even though the
+	// entries are still present.
+	if err := coll.Maps["exec_filter_allowed"].Delete(ParentFilterKey(cgID, "sh")); err != nil {
+		t.Fatalf("delete parent sh: %v", err)
+	}
+	if err := runIn("/bin/true"); err == nil {
+		t.Error("sanity: removing the parent entry should deny again")
+	}
+	if err := coll.Maps["exec_filter_on"].Delete(cgID); err != nil {
+		t.Fatalf("clear filter mask: %v", err)
+	}
+	if err := runIn("/bin/true"); err != nil {
+		t.Errorf("clearing the mask must disable filtering, got: %v", err)
+	} else {
+		t.Log("clearing the mask disabled the dimension")
+	}
+}
+
+// A uid the filter does not list must be refused even for a learned binary, and
+// the event must say the filter is what refused it rather than the allow-set.
+func TestVMProcFilterUIDDenialIsFlagged(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+
+	rd, err := ringbuf.NewReader(coll.Maps["exec_events"])
+	if err != nil {
+		t.Fatalf("ringbuf reader: %v", err)
+	}
+	defer rd.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-pfuid-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	runIn := func(bin string) error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec %s", cg, bin)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+	if err := runIn("/bin/true"); err != nil {
+		t.Fatalf("learn run failed: %v", err)
+	}
+	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce: %v", err)
+	}
+
+	// The tests run as root (uid 0); allow only uid 4242.
+	if err := coll.Maps["exec_filter_allowed"].Put(UIDFilterKey(cgID, 4242), uint8(1)); err != nil {
+		t.Fatalf("seed uid: %v", err)
+	}
+	if err := coll.Maps["exec_filter_on"].Put(cgID, FilterUID); err != nil {
+		t.Fatalf("set filter mask: %v", err)
+	}
+
+	drainRing(t, rd)
+	if err := runIn("/bin/true"); err == nil {
+		t.Fatal("expected the exec to be DENIED: uid 0 is not in the filter")
+	}
+
+	// The denial event must carry both bits: denied, and denied by the filter.
+	// Without the second, an operator cannot tell a policy decision from a gap
+	// in the learning window.
+	deadline := time.Now().Add(5 * time.Second)
+	var found bool
+	for time.Now().Before(deadline) && !found {
+		rd.SetDeadline(time.Now().Add(time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseProcessEvent(rec.RawSample)
+		if ev == nil || ev.CgroupID != cgID || !ev.IsDenied() {
+			continue
+		}
+		found = true
+		if !ev.DeniedByFilter() {
+			t.Errorf("denial must be flagged as a filter denial, flags=%#x", ev.Flags)
+		}
+		if got := ev.DenialReason(); got != "process filter" {
+			t.Errorf("DenialReason() = %q, want %q", got, "process filter")
+		}
+	}
+	if !found {
+		t.Error("no denial event arrived for the filtered exec")
+	}
+}

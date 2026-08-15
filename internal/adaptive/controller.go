@@ -57,6 +57,11 @@ type Enforcer interface {
 	AllowExecPath(cgroupID uint64, path string, allowed bool) error
 	AllowCapability(cgroupID uint64, capability uint32, allowed bool) error
 	AllowNetworkDestination(cgroupID uint64, ip net.IP, port uint16, allowed bool) error
+
+	// SetProcFilter installs the policy's process filter for a cgroup, which
+	// constrains who may exec rather than what may be exec'd. Passing an empty
+	// filter clears it.
+	SetProcFilter(cgroupID uint64, f *ebpf.ProcFilter) error
 }
 
 // PolicyResolver decides, for a given cgroup, whether a policy applies and how
@@ -713,6 +718,12 @@ func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
 	for _, d := range o.DeniedDestinations {
 		note(c.enforcer.AllowNetworkDestination(id, d.IP, d.Port, false), "destination", destString(d))
 	}
+	// The filter is installed last. Its allow-lists reach the kernel before its
+	// enabled mask does (see Manager.SetProcFilter), so there is never a window
+	// in which a dimension is enforced against an empty list - which would deny
+	// every exec in the container.
+	note(c.enforcer.SetProcFilter(id, o.ProcFilter), "procFilter",
+		ebpf.FilterMaskString(o.ProcFilter.Mask()))
 
 	c.log.Info("applied policy overrides to the kernel allow-sets",
 		"cgroup", id, "pod", st.ref.PodUID, "policy", st.policyName,
@@ -721,6 +732,7 @@ func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
 		"allowedExecs", len(o.AllowedExecs), "deniedExecs", len(o.DeniedExecs),
 		"allowedCapabilities", len(o.AllowedCapabilities),
 		"allowedDestinations", len(o.AllowedDestinations),
+		"procFilter", ebpf.FilterMaskString(o.ProcFilter.Mask()),
 		"failed", failed)
 }
 
