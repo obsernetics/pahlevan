@@ -118,7 +118,8 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | DNS visibility | **No** DNS parsing or name-based policy. A destination is an address, and a policy naming a hostname is reported as unrepresentable rather than resolved | Available through rules and fields | Available, including a DNS-oriented policy library |
 | Destination naming | **Yes, from the cluster rather than from DNS.** Addresses are resolved against Services, pods and nodes the agent already caches, so a denial reads `prod/postgres:5432` instead of `10.104.22.9:5432`, and `destinationKind` separates an in-cluster Service from an address the cluster has never heard of - which is the distinction between a misconfiguration and exfiltration. It costs no DNS query, which matters when a burst of denials would otherwise become a burst of DNS traffic. It does not name external addresses at all, which is exactly where DNS parsing would help and where Falco and Tetragon are ahead | Names come from DNS parsing, so external destinations are named too | Same, plus a DNS policy library |
 | L7 visibility | **No** | Limited, through plugins | Limited natively. Cilium and Hubble cover L7 alongside it |
-| Blocking | Yes, `EPERM` on `connect()` to an unlearned IPv4 destination | No | Yes, with a policy |
+| Blocking | Yes, `EPERM` on `connect()` to an unlearned destination, IPv4 and IPv6 | No | Yes, with a policy |
+| Blanket egress rules | `allowLoopback` covers all of `127.0.0.0/8` and `::1`; `allowDNS` covers port 53 to any address, because cluster DNS moves and pinning its address means the policy breaks when CoreDNS is reinstalled. Both are checked ahead of the allow-set and deliberately do not add to it, so the permission can be withdrawn | Expressed in rule conditions | Expressed in selectors |
 | Relationship to CNI policy | Complementary, not a replacement. Pahlevan does not implement NetworkPolicy | Same | Cilium itself provides full L3 to L7 network policy |
 
 ## Process and exec monitoring
@@ -183,11 +184,27 @@ the kernel allow-sets before enforcement begins, and the syscall lists reach
 the generated seccomp profile.
 
 What a rule cannot express, it says so rather than being dropped. A CIDR wider
-than a single host, a port range past 1024 entries, a label-selected peer, a
-DNS name, an ingress rule and a glob each produce a warning naming the field and
-the reason. `processFilter` used to be on that list and is now enforced. A path must also be fully resolved: the
-kernel hashes what `bpf_d_path` returns, so an exception for a symlink grants
-nothing.
+than a single host, a port range past 1024 entries, a label-selected peer, a DNS
+name, an ingress rule and a glob each produce a warning naming the field and the
+reason. A path must also be fully resolved: the kernel hashes what `bpf_d_path`
+returns, so an exception for a symlink grants nothing.
+
+Three fields have come off that list and are now enforced. `processFilter`
+constrains the parent, uid and gid at exec. `allowLoopback` and `allowDNS` are a
+per-cgroup flag checked in `socket_connect` ahead of the allow-set, because they
+name a *class* of destination rather than an address and the allow-set is a hash
+of the exact destination - seeding a guessed set of loopback addresses and ports
+would have been both incomplete and impossible to withdraw.
+
+You do not have to apply a policy to find out which parts of it survive:
+
+    pahlevan policy explain -f policy.yaml [--strict]
+
+translates it offline and prints both the result and every warning. `--strict`
+exits non-zero, so a policy that quietly does less than it says can fail a CI
+gate rather than being merged. It also rejects a field the CRD does not have,
+which the API server would otherwise prune silently - the policy applies cleanly
+and does a fraction of what it claims.
 
 ## Seccomp
 
