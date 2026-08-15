@@ -85,6 +85,10 @@ func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Tim
 		return d, warnings
 	}
 
+	if warn := warnUnknownMode(spec.EnforcementConfig.Mode); warn != "" {
+		warnings = append(warnings, warn)
+	}
+
 	o := &d.Overrides
 	warnings = append(warnings, applyFilePolicy(o, spec.FilePolicy)...)
 	warnings = append(warnings, applySyscallPolicy(o, spec.SyscallPolicy)...)
@@ -108,6 +112,34 @@ func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Tim
 // contradiction - default-deny of unlearned behavior is the only enforcement
 // this kernel data plane performs - so it downgrades too, rather than
 // enforcing something the author asked not to.
+// warnUnknownMode reports a mode the controller does not recognize.
+//
+// resolveMode maps anything unknown onto Monitoring, which is the safe default
+// but an invisible one: a typo produces a policy that looks applied and
+// enforces nothing. The CRD now rejects an unknown mode at admission, so this
+// covers objects stored before that validation existed, and clusters where the
+// CRD has not been upgraded.
+//
+// The "false" and "true" cases get their own message because they are not
+// typos. `mode: Off` unquoted is a YAML 1.1 boolean, so it arrives as false -
+// and a policy the author meant to switch off keeps running.
+func warnUnknownMode(m policyv1alpha1.EnforcementMode) string {
+	switch m {
+	case "", policyv1alpha1.EnforcementModeOff,
+		policyv1alpha1.EnforcementModeMonitoring,
+		policyv1alpha1.EnforcementModeBlocking:
+		return ""
+	case "false", "true":
+		return fmt.Sprintf(
+			"enforcementConfig.mode is %q, which is what YAML turns an unquoted Off or On "+
+				"into; write mode: \"Off\" in quotes. Treated as Monitoring", string(m))
+	default:
+		return fmt.Sprintf(
+			"enforcementConfig.mode %q is not one of Off, Monitoring or Blocking; "+
+				"treated as Monitoring, so this policy enforces nothing", string(m))
+	}
+}
+
 func resolveMode(c policyv1alpha1.EnforcementConfig) adaptive.Mode {
 	switch c.Mode {
 	case policyv1alpha1.EnforcementModeOff:
@@ -264,10 +296,16 @@ func applyNetworkPolicy(o *adaptive.Overrides, np *policyv1alpha1.NetworkPolicy)
 			"networkPolicy.ingressRules are ignored: the socket_connect LSM hook governs "+
 				"egress only")
 	}
-	if np.AllowDNS || np.AllowLoopback {
-		warnings = append(warnings,
-			"networkPolicy.allowDNS and allowLoopback need a concrete address and port to "+
-				"seed; express them as egressRules with an ipBlock and port")
+	// Blanket permissions. These name a class of destination rather than an
+	// address, so they are a per-cgroup flag checked in socket_connect ahead of
+	// the allow-set rather than allow-set entries. Seeding a guessed set of
+	// loopback addresses and ports instead would be both incomplete and
+	// impossible to withdraw.
+	if np.AllowLoopback {
+		o.NetworkRelax |= ebpf.RelaxLoopback
+	}
+	if np.AllowDNS {
+		o.NetworkRelax |= ebpf.RelaxDNS
 	}
 	for i, rule := range np.EgressRules {
 		dests, warns := translateEgressRule(i, rule)

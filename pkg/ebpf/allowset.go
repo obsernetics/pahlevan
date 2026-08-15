@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/cilium/ebpf"
 )
@@ -230,4 +231,57 @@ func (m *Manager) AllowNetworkDestinationProto(cgroupID uint64, ip net.IP, port 
 		return err
 	}
 	return setAllowEntry(mp, key, allowed)
+}
+
+// Blanket egress permissions.
+//
+// networkPolicy.allowDNS and allowLoopback are the two cases where an operator
+// means "this class of destination" rather than "this address". The allow-set
+// is a hash of the exact destination, so neither could be expressed in it, and
+// both fields were accepted by the API and did nothing.
+//
+// They are a per-cgroup bitmask instead, checked in socket_connect before the
+// allow-set. A class of destination is a different kind of statement from a
+// learned fact, and the kernel deliberately does not add one to the allow-set
+// when the other permits a connection: an entry learned because a blanket rule
+// allowed it would outlive the policy that created it.
+const (
+	// RelaxLoopback permits any connection to 127.0.0.0/8 or ::1. Sidecars and
+	// a workload's own DNS stub live there.
+	RelaxLoopback uint8 = 0x01
+	// RelaxDNS permits any connection to port 53, over any protocol and to any
+	// address. Cluster DNS moves, and pinning its address in a policy means the
+	// policy breaks when CoreDNS is reinstalled.
+	RelaxDNS uint8 = 0x02
+)
+
+// SetNetworkRelax installs the blanket egress permissions for a cgroup. A mask
+// of zero clears them.
+func (m *Manager) SetNetworkRelax(cgroupID uint64, mask uint8) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	mp, err := m.allowMap(m.networkCollection, "network", "network_relax")
+	if err != nil {
+		return err
+	}
+	if mask == 0 {
+		_ = mp.Delete(cgroupID)
+		return nil
+	}
+	return mp.Put(cgroupID, mask)
+}
+
+// NetworkRelaxString renders a mask for logs and the CLI.
+func NetworkRelaxString(mask uint8) string {
+	if mask == 0 {
+		return "none"
+	}
+	var parts []string
+	if mask&RelaxLoopback != 0 {
+		parts = append(parts, "loopback")
+	}
+	if mask&RelaxDNS != 0 {
+		parts = append(parts, "dns")
+	}
+	return strings.Join(parts, ",")
 }

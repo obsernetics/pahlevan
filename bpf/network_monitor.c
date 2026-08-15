@@ -65,6 +65,45 @@ struct {
 	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } network_mode SEC(".maps");
 
+/* Blanket egress permissions that cannot be expressed as allow-set entries.
+ *
+ * networkPolicy.allowDNS and allowLoopback are the two cases where an operator
+ * means "this class of destination", not "this address". The allow-set is a
+ * hash of the exact destination, so neither could be represented, and both
+ * fields were accepted by the API and did nothing but produce a warning.
+ *
+ * They are a per-cgroup bitmask here instead, checked before the allow-set. A
+ * class of destination is a different kind of statement from a learned fact,
+ * and conflating the two - by seeding 127.0.0.1 on a guessed set of ports, say
+ * - would be worse than either. */
+#define RELAX_LOOPBACK 0x01
+#define RELAX_DNS      0x02
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, __u8); /* RELAX_* bitmask */
+	__uint(max_entries, 1 << 13);
+} network_relax SEC(".maps");
+
+/* is_loopback reports whether the destination is the local host.
+ *
+ * IPv4 loopback is the whole 127.0.0.0/8 block, not just 127.0.0.1: systemd
+ * resolved listens on 127.0.0.53, and a check for the single address would let
+ * a workload's own DNS stub be denied while claiming loopback was allowed.
+ * s_addr is in network byte order, so the first octet is the low byte. */
+static __always_inline int is_loopback(__u16 family, __u32 daddr, const __u8 *daddr6)
+{
+	if (family == AF_INET)
+		return (daddr & 0xFF) == 127;
+	/* ::1 - fifteen zero bytes then 1. */
+	for (int i = 0; i < 15; i++) {
+		if (daddr6[i] != 0)
+			return 0;
+	}
+	return daddr6[15] == 1;
+}
+
 
 /* Parent identity, for tracing a denial back to whoever caused it.
  *
@@ -145,6 +184,18 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 
 	__u8 *modep = bpf_map_lookup_elem(&network_mode, &cgroup_id);
 	__u8 mode = modep ? *modep : MODE_LEARN;
+
+	/* Blanket permissions first, and deliberately not recorded in the allow-set.
+	 * Learning a destination because a blanket rule permitted it would make the
+	 * rule impossible to withdraw later: the entry would outlive the policy that
+	 * created it. */
+	__u8 *relaxp = bpf_map_lookup_elem(&network_relax, &cgroup_id);
+	__u8 relax = relaxp ? *relaxp : 0;
+	if ((relax & RELAX_LOOPBACK) && is_loopback(family, daddr, daddr6))
+		return 0;
+	if ((relax & RELAX_DNS) && dport == 53)
+		return 0;
+
 	__u8 *known = bpf_map_lookup_elem(&network_allowed, &key);
 
 	if (mode == MODE_ENFORCE) {

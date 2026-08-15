@@ -1913,3 +1913,119 @@ func TestVMRevokingALearnedPathDeniesIt(t *testing.T) {
 		t.Log("allowed again after re-seeding")
 	}
 }
+
+// TestVMBlanketEgressPermissions proves allowLoopback and allowDNS are real.
+//
+// Both fields were in the CRD from the start and did nothing: the allow-set is
+// a hash of the exact destination, so a policy meaning "any loopback address"
+// or "any DNS query" could not be expressed in it, and the translator reported
+// them as unrepresentable. They are a per-cgroup flag checked ahead of the
+// allow-set now, and this is what distinguishes that from a flag that is
+// written and never read.
+func TestVMBlanketEgressPermissions(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadNetworkMonitor()
+	if err != nil {
+		t.Fatalf("LoadNetworkMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			t.Fatalf("verifier: %+v", ve)
+		}
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["socket_connect"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(socket_connect): %v", err)
+	}
+	defer l.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-relax-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	// python3 rather than a shell builtin: dash cannot open a socket, and the
+	// point is to make a real connect(2) inside the cgroup.
+	dial := func(addr string, port int) error {
+		code := fmt.Sprintf(
+			"import socket,sys\n"+
+				"s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"+
+				"try:\n s.connect((%q,%d))\n"+
+				"except PermissionError:\n sys.exit(13)\n"+
+				"except OSError:\n sys.exit(0)\n", addr, port)
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec python3 -c %s",
+			cg, shellQuote(code))
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// Enforce with an empty allow-set: everything is refused.
+	if err := coll.Maps["network_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce: %v", err)
+	}
+	if err := dial("127.0.0.53", 53); err == nil {
+		t.Fatal("sanity: with an empty allow-set the connect should be denied")
+	}
+	if err := dial("203.0.113.9", 53); err == nil {
+		t.Fatal("sanity: an external DNS destination should be denied too")
+	}
+
+	// allowLoopback: any 127.0.0.0/8 address, not just 127.0.0.1. systemd
+	// resolved listens on 127.0.0.53, and a check for the single address would
+	// deny a workload's own DNS stub while claiming loopback was allowed.
+	if err := coll.Maps["network_relax"].Put(cgID, RelaxLoopback); err != nil {
+		t.Fatalf("set relax loopback: %v", err)
+	}
+	if err := dial("127.0.0.53", 9999); err != nil {
+		t.Errorf("expected any loopback address allowed, got: %v", err)
+	} else {
+		t.Log("127.0.0.53 allowed by allowLoopback")
+	}
+	if err := dial("203.0.113.9", 9999); err == nil {
+		t.Error("allowLoopback must not permit a non-loopback destination")
+	}
+
+	// allowDNS: port 53 anywhere, because cluster DNS moves and pinning its
+	// address in a policy means the policy breaks when CoreDNS is reinstalled.
+	if err := coll.Maps["network_relax"].Put(cgID, RelaxDNS); err != nil {
+		t.Fatalf("set relax dns: %v", err)
+	}
+	if err := dial("203.0.113.9", 53); err != nil {
+		t.Errorf("expected port 53 allowed by allowDNS, got: %v", err)
+	} else {
+		t.Log("external port 53 allowed by allowDNS")
+	}
+	if err := dial("203.0.113.9", 4444); err == nil {
+		t.Error("allowDNS must not permit a non-DNS port")
+	}
+
+	// Clearing the mask must restore full enforcement, or a blanket permission
+	// could never be withdrawn.
+	if err := coll.Maps["network_relax"].Delete(cgID); err != nil {
+		t.Fatalf("clear relax: %v", err)
+	}
+	if err := dial("127.0.0.53", 53); err == nil {
+		t.Error("clearing the mask must restore enforcement")
+	} else {
+		t.Log("enforcement restored after clearing the mask")
+	}
+}
+
+// shellQuote wraps code for /bin/sh -c.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
