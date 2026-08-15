@@ -35,6 +35,24 @@ spec:
           symptom. Check that the agent image and its embedded eBPF objects
           match.
 
+    - alert: PahlevanHandlerErrors
+      # An event decoded correctly and then failed to reach whatever consumes
+      # it: the export sink, the learner, the adaptive controller. Nothing else
+      # signals this - the event and denial counters keep climbing normally, so
+      # a broken export pipeline looks exactly like a healthy one.
+      expr: sum by (node, kind) (rate(pahlevan_ebpf_handler_errors_total[5m])) > 0
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Pahlevan event handlers are failing for {{ $labels.kind }} on {{ $labels.node }}
+        description: >-
+          Handlers returned errors while processing {{ $labels.kind }} events.
+          Enforcement is unaffected - it happens in the kernel - but the events
+          are not reaching their downstream sink, so an export file, webhook or
+          gRPC subscriber is missing data. Check the agent log for the sink that
+          is failing.
+
     - alert: PahlevanDenialSpike
       # A sharp denial rate right after a transition is the signature of a bad
       # baseline. Self-healing rolls individual containers back; this says the
