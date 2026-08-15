@@ -266,7 +266,7 @@ This is the largest gap, so it gets the most detail.
 
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
-| gRPC streaming API | Yes, `pahlevan.v1alpha1.EventService`. Subscribe streams events with server-side filtering by type, denials-only, namespace and pod; GetStatus reports whether the agent is enforcing anything. Health and reflection are registered, so grpcurl and generic collectors discover it without the .proto. Plaintext and unauthenticated, so bind it to localhost or a trusted network | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
+| gRPC streaming API | Yes, `pahlevan.v1alpha1.EventService`. Subscribe streams events with server-side filtering by type, denials-only, namespace and pod; GetStatus reports whether the agent is enforcing anything. Health and reflection are registered, so grpcurl and generic collectors discover it without the .proto. TLS, mTLS and a bearer token are supported; the default is plaintext, and the agent says so in its startup log | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
 | JSON event output | Yes. `pkg/export` provides a versioned envelope covering all five event types with Kubernetes attribution, wired into the agent behind `--export-file`. Size-based rotation, and a bounded queue that drops rather than blocking the ring-buffer readers, with the drops counted | Yes, mature | Yes, including JSON export to file with rotation |
 | Webhook or HTTP output | Yes, `--export-webhook`. Batched POSTs, retries on 5xx/408/429 with capped backoff, no retry on other 4xx | Yes | Via the export pipeline |
 | Syslog, file, program outputs | File and stdout sinks are wired. No syslog or program output yet | Yes, all of them | File yes |
@@ -420,10 +420,13 @@ Listed plainly, worst first. Every item here is real and current.
     `pahlevan profile patch`. Nothing applies them: a pod's `seccompProfile`
     cannot be changed after admission and the operator deliberately runs without
     a mutating webhook.
-11. **The gRPC API is unauthenticated.** It serves plaintext on whatever
-    address `--grpc-bind-address` names, with no TLS and no authorization, so
-    it must be bound to localhost or a trusted network. Tetragon's equivalent
-    has the same default, but that is not an argument for leaving it.
+11. **The gRPC API is unauthenticated by default.** TLS, mTLS and a bearer
+    token are all supported now (`--grpc-tls-cert`, `--grpc-client-ca`,
+    `--grpc-token`), and the agent logs its security posture at startup so an
+    operator can read it rather than infer it. But the default is still
+    plaintext: an agent that refused to start because nobody had issued a
+    certificate is an agent nobody runs. The stream carries every denial on the
+    node, which is a reconnaissance report, so configure one of them.
 12. **No syscall arguments** on events. Command-line arguments, the container
     image, pod labels, the owning workload and the node are all there now, but
     a syscall event still reports only the number and not what was passed to
