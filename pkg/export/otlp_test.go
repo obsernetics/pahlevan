@@ -377,3 +377,58 @@ func BenchmarkOTLPExportBatch(b *testing.B) {
 	}
 	_ = strings.TrimSpace("")
 }
+
+// An address the operator has to go and look up is a line they will not act on
+// at 3am. The name goes in the body, and the kind becomes the attribute an
+// alert can filter on.
+func TestSummaryLineNamesTheDestination(t *testing.T) {
+	named := &Event{
+		Action: ActionDeny, Process: ProcessInfo{Comm: "api"},
+		Network: &NetworkInfo{
+			DestinationIP: "10.104.22.9", DestinationPort: 5432, Protocol: "TCP",
+			DestinationName: "prod/postgres", DestinationKind: "service",
+		},
+	}
+	assert.Equal(t,
+		"DENIED tcp connect to prod/postgres (10.104.22.9:5432) by api",
+		SummaryLine(named))
+
+	// The one that matters: an address the cluster does not know is the shape
+	// exfiltration takes, and it must read differently from a Service denial.
+	external := &Event{
+		Action: ActionDeny, Process: ProcessInfo{Comm: "api"},
+		Network: &NetworkInfo{
+			DestinationIP: "203.0.113.7", DestinationPort: 4444, Protocol: "TCP",
+			DestinationName: "external", DestinationKind: "external",
+		},
+	}
+	assert.Equal(t,
+		"DENIED tcp connect to 203.0.113.7:4444 [external] by api",
+		SummaryLine(external))
+
+	// Before the map is populated there is no name, and the line falls back to
+	// the address rather than claiming anything.
+	bare := &Event{
+		Action: ActionDeny, Process: ProcessInfo{Comm: "api"},
+		Network: &NetworkInfo{DestinationIP: "10.0.0.1", DestinationPort: 80, Protocol: "TCP"},
+	}
+	assert.Equal(t, "DENIED tcp connect to 10.0.0.1:80 by api", SummaryLine(bare))
+}
+
+func TestOTLPNetworkRecordCarriesTheDestination(t *testing.T) {
+	sink, proc := newTestSink(t, false)
+	ev := &Event{
+		Type: EventTypeNetwork, Action: ActionDeny,
+		Process: ProcessInfo{PID: 1, Comm: "api"},
+		Network: &NetworkInfo{
+			DestinationIP: "10.104.22.9", DestinationPort: 5432, Protocol: "TCP",
+			DestinationName: "prod/postgres", DestinationKind: "service",
+			DestinationPortName: "postgres",
+		},
+	}
+	require.NoError(t, sink.Export(context.Background(), []*Event{ev}))
+	a := attrsOf(t, proc.records[0])
+	assert.Equal(t, "prod/postgres", a["pahlevan.destination.name"])
+	assert.Equal(t, "service", a["pahlevan.destination.kind"])
+	assert.Equal(t, "postgres", a["pahlevan.destination.port_name"])
+}

@@ -13,7 +13,10 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +24,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	"github.com/obsernetics/pahlevan/internal/controller"
+	"github.com/obsernetics/pahlevan/internal/netmap"
 	"github.com/obsernetics/pahlevan/internal/profilesync"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
@@ -216,6 +220,11 @@ func main() {
 	// eBPF event stream, attributes events to pods, and flips each matched
 	// container to in-kernel enforcement when its learning window closes.
 	attrResolver := attribution.NewResolver(attribution.DefaultCgroupRoot)
+	// Turns the address the kernel reported into what the cluster says it is.
+	// Built from Services, pods and nodes the manager already caches, so a
+	// lookup on the denial path is a map read rather than a DNS query - a burst
+	// of denials must not become a burst of DNS traffic.
+	netResolver := netmap.New()
 	polResolver := newPolicyResolver(mgr.GetClient(), nodeName)
 	adaptiveCtl := adaptive.NewController(ctrl.Log.WithName("adaptive"), ebpfManager, attrResolver, polResolver)
 	adaptiveCtl.SeccompDir = seccompDir
@@ -251,10 +260,14 @@ func main() {
 	// Event export: JSON-lines file, webhook and/or OTLP logs, so events leave
 	// the process for `pahlevan events`, log shippers, SIEMs and Loki.
 	exportPipeline, err := export.New(export.Config{
-		Tee:           grpcTee,
-		FilePath:      exportFile,
-		WebhookURL:    exportWebhook,
-		OTLPEndpoint:  otlpEndpoint,
+		Tee:          grpcTee,
+		FilePath:     exportFile,
+		WebhookURL:   exportWebhook,
+		OTLPEndpoint: otlpEndpoint,
+		Destination: func(ip net.IP, port uint16) (string, string, string) {
+			d, _ := netResolver.Lookup(ip, port)
+			return d.String(), string(d.Kind), d.PortName
+		},
 		OTLPInsecure:  otlpInsecure,
 		OTLPResource:  otelResource,
 		QueueCapacity: 8192,
@@ -327,6 +340,9 @@ func main() {
 			}
 			if err := attrResolver.Refresh(); err != nil {
 				setupLog.V(1).Info("cgroup refresh failed", "error", err.Error())
+			}
+			if err := refreshNetmap(ctx, mgr.GetClient(), netResolver); err != nil {
+				setupLog.V(1).Info("destination map refresh failed", "error", err.Error())
 			}
 		}
 		refresh()
@@ -429,6 +445,38 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		fatalf(err, "problem running agent")
 	}
+}
+
+// refreshNetmap rebuilds the address map from the manager's cache.
+//
+// Listing through the cached client rather than the API server is what makes
+// this cheap enough to run on the same ten-second tick as everything else: the
+// informers are already watching pods and services for the policy resolver, so
+// this is a walk over memory rather than three cluster-wide LISTs.
+func refreshNetmap(ctx context.Context, c client.Client, r *netmap.Resolver) error {
+	var (
+		svcs  corev1.ServiceList
+		pods  corev1.PodList
+		nodes corev1.NodeList
+	)
+	// Errors are collected rather than returned on the first failure: a
+	// resolver built from two of the three sources is much better than one
+	// built from none, and the missing kind simply resolves as external.
+	var errs []string
+	if err := c.List(ctx, &svcs); err != nil {
+		errs = append(errs, "services: "+err.Error())
+	}
+	if err := c.List(ctx, &pods); err != nil {
+		errs = append(errs, "pods: "+err.Error())
+	}
+	if err := c.List(ctx, &nodes); err != nil {
+		errs = append(errs, "nodes: "+err.Error())
+	}
+	r.Refresh(netmap.Snapshot{Services: svcs.Items, Pods: pods.Items, Nodes: nodes.Items})
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // agentObserver is the default sink for the eBPF event pipeline. It counts events
