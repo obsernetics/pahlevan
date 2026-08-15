@@ -514,13 +514,33 @@ func refreshNetmap(ctx context.Context, c client.Client, r *netmap.Resolver) err
 	return nil
 }
 
-// agentObserver is the default sink for the eBPF event pipeline. It counts events
-// and logs a periodic sample; the learner is fed from here in a later step.
+// agentObserver is the default sink for the eBPF event pipeline: it counts what
+// the data plane sees and puts every in-kernel denial in the agent's log.
+//
+// Two of its five methods used to be empty - exec and capability - so the two
+// most security-relevant event kinds were counted nowhere and logged nowhere.
+// An operator tailing the agent saw "syscall events observed: 1000" and nothing
+// at all about a blocked reverse shell.
+//
+// Denials log at INFO and observations at V(1), deliberately. A denial is rare
+// and is the thing the tool exists to produce; an observation at full volume is
+// a trace of normal behavior and would drown it.
 type agentObserver struct {
 	log      logr.Logger
 	syscalls atomic.Uint64
 	networks atomic.Uint64
 	files    atomic.Uint64
+	execs    atomic.Uint64
+	caps     atomic.Uint64
+	denials  atomic.Uint64
+}
+
+// denied logs one in-kernel denial. The fields are the ones an operator needs
+// before they can act: what was refused, by whom, and who started them.
+func (o *agentObserver) denied(kind string, kv ...any) {
+	n := o.denials.Add(1)
+	o.log.Info("DENIED in-kernel",
+		append([]any{"signal", kind, "totalDenials", n}, kv...)...)
 }
 
 func (o *agentObserver) HandleSyscallEvent(e *ebpf.SyscallEvent) error {
@@ -536,18 +556,72 @@ func (o *agentObserver) HandleSyscallEvent(e *ebpf.SyscallEvent) error {
 
 func (o *agentObserver) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 	o.networks.Add(1)
+	if e.Direction&ebpf.DeniedDirection != 0 {
+		o.denied("network",
+			"destination", fmt.Sprintf("%s:%d", ebpf.IPv4String(e.DstIP), e.DstPort),
+			"protocol", e.Protocol, "comm", e.Comm, "parent", e.ParentComm,
+			"pid", e.PID, "cgroup", e.CgroupID)
+		return nil
+	}
+	o.log.V(1).Info("connect", "dst", ebpf.IPv4String(e.DstIP), "port", e.DstPort,
+		"comm", e.Comm, "cgroup", e.CgroupID)
 	return nil
 }
 
 func (o *agentObserver) HandleFileEvent(e *ebpf.FileEvent) error {
 	o.files.Add(1)
+	mode := "read"
+	if e.IsWrite() {
+		mode = "write"
+	}
+	if e.IsDenied() {
+		// The access mode is not decoration here: a denied read and a denied
+		// write of the same path are very different findings.
+		o.denied("file", "path", e.Path, "mode", mode,
+			"comm", e.Comm, "parent", e.ParentComm, "pid", e.PID, "cgroup", e.CgroupID)
+		return nil
+	}
+	o.log.V(1).Info("file", "path", e.Path, "mode", mode, "comm", e.Comm, "cgroup", e.CgroupID)
 	return nil
 }
 
-func (o *agentObserver) HandleProcessEvent(event *ebpf.ProcessEvent) error {
+func (o *agentObserver) HandleProcessEvent(e *ebpf.ProcessEvent) error {
+	if e.IsExit() {
+		// An exit is not an exec and must not be counted as one; it is logged
+		// only at debug, because a process ending is not news.
+		o.log.V(1).Info("exit", "comm", e.Comm, "pid", e.PID, "cgroup", e.CgroupID)
+		return nil
+	}
+	o.execs.Add(1)
+	if e.IsDenied() {
+		// The lineage is what turns "curl was denied" into "nginx ran a shell
+		// that ran curl", and DenialReason separates "never learned this" from
+		// "the process filter said no" - different problems, different fixes.
+		o.denied("exec", "binary", e.Filename, "reason", e.DenialReason(),
+			"lineage", e.AncestryChain(), "commandLine", e.CommandLine(),
+			"killed", e.WasKilled(), "pid", e.PID, "cgroup", e.CgroupID)
+		return nil
+	}
+	o.log.V(1).Info("exec", "binary", e.Filename, "lineage", e.AncestryChain(),
+		"cgroup", e.CgroupID)
 	return nil
 }
 
-func (o *agentObserver) HandleCapabilityEvent(event *ebpf.CapabilityEvent) error {
+func (o *agentObserver) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
+	o.caps.Add(1)
+	name := ebpf.CapabilityName(e.Capability)
+	if e.Flags&ebpf.DeniedFlag != 0 {
+		o.denied("capability", "capability", name,
+			"comm", e.Comm, "parent", e.ParentComm, "pid", e.PID, "cgroup", e.CgroupID)
+		return nil
+	}
+	o.log.V(1).Info("capability", "capability", name, "comm", e.Comm, "cgroup", e.CgroupID)
 	return nil
+}
+
+// Counts returns what the observer has seen, for the periodic summary and for
+// tests.
+func (o *agentObserver) Counts() (syscalls, networks, files, execs, caps, denials uint64) {
+	return o.syscalls.Load(), o.networks.Load(), o.files.Load(),
+		o.execs.Load(), o.caps.Load(), o.denials.Load()
 }

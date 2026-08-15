@@ -32,12 +32,10 @@ spec:
     # behavior within the first few minutes. A longer window here buys almost
     # nothing and delays enforcement.
     duration: "5m"
-    windowSize: "30s"
     minSamples: 150
     autoTransition: true
     # Restarts and rolling updates are part of normal life for a web deployment;
     # lifecycleAware keeps a rollout from looking like new behavior.
-    lifecycleAware: true
 
   enforcementConfig:
     mode: Blocking
@@ -118,11 +116,3 @@ spec:
     rollbackThreshold: 3
     rollbackWindow: "5m"
     recoveryStrategy: Rollback
-
-  observabilityConfig:
-    metrics:
-      enabled: true
-      interval: "30s"
-    logging:
-      level: "info"
-      format: "json"
