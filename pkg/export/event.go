@@ -224,6 +224,11 @@ type KubernetesRef struct {
 	// by, so they are what makes a denial groupable by team or service in a log
 	// pipeline rather than only by pod.
 	Labels map[string]string `json:"labels,omitempty"`
+
+	// Image is the container image. A denial in nginx:1.27 and one in a
+	// hand-built image are very different findings, and it is usually the first
+	// thing an analyst asks for.
+	Image string `json:"image,omitempty"`
 }
 
 // Empty reports whether the reference carries no usable attribution.

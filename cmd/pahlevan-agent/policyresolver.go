@@ -219,23 +219,85 @@ func (r *policyResolver) PodMeta(podUID string) (string, string, bool) {
 // PodDetail is what an exported event needs beyond a namespace and a name: the
 // workload that owns the pod, and the labels a policy selected it by. A pod
 // name is ephemeral, so a denial attributed only to one is hard to act on.
-func (r *policyResolver) PodDetail(podUID string) (workloadKind, workloadName string, labels map[string]string, ok bool) {
+func (r *policyResolver) PodDetail(podUID string) (detail PodDetail, ok bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, found := r.podsByUID[podUID]
 	if !found {
-		return "", "", nil, false
+		return PodDetail{}, false
 	}
 	if len(p.Labels) > 0 {
 		// Copied: the caller keeps this in an exported event and the cache is
 		// replaced wholesale on every refresh.
-		labels = make(map[string]string, len(p.Labels))
+		detail.Labels = make(map[string]string, len(p.Labels))
 		for k, v := range p.Labels {
-			labels[k] = v
+			detail.Labels[k] = v
 		}
 	}
-	kind, name := ownerWorkload(p)
-	return kind, name, labels, true
+	detail.WorkloadKind, detail.WorkloadName = ownerWorkload(p)
+	return detail, true
+}
+
+// PodDetail is what an exported event needs beyond a namespace and a name.
+type PodDetail struct {
+	WorkloadKind string
+	WorkloadName string
+	Labels       map[string]string
+	// Container and Image name the specific container inside the pod. Both
+	// competitors put the image on every event, and it is often the first
+	// thing an analyst asks for: a denial in "nginx:1.27" and one in a
+	// hand-built image are very different findings.
+	Container string
+	Image     string
+}
+
+// ContainerDetail resolves the runtime container id the cgroup gave us to the
+// container's name and image.
+//
+// The cgroup path yields a bare 64-hex id, while Kubernetes reports
+// containerID as "<runtime>://<id>", so the scheme is stripped before
+// comparing. Init and ephemeral containers are searched too, since a denial
+// during init is exactly the kind of thing worth attributing precisely.
+func (r *policyResolver) ContainerDetail(podUID, containerID string) (name, image string, ok bool) {
+	if containerID == "" {
+		return "", "", false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, found := r.podsByUID[podUID]
+	if !found {
+		return "", "", false
+	}
+	for _, list := range [][]corev1.ContainerStatus{
+		p.Status.ContainerStatuses,
+		p.Status.InitContainerStatuses,
+		p.Status.EphemeralContainerStatuses,
+	} {
+		for i := range list {
+			cs := &list[i]
+			if runtimeContainerID(cs.ContainerID) != containerID {
+				continue
+			}
+			// ImageID is the digest-pinned reference and is the more useful
+			// answer, but it is empty until the image is pulled, so Image is
+			// the fallback rather than the other way round.
+			img := cs.Image
+			if img == "" {
+				img = cs.ImageID
+			}
+			return cs.Name, img, true
+		}
+	}
+	return "", "", false
+}
+
+// runtimeContainerID strips the "<runtime>://" scheme Kubernetes prefixes onto
+// containerID, leaving the bare id the cgroup path carries.
+func runtimeContainerID(s string) string {
+	if i := strings.Index(s, "://"); i >= 0 {
+		return s[i+3:]
+	}
+	return s
 }
 
 // ownerWorkload walks one level up from the pod's controller reference, and a
