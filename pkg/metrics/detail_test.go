@@ -80,7 +80,7 @@ func TestDetailLevelGating(t *testing.T) {
 		"pahlevan_blocked_syscalls_total",
 		"pahlevan_blocked_file_access_total",
 		"pahlevan_blocked_connections_total",
-		"pahlevan_exposed_syscalls_total",
+		"pahlevan_exposed_syscalls",
 	} {
 		assert.False(t, names[unwanted], "%s must be absent at DetailBasic", unwanted)
 	}
@@ -102,7 +102,7 @@ func TestDetailHighRegistersPerContainerMetrics(t *testing.T) {
 
 	names := gatheredNames(t, reg)
 	assert.True(t, names["pahlevan_syscall_events_total"])
-	assert.True(t, names["pahlevan_exposed_syscalls_total"])
+	assert.True(t, names["pahlevan_exposed_syscalls"])
 	assert.Equal(t, 1, testCollectAndCount(t, m.syscallEventsTotal))
 }
 
