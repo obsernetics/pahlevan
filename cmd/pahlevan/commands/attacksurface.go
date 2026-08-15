@@ -859,7 +859,7 @@ func writeReportFile(path string, data []byte) error {
 			return fmt.Errorf("cannot write report to %s: %w", path, err)
 		}
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("cannot write report to %s: %w", path, err)
 	}
 	return nil

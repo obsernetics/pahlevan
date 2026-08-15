@@ -1,293 +1,213 @@
-# Comprehensive Pahlevan Security Policy Example
-# This example demonstrates advanced features including self-healing, attack surface analysis, and comprehensive monitoring
-
+# Every field the CRD actually has, in one policy, with what each one does.
+#
+# This is a reference rather than something to apply as-is: a real policy uses
+# the handful of fields its workload needs. It exists because the alternative -
+# reading the Go types - is not a reasonable ask, and because a policy that
+# sets a field the API does not have is silently pruned by the API server. You
+# get no error, and the setting simply is not there.
 apiVersion: policy.pahlevan.io/v1alpha1
 kind: PahlevanPolicy
 metadata:
-  name: comprehensive-web-security
-  namespace: production
+  name: comprehensive-reference
+  namespace: default
   labels:
-    tier: web
-    security-level: high
+    app.kubernetes.io/name: comprehensive-reference
+    app.kubernetes.io/component: security-policy
   annotations:
-    description: "Comprehensive security policy for production web applications with self-healing"
+    policy.pahlevan.io/description: "Reference: every supported field with its effect"
 spec:
-  # Target all web application pods
+  # --- which workloads -------------------------------------------------------
+  # Standard Kubernetes label selector semantics. Both forms may be combined;
+  # they are ANDed.
   selector:
     matchLabels:
-      tier: web
+      app: reference-app
     matchExpressions:
-    - key: security-level
+    - key: environment
       operator: In
-      values: ["medium", "high"]
+      values: ["staging", "production"]
+    - key: security.pahlevan.io/exempt
+      operator: DoesNotExist
 
-  # Advanced learning configuration
-  learning:
-    enabled: true
-    duration: 10m
+  # --- how long to watch -----------------------------------------------------
+  learningConfig:
+    # Total observation before the container may transition.
+    duration: "15m"
+    # Granularity of the sampling window inside that duration.
+    windowSize: "1m"
+    # Minimum observations before the profile is considered meaningful. A
+    # container that sat idle through the window has learned nothing, and
+    # enforcing an empty baseline would deny everything.
+    minSamples: 500
+    # Flip to the configured mode automatically when the window elapses.
     autoTransition: true
-    # Enable comprehensive profiling
-    syscalls: true
-    network: true
-    files: true
-    processes: true
-    # Advanced learning settings
-    adaptiveWindow: true
-    confidenceThreshold: 0.85
-    behaviorBaseline: true
+    # Treat container restarts and rolling updates as continuity rather than as
+    # new, unlearned behavior.
+    lifecycleAware: true
 
-  # Strict enforcement settings
-  enforcement:
-    mode: "enforce"
+  # --- what to do about the rest ---------------------------------------------
+  enforcementConfig:
+    # Off: the policy governs nothing, and nothing is learned.
+    # Monitoring: observations and would-have-denied counts, no denials.
+    # Blocking: the kernel refuses with EPERM.
+    mode: Blocking
+
+    # Default-deny of unlearned behavior is the only enforcement this data plane
+    # performs, so setting this false under Blocking is a contradiction. The
+    # controller downgrades to Monitoring and says so on the status rather than
+    # enforcing something the author asked not to.
     blockUnknown: true
-    gracePeriod: 60s
-    # Advanced enforcement controls
-    allowList:
-      syscalls:
-        - "read"
-        - "write"
-        - "open"
-        - "close"
-        - "connect"
-        - "bind"
-        - "listen"
-        - "accept"
-      networks:
-        - protocol: "tcp"
-          ports: [80, 443, 8080]
-          direction: "inbound"
-        - protocol: "tcp"
-          ports: [443, 3306, 5432]
-          direction: "outbound"
-      files:
-        - path: "/usr/share/nginx/html/*"
-          permissions: ["read"]
-        - path: "/var/log/*"
-          permissions: ["write", "append"]
-        - path: "/tmp/*"
-          permissions: ["read", "write", "create", "delete"]
 
-  # Advanced self-healing configuration
+    # Suppresses denial while keeping everything else identical, which is what
+    # makes a staged rollout possible. See examples/advanced/production-policy.yaml.
+    alertOnly: false
+
+    # Time after the transition during which denials are recorded but tolerated.
+    # Covers cold-start behavior that the steady state does not repeat.
+    gracePeriod: "60s"
+
+    # Behavior the operator knows is legitimate but the window may not have
+    # captured. This is not a workaround for a bad baseline: it is how knowledge
+    # the observation window structurally cannot contain gets in.
+    exceptions:
+    - type: File          # File | Network | Syscall
+      patterns:
+      - "/var/run/secrets/kubernetes.io/serviceaccount/*"
+      reason: "Projected token, refreshed on the kubelet's schedule"
+    - type: Network
+      patterns:
+      - "10.96.0.10:53"
+      reason: "Cluster DNS"
+    - type: Syscall
+      patterns:
+      - "fallocate"
+      reason: "Only issued during a checkpoint"
+      # An exception that expires. Useful during a migration: it stops being an
+      # exception on its own rather than living forever because nobody removed
+      # it.
+      temporary: true
+      expiresAt: "2027-01-01T00:00:00Z"
+
+  # --- file access -----------------------------------------------------------
+  filePolicy:
+    # Grants both read and write.
+    allowedPaths:
+    - "/app/data"
+    # Revokes both, even if the path was learned.
+    deniedPaths:
+    - "/etc/shadow"
+    - "/root/.ssh"
+    # Grants the read and revokes the write. The two are separate entries in the
+    # kernel allow-set, so this is a real distinction rather than a label: a
+    # workload that read /etc/passwd at startup does not thereby get to write it.
+    readOnlyPaths:
+    - "/etc/config"
+    - "/usr/share/app"
+    writeAllowedPaths:
+    - "/tmp"
+    - "/var/log/app"
+    # What happens to a path in none of the lists and not in the baseline.
+    defaultAction: Deny
+    executableFilter:
+      allowedExecutables:
+      - "/usr/local/bin/app"
+      deniedExecutables:
+      - "/bin/sh"
+      - "/usr/bin/curl"
+      # Not implemented by the data plane; reported on the policy status rather
+      # than silently ignored.
+      requireSignature: false
+
+  # --- syscalls, capabilities and who may exec -------------------------------
+  syscallPolicy:
+    # These adjust the generated seccomp profile rather than a BPF map: syscall
+    # filtering is enforced by seccomp, while the BPF syscall program observes.
+    allowedSyscalls:
+    - "openat"
+    - "read"
+    - "write"
+    deniedSyscalls:
+    - "ptrace"
+    - "init_module"
+    defaultAction: Deny
+
+    # Capabilities the workload may use, enforced by the lsm/capable hook. The
+    # CAP_ prefix is optional.
+    capabilityFilter:
+    - "CAP_NET_BIND_SERVICE"
+    - "CHOWN"
+
+    # Constrains who may exec, as opposed to what may be exec'd. Each dimension
+    # is opt-in; an unspecified one is not enforced, because reading "no parents
+    # listed" as "an empty allow-list" would deny every exec in the container.
+    # See examples/policies/process-filter.yaml for the full treatment.
+    processFilter:
+      commands:                 # absolute paths; become exec allow-set entries
+      - "/usr/local/bin/app"
+      users:                    # numeric uids; a name cannot be resolved from the node
+      - "10001"
+      groups:                   # numeric gids
+      - "10001"
+      parentProcesses:          # matched on comm, so the first 15 characters
+      - "tini"
+
+  # --- egress ----------------------------------------------------------------
+  networkPolicy:
+    # Egress is enforced by the socket_connect LSM hook. Ingress rules are
+    # accepted by the API and reported as unenforced: inbound connections are
+    # the CNI's business, and claiming otherwise would be a policy that looks
+    # applied and is not.
+    egressRules:
+    - protocols: ["TCP"]
+      peers:
+      - ipBlock:
+          cidr: "10.0.0.0/8"
+          except:
+          - "10.0.5.0/24"
+      ports:
+      - port: 443
+        protocol: TCP
+      - startPort: 8000
+        endPort: 8100
+        protocol: TCP
+      action: Allow
+    defaultAction: Deny
+    # Convenience toggles for the two destinations nearly every workload needs
+    # and nearly every learning window happens to miss.
+    allowLoopback: true
+    allowDNS: true
+
+  # --- when the baseline turns out to be wrong -------------------------------
   selfHealing:
     enabled: true
-    rollbackThreshold: 2
-    recoveryStrategy: "Progressive"
-    # Self-healing policies
-    healthChecks:
-      enabled: true
-      interval: 30s
-      timeout: 10s
-      failureThreshold: 3
-    anomalyDetection:
-      enabled: true
-      sensitivity: "medium"
-      adaptiveThresholds: true
-    emergencyMode:
-      enabled: true
-      triggerConditions:
-        - "systemCompromise"
-        - "resourceExhaustion"
-      actions:
-        - "isolateContainer"
-        - "alertAdministrators"
-        - "rollbackPolicy"
+    # Denials within the window that trigger a return to learning.
+    rollbackThreshold: 5
+    # Only the interval right after the transition is examined, because that is
+    # where a breakage is attributable to enforcement. Past it the baseline is
+    # settled, so an attacker cannot un-enforce a container by making noise.
+    rollbackWindow: "10m"
+    # Rollback is implemented. Relax and Maintenance are accepted and reported
+    # as unimplemented rather than quietly behaving like Rollback.
+    recoveryStrategy: Rollback
 
-  # Attack surface analysis
-  attackSurface:
-    enabled: true
-    scanInterval: 5m
-    riskAssessment: true
-    exporters:
-      - type: "prometheus"
-        endpoint: "http://prometheus:9090/metrics"
-      - type: "json"
-        path: "/var/log/pahlevan/attack-surface.json"
-      - type: "grafana"
-        dashboardId: "pahlevan-security"
-
-  # Comprehensive observability
-  observability:
+  # --- telemetry -------------------------------------------------------------
+  observabilityConfig:
     metrics:
       enabled: true
-      interval: 30s
-      exporters: ["prometheus", "otel"]
+      interval: "30s"
+      exporters:
+      - type: "prometheus"
     tracing:
       enabled: true
-      sampler: "probabilistic"
-      samplingRate: 0.1
+      samplingRate: "0.1"
+      exporter:
+        type: "otlp"
+        endpoint: "otel-collector.pahlevan-system.svc:4317"
     logging:
-      enabled: true
       level: "info"
-      structuredLogging: true
-    alerts:
+      format: "json"
+      outputs:
+      - type: "stdout"
+    visualization:
       enabled: true
-      channels:
-        - type: "webhook"
-          endpoint: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
-        - type: "email"
-          recipients: ["security@company.com", "devops@company.com"]
-        - type: "pagerduty"
-          integrationKey: "YOUR_PAGERDUTY_KEY"
-      conditions:
-        - event: "policyViolation"
-          severity: "high"
-        - event: "selfHealingTriggered"
-          severity: "medium"
-        - event: "emergencyModeActivated"
-          severity: "critical"
-
-  # Advanced security controls
-  securityControls:
-    # Process execution controls
-    processExecution:
-      allowedBinaries:
-        - "/usr/sbin/nginx"
-        - "/bin/bash"
-        - "/bin/sh"
-      preventPrivilegeEscalation: true
-      requireSignedBinaries: false
-
-    # Network security
-    networkSecurity:
-      preventLateralMovement: true
-      isolateFromHostNetwork: true
-      requireTLS: true
-      allowedDomains:
-        - "api.company.com"
-        - "cdn.company.com"
-
-    # File system security
-    fileSystemSecurity:
-      preventWriteToSystem: true
-      requireSignedLibraries: false
-      monitorConfigChanges: true
-      protectedPaths:
-        - "/etc/nginx/"
-        - "/usr/share/nginx/html/"
-
----
-# Example deployment that would be protected by the above policy
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: secure-web-app
-  namespace: production
-  labels:
-    tier: web
-    security-level: high
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: secure-web-app
-      tier: web
-      security-level: high
-  template:
-    metadata:
-      labels:
-        app: secure-web-app
-        tier: web
-        security-level: high
-    spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 2000
-      containers:
-      - name: nginx
-        image: nginx:1.25-alpine
-        ports:
-        - containerPort: 80
-          protocol: TCP
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop:
-              - ALL
-            add:
-              - NET_BIND_SERVICE
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 80
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 80
-          initialDelaySeconds: 5
-          periodSeconds: 5
-        volumeMounts:
-        - name: tmp-volume
-          mountPath: /tmp
-        - name: var-cache-nginx
-          mountPath: /var/cache/nginx
-        - name: var-run
-          mountPath: /var/run
-      volumes:
-      - name: tmp-volume
-        emptyDir: {}
-      - name: var-cache-nginx
-        emptyDir: {}
-      - name: var-run
-        emptyDir: {}
-
----
-# Service for the web application
-apiVersion: v1
-kind: Service
-metadata:
-  name: secure-web-app-service
-  namespace: production
-spec:
-  selector:
-    app: secure-web-app
-  ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 80
-  type: ClusterIP
-
----
-# NetworkPolicy to complement Pahlevan security
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: secure-web-app-netpol
-  namespace: production
-spec:
-  podSelector:
-    matchLabels:
-      app: secure-web-app
-  policyTypes:
-  - Ingress
-  - Egress
-  ingress:
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          name: ingress-system
-    ports:
-    - protocol: TCP
-      port: 80
-  egress:
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          name: database-system
-    ports:
-    - protocol: TCP
-      port: 3306
-  - to: []
-    ports:
-    - protocol: TCP
-      port: 443
+      updateInterval: "5m"

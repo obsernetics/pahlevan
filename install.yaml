@@ -1746,6 +1746,15 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        # The namespace completes the OpenTelemetry resource. Grafana joins
+        # Loki, Tempo and Mimir on shared labels, so the agent's metrics,
+        # traces and events must agree on k8s.namespace.name, k8s.pod.name and
+        # k8s.node.name - a resource that disagrees makes the join silently
+        # return nothing, which looks exactly like no data.
+        - name: PAHLEVAN_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         - name: GOMAXPROCS
           valueFrom:
             resourceFieldRef:

@@ -121,10 +121,7 @@ func (r *AttackSurfaceAnalyzerReconciler) performClusterAnalysis(ctx context.Con
 		"nodes", len(clusterGraph.Nodes),
 		"edges", len(clusterGraph.Edges))
 
-	// Export analysis results
-	if err := r.exportAnalysisResults(ctx, clusterGraph); err != nil {
-		logger.Error(err, "Failed to export analysis results")
-	}
+	r.exportAnalysisResults(ctx)
 
 	return nil
 }
@@ -301,43 +298,23 @@ func (r *AttackSurfaceAnalyzerReconciler) updatePolicyWithAttackSurface(policy *
 	policy.Status.AttackSurface.LastAnalysis = &now
 }
 
-func (r *AttackSurfaceAnalyzerReconciler) exportAnalysisResults(ctx context.Context, clusterGraph *visualization.ClusterAttackSurfaceGraph) error {
-	// Export to various formats
-
-	// Export to JSON for debugging/storage
-	jsonData, err := r.AttackSurfaceAnalyzer.ExportToFormat(visualization.ExportFormatJSON)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to export to JSON")
-	} else {
-		// Store JSON data (could be saved to ConfigMap, sent to external system, etc.)
-		_ = jsonData
+// exportAnalysisResults flushes the analysis to the observability pipeline.
+//
+// It used to serialize the whole cluster graph three times over - JSON,
+// Grafana, Mermaid - and assign each result to the blank identifier. That was
+// not a placeholder for future work in any useful sense: it ran on every
+// analysis interval, cost a full graph walk per format, and the Grafana branch
+// logged an error every time because ExportToFormat has never supported it.
+// The export formats themselves are real and tested; they are reached through
+// AttackSurfaceAnalyzer.ExportToFormat by a caller that actually wants the
+// bytes, which this was not.
+func (r *AttackSurfaceAnalyzerReconciler) exportAnalysisResults(ctx context.Context) {
+	if r.ObservabilityManager == nil {
+		return
 	}
-
-	// Export to Grafana format
-	grafanaData, err := r.AttackSurfaceAnalyzer.ExportToFormat(visualization.ExportFormatGrafana)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to export to Grafana")
-	} else {
-		_ = grafanaData
+	if _, err := r.ObservabilityManager.ExportObservabilityData(); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to export observability data")
 	}
-
-	// Export to Mermaid diagram
-	mermaidData, err := r.AttackSurfaceAnalyzer.ExportToFormat(visualization.ExportFormatMermaid)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to export to Mermaid")
-	} else {
-		_ = mermaidData
-	}
-
-	// Update observability metrics
-	if r.ObservabilityManager != nil {
-		_, err := r.ObservabilityManager.ExportObservabilityData()
-		if err != nil {
-			log.FromContext(ctx).Error(err, "Failed to export observability data")
-		}
-	}
-
-	return nil
 }
 
 func (r *AttackSurfaceAnalyzerReconciler) isSignificantChange(ctx context.Context, req ctrl.Request) bool {

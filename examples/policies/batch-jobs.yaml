@@ -1,463 +1,154 @@
+# Jobs and CronJobs, where the learning model's assumption breaks.
+#
+# Every other policy here assumes a long-lived process: learn for a while, then
+# enforce for the rest of its life. A batch job runs for ninety seconds and
+# exits. Learn for five minutes and the job is over before enforcement starts;
+# learn for ten seconds and the baseline is whatever the job happened to do
+# while it was starting up.
+#
+# The way out is that batch jobs repeat. The learned profile of yesterday's run
+# is the right baseline for today's, because it is the same image doing the same
+# work. So the pattern is:
+#
+#   1. Run the job under Monitoring for a few cycles. Each run contributes to
+#      the profile for that workload.
+#   2. Read the profile. A batch job's behavior is small enough to read.
+#   3. Switch to Blocking. Subsequent runs are enforced from the first syscall,
+#      because the baseline already exists when the pod starts.
+#
+# That is why this file has two policies rather than one, and why the second is
+# the one you eventually run.
+---
 apiVersion: policy.pahlevan.io/v1alpha1
 kind: PahlevanPolicy
 metadata:
-  name: batch-jobs-policy
+  name: batch-job-learning
   namespace: default
   labels:
-    app.kubernetes.io/name: batch-jobs-policy
+    app.kubernetes.io/name: batch-job-learning
     app.kubernetes.io/component: security-policy
     workload-type: batch
-    environment: production
   annotations:
-    policy.pahlevan.io/description: "Flexible policy for batch processing and data pipeline jobs"
-    policy.pahlevan.io/use-case: "ETL jobs, data processing, scheduled tasks, ML training"
-    policy.pahlevan.io/risk-level: "medium"
-    policy.pahlevan.io/compliance: "soc2"
+    policy.pahlevan.io/description: "Phase one: accumulate a profile across several runs"
+    policy.pahlevan.io/risk-level: "low"
 spec:
-  # Target batch jobs and scheduled workloads
   selector:
     matchLabels:
-      workload-class: batch
-    matchExpressions:
-    - key: "job-type"
-      operator: In
-      values: ["etl", "processing", "training", "analytics"]
-    - key: "security.policy.pahlevan.io/mode"
-      operator: In
-      values: ["learning", "monitoring", "enforcing"]
+      workload-type: batch
+      security.pahlevan.io/phase: learning
 
-  # Extended learning for variable batch patterns
   learningConfig:
-    # Batch jobs have variable patterns, longer learning
-    duration: "15m"
-    windowSize: "2m"
-    minSamples: 300
-    confidenceThreshold: 0.85  # Lower confidence due to variability
-    autoTransition: false  # Manual control for batch jobs
+    # Longer than any single run. The window is not "how long to watch this
+    # pod"; it is "how long before we consider the workload's profile settled",
+    # and for a job that runs hourly that is several hours.
+    duration: "6h"
+    windowSize: "1m"
+    minSamples: 50
+    # Never automatic here. The transition happens by relabelling the workload
+    # onto the second policy, after a human has read the profile.
+    autoTransition: false
     lifecycleAware: true
-    baselineQualityThreshold: 0.80
 
-    # Batch-specific learning parameters
-    syscallLearning:
-      enabled: true
-      focusAreas:
-      - file-io
-      - memory
-      - exec  # Batch jobs may spawn processes
-      - network
-      excludePatterns: []  # Don't exclude anything for batch jobs
-
-    networkLearning:
-      enabled: true
-      # Batch jobs may need various network access
-      monitoredPorts:
-      - 80    # HTTP
-      - 443   # HTTPS
-      - 22    # SSH for remote processing
-      - 3306  # MySQL
-      - 5432  # PostgreSQL
-      - 9000  # MinIO/S3
-      allowedProtocols:
-      - tcp
-      - udp
-
-    fileLearning:
-      enabled: true
-      # Batch jobs work with data files
-      monitoredPaths:
-      - "/data"
-      - "/input"
-      - "/output"
-      - "/processing"
-      - "/tmp"
-      - "/var/log"
-      strictMode: false  # Flexible for data processing
-
-    # Extended lifecycle for batch jobs
-    lifecyclePhases:
-      initialization:
-        duration: "300s"  # 5 minutes for setup
-        allowAdditionalSyscalls: true
-        allowNetworkSetup: true
-        allowFileSystemSetup: true
-      processing:
-        duration: "600s"  # 10 minutes main processing
-        restrictiveLearning: false  # Keep flexible
-        monitorPerformance: true
-      cleanup:
-        duration: "120s"  # 2 minutes cleanup
-        allowCleanupOperations: true
-
-  # Flexible enforcement for batch workloads
   enforcementConfig:
-    mode: "Monitoring"  # Default to monitoring for batch jobs
-    gracePeriod: "60s"  # Longer grace period
-    alertOnly: false
-    blockUnknown: false  # Allow unknown patterns for flexibility
+    mode: Monitoring
 
-    # Permissive syscall enforcement for batch jobs
-    syscallEnforcement:
-      enabled: true
-      defaultAction: "allow"  # Start permissive
-      # Block only dangerous syscalls
-      blockList:
-      - "ptrace"      # No debugging
-      - "mount"       # No filesystem mounting
-      - "umount"      # No filesystem unmounting
-      - "reboot"      # No system reboot
-      - "kexec_load"  # No kernel loading
-      strictMode: false
+  filePolicy:
+    # Even while only monitoring, these are worth stating: they are what the
+    # would-have-denied counters are measured against, and a batch job reading
+    # the kubelet directory is a finding on run one, not after the baseline has
+    # quietly absorbed it.
+    deniedPaths:
+    - "/var/lib/kubelet"
+    - "/root/.ssh"
+    - "/etc/shadow"
 
-      # Allow common batch processing syscalls
-      allowList:
-      # File operations
-      - "read"
-      - "write"
-      - "openat"
-      - "close"
-      - "lseek"
-      - "stat"
-      - "fstat"
-      - "access"
-      - "mkdir"
-      - "rmdir"
-      - "unlink"
-      - "rename"
-      - "chmod"
-      - "chown"
-      # Process operations
-      - "fork"
-      - "clone"
-      - "execve"
-      - "wait4"
-      - "waitpid"
-      # Memory operations
-      - "mmap"
-      - "munmap"
-      - "mprotect"
-      - "brk"
-      # Network operations
-      - "socket"
-      - "connect"
-      - "sendto"
-      - "recvfrom"
-
-    networkEnforcement:
-      enabled: true
-      defaultAction: "allow"  # Permissive for data sources
-      # Allow common data access patterns
-      allowedConnections:
-      - direction: "egress"
-        ports: [80, 443]  # HTTP/HTTPS
-        protocols: ["tcp"]
-      - direction: "egress"
-        ports: [22]  # SSH
-        protocols: ["tcp"]
-      - direction: "egress"
-        ports: [3306, 5432, 27017]  # Databases
-        protocols: ["tcp"]
-      - direction: "egress"
-        ports: [9000, 9090]  # Object storage
-        protocols: ["tcp"]
-      - direction: "egress"
-        ports: [53]  # DNS
-        protocols: ["tcp", "udp"]
-      strictMode: false
-
-    fileEnforcement:
-      enabled: true
-      defaultAction: "allow"  # Very permissive for data processing
-      allowedOperations:
-      - "read"
-      - "write"
-      - "create"
-      - "delete"
-      - "modify"
-      # Flexible path access for batch jobs
-      writablePaths:
-      - "/data"
-      - "/input"
-      - "/output"
-      - "/processing"
-      - "/tmp"
-      - "/var/log"
-      - "/var/cache"
-      readOnlyPaths:
-      - "/etc/passwd"
-      - "/etc/group"
-      - "/etc/shadow"
-      strictMode: false
-
-    # Batch job specific exceptions
-    exceptions:
-    - type: "Syscall"
-      patterns: ["fork", "clone", "execve"]
-      reason: "Batch jobs may spawn child processes"
-      temporary: false
-    - type: "File"
-      patterns: ["/data/*", "/input/*", "/output/*"]
-      reason: "Data processing file access"
-      temporary: false
-    - type: "Network"
-      patterns: ["tcp:*", "udp:53"]
-      reason: "Flexible network access for data sources"
-      temporary: false
-
-  # Adaptive self-healing for batch jobs
   selfHealing:
+    enabled: false
+---
+# Phase two. Same workload, relabelled, now enforced.
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: batch-job-enforcing
+  namespace: default
+  labels:
+    app.kubernetes.io/name: batch-job-enforcing
+    app.kubernetes.io/component: security-policy
+    workload-type: batch
+  annotations:
+    policy.pahlevan.io/description: >-
+      Phase two: the profile already exists, so a short window suffices and the
+      job is enforced almost from process start.
+spec:
+  selector:
+    matchLabels:
+      workload-type: batch
+      security.pahlevan.io/phase: enforcing
+
+  learningConfig:
+    # Short, because the profile is not being built from scratch. This window
+    # covers the container's own startup, which differs between runs in ways
+    # that do not matter.
+    duration: "30s"
+    autoTransition: true
+    lifecycleAware: true
+
+  enforcementConfig:
+    mode: Blocking
+    blockUnknown: true
+    # A job that is killed by a false denial cannot be retried into success -
+    # it will fail identically every time. The grace period is generous for
+    # that reason.
+    gracePeriod: "45s"
+    exceptions:
+    - type: File
+      patterns:
+      - "/tmp/*"
+      - "/var/tmp/*"
+      reason: "Scratch space, whose exact filenames differ between runs"
+
+  filePolicy:
+    writeAllowedPaths:
+    - "/tmp"
+    - "/var/tmp"
+    - "/data/output"
+    readOnlyPaths:
+    - "/data/input"
+    - "/etc/config"
+    deniedPaths:
+    - "/var/lib/kubelet"
+    - "/root/.ssh"
+    - "/etc/shadow"
+
+  networkPolicy:
+    allowDNS: true
+    egressRules:
+    - peers:
+      - ipBlock:
+          cidr: "10.0.0.0/8"
+      ports:
+      - port: 443
+        protocol: TCP
+      - port: 5432
+        protocol: TCP
+      action: Allow
+    defaultAction: Deny
+
+  syscallPolicy:
+    deniedSyscalls:
+    - "ptrace"
+    - "init_module"
+    - "mount"
+
+  selfHealing:
+    # Low threshold and a short window: a batch job that starts being denied is
+    # a job that is about to fail, and there is no steady state to wait for.
     enabled: true
-    rollbackThreshold: 10  # Higher threshold for batch variations
-    rollbackWindow: "30m"  # Longer window for batch jobs
-    recoveryStrategy: "Relax"  # Relax rather than rollback
+    rollbackThreshold: 2
+    rollbackWindow: "2m"
+    recoveryStrategy: Rollback
 
-    anomalyDetection:
-      enabled: true
-      sensitivityLevel: "low"  # Lower sensitivity for variable patterns
-      adaptiveThreshold: true
-
-      # Batch job specific monitoring
-      metrics:
-      - "processing_rate"
-      - "file_io_rate"
-      - "memory_usage"
-      - "cpu_usage"
-      - "network_bandwidth"
-
-      thresholds:
-        processingRate: 10000     # records per second
-        fileIORate: 50000         # file operations per second
-        memoryUsage: 0.95         # 95% memory usage
-        cpuUsage: 0.90           # 90% CPU usage
-        networkBandwidth: 1000000 # 1MB/s
-
-      # Job completion monitoring
-      jobMonitoring:
-        enabled: true
-        maxDuration: "24h"  # Maximum job duration
-        heartbeatInterval: "5m"
-        failureRetries: 3
-
-  # Observability for batch jobs
   observabilityConfig:
     metrics:
       enabled: true
-      exporters:
-      - type: "prometheus"
-        config:
-          path: "/metrics"
-          port: "9090"
-
-    tracing:
-      enabled: false  # Disable tracing for batch jobs by default
-
-    dashboard:
-      enabled: true
-      autoExport: true
-      formats: ["grafana", "json"]
-
-    # Batch job specific logging
-    logging:
-      enabled: true
-      level: "info"
-      structured: true
-      fields:
-      - "job_id"
-      - "batch_id"
-      - "processing_stage"
-      - "records_processed"
-
----
-# Example ETL batch job
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: etl-data-processing
-  namespace: default
-  labels:
-    app: etl-processor
-    workload-class: batch
-    job-type: etl
-    security.policy.pahlevan.io/mode: "learning"
-spec:
-  backoffLimit: 3
-  completions: 1
-  parallelism: 1
-  template:
-    metadata:
-      labels:
-        app: etl-processor
-        workload-class: batch
-        job-type: etl
-        security.policy.pahlevan.io/mode: "learning"
-    spec:
-      restartPolicy: Never
-      containers:
-      - name: etl-processor
-        image: etl-processor:v2.1.0
-        command: ["/app/process.sh"]
-        args: ["--input", "/data/input", "--output", "/data/output"]
-        env:
-        - name: JOB_ID
-          value: "etl-20250101-001"
-        - name: BATCH_SIZE
-          value: "10000"
-        - name: LOG_LEVEL
-          value: "info"
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: etl-secret
-              key: database-url
-        resources:
-          requests:
-            memory: "1Gi"
-            cpu: "500m"
-          limits:
-            memory: "4Gi"
-            cpu: "2"
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 1001
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop:
-            - ALL
-          readOnlyRootFilesystem: false  # Batch jobs need file write access
-        volumeMounts:
-        - name: input-data
-          mountPath: /data/input
-          readOnly: true
-        - name: output-data
-          mountPath: /data/output
-        - name: processing-temp
-          mountPath: /processing
-        - name: tmp
-          mountPath: /tmp
-      volumes:
-      - name: input-data
-        persistentVolumeClaim:
-          claimName: input-data-pvc
-      - name: output-data
-        persistentVolumeClaim:
-          claimName: output-data-pvc
-      - name: processing-temp
-        emptyDir:
-          sizeLimit: 10Gi
-      - name: tmp
-        emptyDir:
-          sizeLimit: 1Gi
-
----
-# Example CronJob for scheduled processing
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: daily-report-generation
-  namespace: default
-  labels:
-    app: report-generator
-    workload-class: batch
-    job-type: analytics
-    security.policy.pahlevan.io/mode: "monitoring"
-spec:
-  schedule: "0 2 * * *"  # Daily at 2 AM
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      template:
-        metadata:
-          labels:
-            app: report-generator
-            workload-class: batch
-            job-type: analytics
-            security.policy.pahlevan.io/mode: "monitoring"
-        spec:
-          restartPolicy: OnFailure
-          containers:
-          - name: report-generator
-            image: report-generator:v1.5.0
-            command: ["/app/generate-reports.py"]
-            args: ["--date", "yesterday", "--format", "pdf"]
-            env:
-            - name: OUTPUT_BUCKET
-              value: "s3://company-reports"
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: report-secret
-                  key: database-url
-            resources:
-              requests:
-                memory: "512Mi"
-                cpu: "250m"
-              limits:
-                memory: "2Gi"
-                cpu: "1"
-            securityContext:
-              runAsNonRoot: true
-              runAsUser: 1001
-              allowPrivilegeEscalation: false
-              capabilities:
-                drop:
-                - ALL
-              readOnlyRootFilesystem: false
-            volumeMounts:
-            - name: report-output
-              mountPath: /reports
-            - name: tmp
-              mountPath: /tmp
-          volumes:
-          - name: report-output
-            emptyDir:
-              sizeLimit: 5Gi
-          - name: tmp
-            emptyDir:
-              sizeLimit: 1Gi
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: etl-secret
-  namespace: default
-type: Opaque
-data:
-  database-url: cG9zdGdyZXNxbDovL2V0bDpwYXNzd29yZEBkYi9ldGxfZGI=  # postgresql://etl:password@db/etl_db
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: report-secret
-  namespace: default
-type: Opaque
-data:
-  database-url: cG9zdGdyZXNxbDovL3JlcG9ydDpwYXNzd29yZEBkYi9yZXBvcnRfZGI=  # postgresql://report:password@db/report_db
-
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: input-data-pvc
-  namespace: default
-spec:
-  accessModes:
-  - ReadOnlyMany
-  resources:
-    requests:
-      storage: 50Gi
-
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: output-data-pvc
-  namespace: default
-spec:
-  accessModes:
-  - ReadWriteMany
-  resources:
-    requests:
-      storage: 100Gi
+      interval: "15s"

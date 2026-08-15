@@ -141,8 +141,7 @@ func TestGenerateFilePolicy_FromProfile(t *testing.T) {
 		},
 	}
 
-	fp, err := ee.generateFilePolicy(profile, &policyv1alpha1.PahlevanPolicy{})
-	require.NoError(t, err)
+	fp := ee.generateFilePolicy(profile, &policyv1alpha1.PahlevanPolicy{})
 	require.NotNil(t, fp)
 	assert.Len(t, fp.AllowedPaths, 2)
 	assert.Equal(t, PolicyActionDeny, fp.DefaultAction)

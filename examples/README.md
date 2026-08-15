@@ -1,321 +1,84 @@
-# Pahlevan Policy Examples
+# Policy examples
 
-This directory contains comprehensive examples of Pahlevan security policies for different types of workloads. These examples demonstrate best practices for configuring adaptive eBPF-based security policies in Kubernetes environments.
+Every file here is validated against the CRD by a test
+(`pkg/apis/policy/v1alpha1/examples_test.go`), so what is written in them is
+what the API actually accepts.
 
-## Policy Examples
+That test exists because it found something. Before it was written, every
+example in this directory used fields the CRD does not have —
+`learning:` instead of `learningConfig:`, `enforcement:` instead of
+`enforcementConfig:`, plus around twenty-five invented keys like
+`fileEnforcement`, `attackSurface` and `compliance`. The Kubernetes API server
+does not reject an unknown field in a CRD spec; it prunes it. So every one of
+those examples applied cleanly and then did a fraction of what it said. The
+examples have been rewritten against the real schema, and the test now fails
+the build if that happens again.
 
-### 1. Web Application Policy (`policies/web-application.yaml`)
+## Start here
 
-**Use Case**: Frontend web applications, API servers, HTTP/HTTPS services
+**[`quickstart/simple-policy.yaml`](quickstart/simple-policy.yaml)** — the
+smallest policy that does something real. Four fields: what to govern, how long
+to watch, what to do about the rest, and what to do when that turns out to be
+wrong.
 
-**Key Features**:
-- Optimized for predictable web traffic patterns
-- Short learning duration (3 minutes)
-- Network enforcement for HTTP/HTTPS traffic
-- File system restrictions for web app security
-- PCI DSS and SOC2 compliance annotations
+## By workload
 
-**Target Workloads**:
-- React/Angular/Vue.js frontends
-- Express.js/Spring Boot APIs
-- NGINX/Apache web servers
-- REST API services
+| File | Workload | Mode | The interesting part |
+|---|---|---|---|
+| [`policies/web-application.yaml`](policies/web-application.yaml) | Frontends, HTTP APIs | Blocking | The easy case. A web app reaches steady state in minutes, so a short window converges and anything outside it is genuinely anomalous. |
+| [`policies/database.yaml`](policies/database.yaml) | PostgreSQL, MySQL | Monitoring → manual | The hard case. A database's *rare* operations are its most important ones — backup, WAL archival, recovery — and a window that only saw queries produces a baseline that blocks the 02:00 backup. |
+| [`policies/microservices.yaml`](policies/microservices.yaml) | Service mesh workloads | Blocking | Egress is where the value is. File and exec behavior is trivial; a service reaching a fourth peer when it has only ever had three is the signal. Separate policy for the sidecar, which has nothing behaviorally in common with the app. |
+| [`policies/batch-jobs.yaml`](policies/batch-jobs.yaml) | Jobs, CronJobs | Two-phase | Breaks the learn-then-enforce assumption: the job exits before the window closes. Resolved by accumulating a profile across runs, then enforcing from process start. |
+| [`policies/ci-runner.yaml`](policies/ci-runner.yaml) | Build agents | Monitoring | The counter-example. A workload whose purpose is to run arbitrary code cannot be enforced, and saying so is more useful than pretending otherwise. Enforcement moves to the sidecars instead. |
+| [`policies/process-filter.yaml`](policies/process-filter.yaml) | Interpreted workloads | Blocking | Constrains *who* may exec rather than *what* may be exec'd — the axis that matters once the interpreter in the image is itself learned. |
 
-**Learning Configuration**:
-- Duration: 3 minutes (web apps have predictable patterns)
-- Confidence Threshold: 92%
-- Auto-transition enabled
-- Focuses on network and file I/O patterns
+## By topic
 
-### 2. Database Policy (`policies/database.yaml`)
+| File | What it covers |
+|---|---|
+| [`security/self-healing-demo.yaml`](security/self-healing-demo.yaml) | What happens when the learned baseline is wrong. Includes a workload that deliberately trips the rollback so you can watch it. |
+| [`advanced/production-policy.yaml`](advanced/production-policy.yaml) | A three-stage rollout: observe, alert, enforce. The alert stage is byte-identical to the enforce stage except for one field, so what you test is what you ship. |
+| [`advanced/comprehensive-security-policy.yaml`](advanced/comprehensive-security-policy.yaml) | Every field the CRD has, with what each one does. A reference, not something to apply. |
+| [`observability/attack-surface-monitoring.yaml`](observability/attack-surface-monitoring.yaml) | The attack surface is what a container *could* do, not what it has done. Enforcement narrows the second and not the first. |
+| [`observability/lgtm-stack.yaml`](observability/lgtm-stack.yaml) | Loki, Grafana, Tempo and Mimir wired to one OpenTelemetry collector, with the correlation that makes a denial spike clickable through to the events behind it. |
 
-**Use Case**: Production database workloads requiring high security
+## The three decisions
 
-**Key Features**:
-- Extended learning duration (10 minutes) for complex database patterns
-- Strict enforcement with minimal exceptions
-- High confidence threshold (95%)
-- Comprehensive audit logging
-- HIPAA, PCI DSS, SOC2, FedRAMP compliance
+Almost every field is a detail. These three are not.
 
-**Target Workloads**:
-- PostgreSQL databases
-- MySQL databases
-- MongoDB instances
-- Redis caches
+**Monitoring or Blocking.** Monitoring records what *would* have been denied,
+using the same counters Blocking increments. That number is the cost of turning
+enforcement on, measured before you pay it. There is no reason to guess.
 
-**Learning Configuration**:
-- Duration: 10 minutes (databases have complex startup patterns)
-- Manual transition control for critical systems
-- Enhanced anomaly detection
-- Strict syscall and network enforcement
+**How long to learn.** The window has to be long enough to contain the
+workload's rare operations, not just its common ones. The question to ask is not
+"how long until the profile stops growing" but "what does this workload do
+hourly, nightly, or during an incident, and would this window have seen it".
 
-### 3. Microservices Policy (`policies/microservices.yaml`)
+**Self-healing on or off.** With it on, a baseline that turns out to be wrong
+returns the container to learning instead of leaving it broken. It only examines
+the interval right after the transition — the interval in which a breakage is
+attributable to enforcement — so a container that runs fine for an hour and then
+gets denied is not un-enforced. That bound is deliberate: without it, an attacker
+could disable enforcement by making noise.
 
-**Use Case**: Cloud-native microservices with service mesh integration
-
-**Key Features**:
-- Service mesh (Istio) compatibility
-- Adaptive learning for dynamic service patterns
-- Circuit breaker integration
-- Distributed tracing support
-- Flexible network policies for service-to-service communication
-
-**Target Workloads**:
-- REST/gRPC microservices
-- API gateways
-- Service mesh enabled applications
-- Cloud-native applications
-
-**Learning Configuration**:
-- Duration: 5 minutes (moderate complexity)
-- Confidence Threshold: 90%
-- Service mesh aware network learning
-- Container lifecycle phase awareness
-
-### 4. Batch Jobs Policy (`policies/batch-jobs.yaml`)
-
-**Use Case**: Data processing, ETL jobs, scheduled tasks, ML training
-
-**Key Features**:
-- Extended learning window (15 minutes) for variable patterns
-- Flexible enforcement for data processing requirements
-- Support for process spawning and file manipulation
-- Job completion monitoring
-- Lower sensitivity for pattern variations
-
-**Target Workloads**:
-- ETL data pipelines
-- Machine learning training jobs
-- Report generation tasks
-- Data analytics workloads
-
-**Learning Configuration**:
-- Duration: 15 minutes (variable patterns require longer learning)
-- Manual transition control
-- Permissive file and network access
-- Process execution support
-
-## Quick Start
-
-### Deploy a Web Application Policy
+## Applying them
 
 ```bash
-# Apply the web application policy and example deployment
-kubectl apply -f examples/policies/web-application.yaml
+# Install the operator and CRDs first.
+kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml
 
-# Check policy status
-kubectl get pahlevanpolicy web-application-policy
+# Then a policy.
+kubectl apply -f examples/quickstart/simple-policy.yaml
 
-# View learning progress
-kubectl describe pahlevanpolicy web-application-policy
+# Watch it learn.
+kubectl get containerprofiles -w
+
+# See what it decided, and any part of the policy it could not represent.
+kubectl describe pahlevanpolicy simple-app-policy
 ```
 
-### Deploy a Database Policy
-
-```bash
-# Apply the database policy and PostgreSQL StatefulSet
-kubectl apply -f examples/policies/database.yaml
-
-# Monitor policy transition (manual transition required)
-kubectl get pahlevanpolicy database-policy -w
-
-# Manually transition to enforcement when ready
-kubectl patch pahlevanpolicy database-policy --type='merge' -p='{"spec":{"enforcementConfig":{"mode":"Blocking"}}}'
-```
-
-### Deploy Microservices Policies
-
-```bash
-# Ensure Istio is installed in your cluster
-istioctl install --set values.defaultRevision=default
-
-# Apply the microservices policy
-kubectl apply -f examples/policies/microservices.yaml
-
-# Label namespace for Istio injection
-kubectl label namespace default istio-injection=enabled
-```
-
-### Deploy Batch Job Policies
-
-```bash
-# Apply the batch jobs policy
-kubectl apply -f examples/policies/batch-jobs.yaml
-
-# Run the example ETL job
-kubectl create job etl-example --from=cronjob/daily-report-generation
-```
-
-## Policy Customization
-
-### Learning Configuration
-
-Adjust learning parameters based on your workload characteristics:
-
-```yaml
-learningConfig:
-  duration: "5m"              # Longer for complex workloads
-  confidenceThreshold: 0.90   # Higher for critical workloads
-  autoTransition: true        # false for manual control
-  lifecycleAware: true        # Enable for container lifecycle awareness
-```
-
-### Enforcement Modes
-
-Choose the appropriate enforcement mode:
-
-- **Off**: No enforcement, learning only
-- **Monitoring**: Log violations but don't block
-- **Blocking**: Block unknown behavior (production mode)
-
-```yaml
-enforcementConfig:
-  mode: "Monitoring"  # Start with monitoring
-  gracePeriod: "30s"  # Allow time for legitimate operations
-  blockUnknown: true  # Block unlearned patterns
-```
-
-### Self-Healing Configuration
-
-Configure self-healing based on workload stability:
-
-```yaml
-selfHealing:
-  enabled: true
-  rollbackThreshold: 5        # Number of failures before rollback
-  rollbackWindow: "10m"       # Time window for failure counting
-  recoveryStrategy: "Rollback" # Rollback, Relax, or Maintenance
-```
-
-## Best Practices
-
-### 1. Start with Monitoring Mode
-
-Always begin with `enforcementConfig.mode: "Monitoring"` to observe behavior before blocking.
-
-### 2. Gradual Transition
-
-For critical workloads:
-1. Deploy in monitoring mode
-2. Observe for 24-48 hours
-3. Review logs and metrics
-4. Gradually transition to blocking mode
-
-### 3. Environment-Specific Policies
-
-Create separate policies for different environments:
-
-```yaml
-metadata:
-  name: web-app-policy-dev
-  labels:
-    environment: development
----
-metadata:
-  name: web-app-policy-prod
-  labels:
-    environment: production
-```
-
-### 4. Compliance Integration
-
-Use annotations to track compliance requirements:
-
-```yaml
-metadata:
-  annotations:
-    policy.pahlevan.io/compliance: "pci-dss,hipaa,soc2"
-    policy.pahlevan.io/risk-level: "high"
-    policy.pahlevan.io/data-classification: "sensitive"
-```
-
-### 5. Monitoring and Alerting
-
-Set up monitoring for policy violations:
-
-```bash
-# View policy metrics
-kubectl port-forward svc/pahlevan-operator-metrics 8080:8080
-curl http://localhost:8080/metrics | grep pahlevan_policy
-
-# Check violation events
-kubectl get events --field-selector reason=PolicyViolation
-```
-
-## Troubleshooting
-
-### Policy Not Learning
-
-1. Check pod labels match policy selector
-2. Verify eBPF programs are loaded
-3. Check operator logs for errors
-
-```bash
-kubectl logs -n pahlevan-system deployment/pahlevan-operator
-```
-
-### High Violation Rates
-
-1. Review learning configuration
-2. Increase confidence threshold
-3. Add necessary exceptions
-4. Consider relaxing enforcement temporarily
-
-### Performance Impact
-
-1. Monitor resource usage
-2. Adjust eBPF buffer sizes
-3. Reduce tracing sample rates
-4. Optimize policy selectors
-
-## Advanced Configuration
-
-### Custom Syscall Lists
-
-```yaml
-enforcementConfig:
-  syscallEnforcement:
-    allowList:
-    - "read"
-    - "write"
-    - "openat"
-    blockList:
-    - "ptrace"
-    - "mount"
-```
-
-### Network Policy Integration
-
-```yaml
-enforcementConfig:
-  networkEnforcement:
-    allowedConnections:
-    - direction: "egress"
-      ports: [443]
-      protocols: ["tcp"]
-      destinations: ["api.example.com"]
-```
-
-### File System Restrictions
-
-```yaml
-enforcementConfig:
-  fileEnforcement:
-    readOnlyPaths:
-    - "/app/config"
-    writablePaths:
-    - "/tmp"
-    - "/var/log"
-    forbiddenPaths:
-    - "/proc/*/mem"
-```
-
-## Support
-
-For additional help:
-
-- [Documentation](https://obsernetics.github.io/pahlevan/)
-- [GitHub Discussions](https://github.com/obsernetics/pahlevan/discussions)
-- [Issue Tracker](https://github.com/obsernetics/pahlevan/issues)
-- [Mailing List](mailto:pahlevan-dev@googlegroups.com)
+That last command is worth the habit. Anything in a policy that the data plane
+cannot enforce — an ingress rule, a CIDR too wide to enumerate, a capability
+name that does not exist — is reported on the status as a warning rather than
+being silently dropped. A policy with warnings is doing less than it says.

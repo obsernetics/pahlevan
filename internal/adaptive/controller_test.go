@@ -74,6 +74,15 @@ type fakeEnforcer struct {
 	netEnforced  map[uint64]bool
 	execEnforced map[uint64]bool
 	capEnforced  map[uint64]bool
+	procFilters  map[uint64]*ebpf.ProcFilter
+}
+
+func (f *fakeEnforcer) SetProcFilter(cgroupID uint64, filter *ebpf.ProcFilter) error {
+	if f.procFilters == nil {
+		f.procFilters = map[uint64]*ebpf.ProcFilter{}
+	}
+	f.procFilters[cgroupID] = filter
+	return nil
 }
 
 func (f *fakeEnforcer) SetFileEnforcement(cgroupID uint64, enforce bool) error {
@@ -135,6 +144,8 @@ func (f *failingEnforcer) SetCapabilityEnforcement(uint64, bool) error {
 	return errEnforce
 }
 
+func (f *failingEnforcer) SetProcFilter(uint64, *ebpf.ProcFilter) error { return errEnforce }
+
 var errEnforce = errors.New("enforcement map update failed")
 
 // partialEnforcer models a kernel without BPF LSM: the file (fentry-based) path
@@ -160,6 +171,8 @@ func (f *partialEnforcer) SetCapabilityEnforcement(uint64, bool) error {
 	f.capa++
 	return errEnforce
 }
+
+func (f *partialEnforcer) SetProcFilter(uint64, *ebpf.ProcFilter) error { return errEnforce }
 
 type fakePolicies struct {
 	window      time.Duration
@@ -312,6 +325,13 @@ func (o *orderedEnforcer) SetFileEnforcement(_ uint64, enforce bool) error {
 func (o *orderedEnforcer) SetNetworkEnforcement(uint64, bool) error    { return nil }
 func (o *orderedEnforcer) SetExecEnforcement(uint64, bool) error       { return nil }
 func (o *orderedEnforcer) SetCapabilityEnforcement(uint64, bool) error { return nil }
+
+func (o *orderedEnforcer) SetProcFilter(_ uint64, f *ebpf.ProcFilter) error {
+	if !f.Empty() {
+		o.calls = append(o.calls, "seed:procFilter")
+	}
+	return nil
+}
 
 func (o *orderedEnforcer) AllowFilePath(cgroupID uint64, path string, allowed bool) error {
 	return o.AllowFilePathMode(cgroupID, path, false, allowed)

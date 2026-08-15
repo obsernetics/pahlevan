@@ -164,7 +164,7 @@ func TestManager_PolicyAndContainerCounts(t *testing.T) {
 
 func TestManager_VectorRecorders(t *testing.T) {
 	// The per-container vectors only collect at DetailHigh; see
-	// TestDetailLevelGating for the default behaviour.
+	// TestDetailLevelGating for the default behavior.
 	reg := prometheus.NewRegistry()
 	m := NewManagerWithDetail(reg, reg, DetailHigh)
 	labels := MetricLabels{ContainerID: "c1", PolicyName: "p1", WorkloadName: "w", Namespace: "ns"}

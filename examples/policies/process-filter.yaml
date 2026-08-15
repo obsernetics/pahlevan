@@ -1,0 +1,145 @@
+# Constraining who may exec, not just what may be exec'd.
+#
+# The learned allow-set answers one question: has this container ever run this
+# binary? That is enough to stop a dropped miner or a reverse shell, because
+# neither has run before. It is not enough for the interpreter that is already
+# in the image and already learned. A Python application runs python3 a
+# thousand times a day; once an attacker has a command-injection bug, so do
+# they, and the allow-set has no basis on which to object.
+#
+# syscallPolicy.processFilter is the other axis. It constrains the process
+# doing the exec rather than the binary being exec'd, and it is enforced in the
+# same kernel hook, so a rejected exec fails with EPERM rather than being
+# reported afterwards.
+#
+# Three dimensions, each independent and each opt-in:
+#
+#   parentProcesses  the comm of whatever is launching the exec
+#   users            the effective uid at exec
+#   groups           the effective gid at exec
+#
+# A dimension you do not specify is not enforced. That matters more than it
+# sounds: reading "no parents listed" as "an empty allow-list" would deny every
+# exec in the container, so an unset dimension is skipped entirely rather than
+# matched against nothing.
+---
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: payments-api-process-filter
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: payments-api-process-filter
+    app.kubernetes.io/component: security-policy
+  annotations:
+    policy.pahlevan.io/description: >-
+      A Python service where the interpreter is legitimately used constantly.
+      The allow-set cannot distinguish the application running python3 from an
+      injected command running it, so the parent and uid are constrained too.
+    policy.pahlevan.io/use-case: "Interpreted workloads, anything with a shell in the image"
+spec:
+  selector:
+    matchLabels:
+      app: payments-api
+
+  learningConfig:
+    duration: "10m"
+    autoTransition: true
+
+  enforcementConfig:
+    mode: Blocking
+    blockUnknown: true
+
+  syscallPolicy:
+    processFilter:
+      # Only the supervisor and the entrypoint may start anything. A shell
+      # spawned by the web server has comm "sh" or "python3", neither of which
+      # is here, so the exec it attempts is refused at bprm_check_security.
+      #
+      # Names are matched as the kernel sees them: TASK_COMM_LEN is 16, so a
+      # name longer than 15 characters is matched on its first 15. The policy
+      # controller says so in a status warning rather than letting you find out
+      # from a filter that appears to work and does not.
+      parentProcesses:
+      - "supervisord"
+      - "entrypoint.sh"
+      - "tini"
+
+      # Numeric, not names. The kernel matches uids, and it has no view of this
+      # container's /etc/passwd - resolving "payments" against the node's passwd
+      # file would silently match a different user. A non-numeric entry is
+      # reported on the policy status and ignored, never guessed at.
+      users:
+      - "10001"
+
+      # commands names binaries, which is what the exec allow-set already
+      # governs, so these become allow-set entries rather than a fourth filter
+      # dimension. One mechanism instead of two that would have to agree.
+      #
+      # Absolute paths only: the kernel matches the resolved binary, so "psql"
+      # would be written under a key nothing can ever compute.
+      commands:
+      - "/usr/local/bin/python3.12"
+      - "/usr/bin/psql"
+
+  # What the filter cannot do is worth writing down next to what it can.
+  #
+  # It constrains exec. An attacker who stays inside an already-running,
+  # already-permitted process - injecting into the interpreter's own event loop
+  # rather than spawning anything - is not exec'ing, so this hook never fires.
+  # The file, network and capability hooks are what govern that path, and they
+  # are on by default here through the learned baseline.
+  filePolicy:
+    deniedPaths:
+    - "/etc/shadow"
+    - "/root/.ssh"
+
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 5
+---
+# The same idea for a workload that must never exec as root.
+#
+# A container running as uid 1000 that suddenly execs as uid 0 has escalated,
+# whether through a setuid binary or through a bug. The learned allow-set will
+# not notice - the binary may be perfectly familiar - but the uid dimension
+# will.
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: no-root-exec
+  namespace: payments
+  annotations:
+    policy.pahlevan.io/description: >-
+      Refuses any exec performed with an effective uid of 0, regardless of
+      which binary it is.
+spec:
+  selector:
+    matchLabels:
+      security.pahlevan.io/no-root-exec: "true"
+
+  learningConfig:
+    duration: "5m"
+    autoTransition: true
+
+  enforcementConfig:
+    mode: Blocking
+
+  syscallPolicy:
+    processFilter:
+      # Only the workload's own uid. uid 0 is absent, so an exec that reaches
+      # bprm_check_security as root is refused - and the resulting event carries
+      # the flag that says the process filter refused it, not the allow-set,
+      # which is the difference between "we never learned this" and "policy said
+      # no".
+      users:
+      - "1000"
+
+  selfHealing:
+    # A uid filter is a narrow, deliberate constraint rather than a learned
+    # baseline, so it is unlikely to be wrong. The net stays up anyway: if it is
+    # wrong, the workload cannot start any process at all, which is the failure
+    # mode most worth being able to recover from automatically.
+    enabled: true
+    rollbackThreshold: 3
+    rollbackWindow: "5m"

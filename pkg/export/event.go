@@ -172,6 +172,21 @@ type NetworkInfo struct {
 	Protocol        string `json:"protocol"`
 	ProtocolNumber  uint8  `json:"protocolNumber"`
 	Direction       string `json:"direction"`
+
+	// DestinationName is what the cluster says the address is:
+	// "prod/postgres", "node-3", or empty when nothing knows it. An operator
+	// reading "denied connect to 10.104.22.9:5432" has to go and look that up
+	// before deciding whether it matters; "denied connect to prod/postgres"
+	// they can act on.
+	DestinationName string `json:"destinationName,omitempty"`
+	// DestinationKind is service, pod, node, loopback or external. The
+	// distinction that matters is the last one: a denied connect to an address
+	// the cluster does not know is the shape exfiltration takes, and it is a
+	// different finding from a denied connect to a Service this workload
+	// simply may not use.
+	DestinationKind string `json:"destinationKind,omitempty"`
+	// DestinationPortName is the Service port's name, when it had one.
+	DestinationPortName string `json:"destinationPortName,omitempty"`
 }
 
 // Address renders the destination as ip:port for human readable output.
@@ -303,6 +318,17 @@ func (k *KubernetesRef) Complete() bool {
 //		}, true
 //	}
 type AttributionFunc func(cgroupID uint64) (KubernetesRef, bool)
+
+// DestinationFunc names the far end of a connection: what the cluster says the
+// address is, which kind of thing it is, and the Service port's name when it
+// had one. All three may be empty, which is the honest answer for an address
+// nothing knows.
+//
+// It takes the parsed address rather than the string so the implementation does
+// not re-parse on every event, and it runs on the export path, so it must not
+// make a network call - a burst of denials must not become a burst of DNS
+// traffic at exactly the wrong moment.
+type DestinationFunc func(ip net.IP, port uint16) (name, kind, portName string)
 
 // SyscallName renders a syscall number using the generated table in
 // pkg/seccomp, falling back to syscall_<nr> for numbers it does not know.

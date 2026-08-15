@@ -1,441 +1,133 @@
-# Attack Surface Analysis and Monitoring Example
-# This example demonstrates comprehensive attack surface monitoring and analysis capabilities
-
+# Attack surface: what the analyzer computes and how to see it.
+#
+# The attack surface is a different object from the policy. The policy governs
+# what a container may do; the AttackSurface CR records what it *could* do -
+# which ports it exposes, which capabilities it holds, which paths are writable,
+# and what the risk score of that combination is. The analyzer computes it from
+# the live cluster and from the learned profiles, and it does so whether or not
+# anything is being enforced.
+#
+# That distinction matters when reading the numbers. A container with a perfect
+# learned baseline and zero denials can still have a large attack surface,
+# because the surface is about what the pod spec and the image grant, not about
+# what the workload has used. Enforcement narrows what is used; it does not
+# narrow what is granted. Narrowing what is granted is the pod spec's job, which
+# is what the surface report is for.
+---
 apiVersion: policy.pahlevan.io/v1alpha1
 kind: PahlevanPolicy
 metadata:
-  name: attack-surface-monitoring
-  namespace: monitoring-demo
+  name: attack-surface-visibility
+  namespace: default
   labels:
-    observability: "comprehensive"
-    security-focus: "attack-surface"
+    app.kubernetes.io/name: attack-surface-visibility
+    app.kubernetes.io/component: security-policy
   annotations:
-    description: "Comprehensive attack surface monitoring and analysis demonstration"
-    observability.pahlevan.io/dashboard: "attack-surface-analysis"
+    policy.pahlevan.io/description: >-
+      Learns and reports without enforcing, so the attack surface can be
+      measured before anything is constrained.
 spec:
-  # Monitor all pods in the namespace
   selector:
     matchLabels:
-      monitored: "true"
+      security.pahlevan.io/analyze: "true"
 
-  # Extended learning for comprehensive profiling
-  learning:
-    enabled: true
-    duration: 8m
-    autoTransition: true
-    # Comprehensive monitoring
-    syscalls: true
-    network: true
-    files: true
-    processes: true
-    # Advanced analysis
-    adaptiveWindow: true
-    confidenceThreshold: 0.88
-    behaviorBaseline: true
-    anomalyDetection: true
+  learningConfig:
+    duration: "30m"
+    windowSize: "1m"
+    minSamples: 200
+    autoTransition: false
+    lifecycleAware: true
 
-  # Monitoring mode for observability focus
-  enforcement:
-    mode: "monitor"  # Don't block, just observe
-    blockUnknown: false
-    gracePeriod: 60s
+  enforcementConfig:
+    mode: Monitoring
 
-  # Enable self-healing for monitoring stability
-  selfHealing:
-    enabled: true
-    rollbackThreshold: 5
-    recoveryStrategy: "Rollback"
-
-  # Comprehensive attack surface analysis
-  attackSurface:
-    enabled: true
-    scanInterval: 2m  # Frequent scans for demo
-    riskAssessment: true
-    vulnerabilityScanning: true
-    networkTopologyMapping: true
-
-    # Multiple export formats for different consumers
-    exporters:
-      - type: "prometheus"
-        endpoint: "http://prometheus:9090/metrics"
-        interval: "30s"
-      - type: "json"
-        path: "/var/log/pahlevan/attack-surface.json"
-        interval: "1m"
-      - type: "grafana"
-        dashboardId: "attack-surface-analysis"
-        endpoint: "http://grafana:3000"
-      - type: "otel"
-        endpoint: "http://jaeger:14268/api/traces"
-
-    # Risk assessment configuration
-    riskMatrix:
-      high:
-        - "privilegedContainers"
-        - "exposedSensitivePorts"
-        - "dangerousSyscalls"
-      medium:
-        - "networkCommunication"
-        - "fileSystemAccess"
-        - "processExecution"
-      low:
-        - "standardLibraryAccess"
-        - "regularFileIO"
-
-  # Advanced observability configuration
-  observability:
-    # High-frequency metrics collection
+  observabilityConfig:
     metrics:
       enabled: true
-      interval: 15s
-      exporters: ["prometheus", "otel"]
-      customMetrics:
-        - "attack_surface_score"
-        - "risk_assessment_level"
-        - "vulnerability_count"
-        - "network_exposure_score"
-
-    # Distributed tracing
+      interval: "30s"
+      exporters:
+      - type: "prometheus"
     tracing:
       enabled: true
-      sampler: "probabilistic"
-      samplingRate: 0.3  # Higher rate for demo
-      exporters: ["jaeger", "otel"]
-
-    # Structured logging
+      samplingRate: "0.1"
+      exporter:
+        type: "otlp"
+        endpoint: "otel-collector.pahlevan-system.svc:4317"
     logging:
-      enabled: true
       level: "info"
-      structuredLogging: true
-      attackSurfaceLogging: true
-      riskAssessmentLogging: true
-
-    # Multiple alert channels
-    alerts:
+      format: "json"
+      outputs:
+      - type: "stdout"
+    visualization:
       enabled: true
-      channels:
-        - type: "webhook"
-          endpoint: "http://alertmanager:9093/api/v1/alerts"
-        - type: "slack"
-          webhook: "https://hooks.slack.com/services/YOUR_WORKSPACE_ID/YOUR_CHANNEL_ID/YOUR_WEBHOOK_TOKEN"
-          channel: "#security-alerts"
-        - type: "email"
-          recipients: ["security@company.com"]
-        - type: "pagerduty"
-          integrationKey: "YOUR_PAGERDUTY_KEY"
-
-      # Comprehensive alerting conditions
-      conditions:
-        - event: "attackSurfaceExpanded"
-          severity: "medium"
-          threshold: "20%"
-        - event: "newVulnerabilityDetected"
-          severity: "high"
-        - event: "riskScoreIncreased"
-          severity: "medium"
-          threshold: "0.7"
-        - event: "unusualNetworkActivity"
-          severity: "low"
-        - event: "privilegeEscalationAttempt"
-          severity: "critical"
-
-  # Security monitoring profiles
-  monitoringProfiles:
-    - name: "web-application"
-      indicators:
-        - "httpConnections"
-        - "sqlQueries"
-        - "fileUploads"
-        - "authenticationAttempts"
-
-    - name: "database"
-      indicators:
-        - "databaseConnections"
-        - "dataAccess"
-        - "privilegedOperations"
-        - "backupOperations"
-
-    - name: "microservice"
-      indicators:
-        - "serviceToServiceCalls"
-        - "apiEndpointAccess"
-        - "circuitBreakerEvents"
-
+      # How often the cluster graph is recomputed. The analysis walks every pod
+      # and every learned profile, so this is a real cost on a large cluster -
+      # five minutes is a reasonable floor, not a starting point to tune down.
+      updateInterval: "5m"
+      exporters:
+      - type: "mermaid"
+      - type: "cytoscape"
 ---
-# Multi-tier application for comprehensive monitoring
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web-frontend
-  namespace: monitoring-demo
-  labels:
-    tier: frontend
-    monitored: "true"
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: web-frontend
-      tier: frontend
-      monitored: "true"
-  template:
-    metadata:
-      labels:
-        app: web-frontend
-        tier: frontend
-        monitored: "true"
-      annotations:
-        pahlevan.io/monitoring-profile: "web-application"
-    spec:
-      containers:
-      - name: nginx
-        image: nginx:1.25-alpine
-        ports:
-        - containerPort: 80
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 80
-          initialDelaySeconds: 10
-          periodSeconds: 10
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api-backend
-  namespace: monitoring-demo
-  labels:
-    tier: backend
-    monitored: "true"
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: api-backend
-      tier: backend
-      monitored: "true"
-  template:
-    metadata:
-      labels:
-        app: api-backend
-        tier: backend
-        monitored: "true"
-      annotations:
-        pahlevan.io/monitoring-profile: "microservice"
-    spec:
-      containers:
-      - name: api
-        image: node:18-alpine
-        command:
-        - "/bin/sh"
-        - "-c"
-        - |
-          # Simple API server for demo
-          cat > server.js << 'EOF'
-          const http = require('http');
-          const server = http.createServer((req, res) => {
-            // Simulate various API operations
-            if (req.url === '/api/data') {
-              res.writeHead(200, {'Content-Type': 'application/json'});
-              res.end('{"data": "example", "timestamp": "' + Date.now() + '"}');
-            } else if (req.url === '/health') {
-              res.writeHead(200, {'Content-Type': 'text/plain'});
-              res.end('OK');
-            } else {
-              res.writeHead(404);
-              res.end('Not Found');
-            }
-          });
-          server.listen(3000, () => console.log('API server running on port 3000'));
-          EOF
-          node server.js
-        ports:
-        - containerPort: 3000
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "300m"
-
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: database
-  namespace: monitoring-demo
-  labels:
-    tier: database
-    monitored: "true"
-spec:
-  serviceName: database-service
-  replicas: 1
-  selector:
-    matchLabels:
-      app: database
-      tier: database
-      monitored: "true"
-  template:
-    metadata:
-      labels:
-        app: database
-        tier: database
-        monitored: "true"
-      annotations:
-        pahlevan.io/monitoring-profile: "database"
-    spec:
-      containers:
-      - name: postgres
-        image: postgres:15-alpine
-        env:
-        - name: POSTGRES_DB
-          value: "monitoring_demo"
-        - name: POSTGRES_USER
-          value: "demo_user"
-        - name: POSTGRES_PASSWORD
-          value: "demo_password"
-        ports:
-        - containerPort: 5432
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "200m"
-          limits:
-            memory: "1Gi"
-            cpu: "500m"
-        volumeMounts:
-        - name: postgres-storage
-          mountPath: /var/lib/postgresql/data
-  volumeClaimTemplates:
-  - metadata:
-      name: postgres-storage
-    spec:
-      accessModes: ["ReadWriteOnce"]
-      resources:
-        requests:
-          storage: 1Gi
-
----
-# Services
+# Reading the results.
+#
+#   kubectl get attacksurfaces
+#   kubectl describe attacksurface attack-surface-visibility
+#
+# The metrics the analyzer publishes, and what each answers:
+#
+#   pahlevan_exposed_syscalls{criticality}   how much of the syscall surface is
+#                                            reachable, split by how dangerous
+#   pahlevan_exposed_ports{protocol}         listening ports per workload
+#   pahlevan_writable_paths{path_type}       writable filesystem surface
+#   pahlevan_capabilities_granted            capabilities held, not capabilities used
+#   pahlevan_vulnerability_score             the combined score
+#
+# These are gauges. They deliberately do not carry a _total suffix, which is
+# reserved for monotonic counters: rate() over a gauge of "how many ports are
+# open" produces a number with no meaning, and the suffix is what invites
+# someone to write it.
+#
+# A ConfigMap holding a PrometheusRule for the surface metrics. The thresholds
+# are starting points; what matters is that they alert on a *change* in granted
+# surface rather than on an absolute value, because the absolute value is a
+# property of the image and changes when the image does.
 apiVersion: v1
-kind: Service
+kind: ConfigMap
 metadata:
-  name: web-frontend-service
-  namespace: monitoring-demo
-spec:
-  selector:
-    app: web-frontend
-  ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 80
-  type: ClusterIP
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: api-backend-service
-  namespace: monitoring-demo
-spec:
-  selector:
-    app: api-backend
-  ports:
-  - protocol: TCP
-    port: 3000
-    targetPort: 3000
-  type: ClusterIP
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: database-service
-  namespace: monitoring-demo
-spec:
-  selector:
-    app: database
-  ports:
-  - protocol: TCP
-    port: 5432
-    targetPort: 5432
-  type: ClusterIP
-
----
-# Traffic generator for attack surface analysis
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: traffic-generator
-  namespace: monitoring-demo
+  name: pahlevan-attack-surface-alerts
+  namespace: pahlevan-system
   labels:
-    utility: "traffic-generator"
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: traffic-generator
-  template:
-    metadata:
-      labels:
-        app: traffic-generator
-    spec:
-      containers:
-      - name: generator
-        image: alpine:3.18
-        command:
-        - "/bin/sh"
-        - "-c"
-        - |
-          # Install curl for API testing
-          apk add --no-cache curl postgresql-client
+    app.kubernetes.io/part-of: pahlevan
+data:
+  rules.yaml: |
+    groups:
+    - name: pahlevan.attack-surface
+      rules:
+      - alert: PahlevanAttackSurfaceGrew
+        # A workload whose granted capability count goes up between two image
+        # revisions is the signal. The absolute count is a property of the
+        # image; the increase is a decision somebody made.
+        expr: |
+          increase(pahlevan_capabilities_granted[1h]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: More capabilities granted to {{ $labels.container_id }}
+          description: >-
+            The container now holds capabilities it did not hold an hour ago.
+            This is a pod-spec change, not runtime behavior: enforcement will
+            not narrow it, because it is about what is granted rather than what
+            is used.
 
-          # Generate varied traffic patterns for attack surface analysis
-          while true; do
-            # Normal web traffic
-            curl -s http://web-frontend-service/ > /dev/null 2>&1 || true
-            curl -s http://web-frontend-service/health > /dev/null 2>&1 || true
-
-            # API calls
-            curl -s http://api-backend-service:3000/api/data > /dev/null 2>&1 || true
-            curl -s http://api-backend-service:3000/health > /dev/null 2>&1 || true
-
-            # Database connectivity check
-            PGPASSWORD=demo_password psql -h database-service -U demo_user -d monitoring_demo -c "SELECT 1;" > /dev/null 2>&1 || true
-
-            # Generate some variations in traffic patterns
-            if [ $(( $(date +%s) % 30 )) -eq 0 ]; then
-              # Burst traffic
-              for i in $(seq 1 10); do
-                curl -s http://api-backend-service:3000/api/data > /dev/null 2>&1 || true
-              done
-            fi
-
-            sleep 2
-          done
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
-
----
-# Create namespace
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: monitoring-demo
-  labels:
-    monitoring: "enabled"
-    demo: "attack-surface"
+      - alert: PahlevanHighVulnerabilityScore
+        expr: pahlevan_vulnerability_score > 8
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: High attack-surface score for {{ $labels.container_id }}
+          description: >-
+            Exposed ports, writable paths and granted capabilities combine to a
+            score above 8. Read the AttackSurface object for the breakdown; the
+            fix is usually in the pod spec rather than in a Pahlevan policy.

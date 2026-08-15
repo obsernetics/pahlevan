@@ -524,8 +524,16 @@ GET /metrics
 | Metric | Type | Description |
 |--------|------|-------------|
 | `pahlevan_ebpf_programs_loaded` | Gauge | Number of eBPF programs loaded |
-| `pahlevan_ebpf_events_total` | Counter | Total eBPF events processed |
+| `pahlevan_ebpf_events_total` | Counter | Events decoded from the ring buffers, by `kind` |
+| `pahlevan_ebpf_denials_total` | Counter | Operations denied in-kernel with EPERM, by `kind` |
+| `pahlevan_ebpf_decode_errors_total` | Counter | Ring-buffer records that could not be decoded, by `kind` |
+| `pahlevan_ebpf_handler_errors_total` | Counter | Event handlers that returned an error, by `kind` |
 | `pahlevan_ebpf_program_load_errors_total` | Counter | eBPF program load errors |
+
+`pahlevan_ebpf_handler_errors_total` is the one to alert on if you export
+events. Enforcement happens in the kernel and is unaffected by a handler
+failure, so the event and denial counters keep climbing normally while an
+export file, webhook or gRPC subscriber quietly receives nothing.
 
 #### System Metrics
 

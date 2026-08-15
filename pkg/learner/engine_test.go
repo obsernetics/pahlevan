@@ -360,6 +360,7 @@ func TestLearningProfile_GetSyscallFrequency(t *testing.T) {
 			},
 			expectedLen: 3,
 			validateFunc: func(t *testing.T, frequency map[uint64]float64) {
+				t.Helper()
 				assert.InDelta(t, 100.0, frequency[1], 0.1)
 				assert.InDelta(t, 50.0, frequency[2], 0.1)
 				assert.InDelta(t, 25.0, frequency[3], 0.1)
@@ -377,6 +378,7 @@ func TestLearningProfile_GetSyscallFrequency(t *testing.T) {
 			},
 			expectedLen: 2,
 			validateFunc: func(t *testing.T, frequency map[uint64]float64) {
+				t.Helper()
 				// With very short elapsed time, frequencies should be very high
 				assert.Greater(t, frequency[1], 1000.0)     // Much higher than normal
 				assert.Greater(t, frequency[2], 500.0)      // Much higher than normal
@@ -392,6 +394,7 @@ func TestLearningProfile_GetSyscallFrequency(t *testing.T) {
 			},
 			expectedLen: 0,
 			validateFunc: func(t *testing.T, frequency map[uint64]float64) {
+				t.Helper()
 				assert.Empty(t, frequency)
 			},
 		},

@@ -1,0 +1,129 @@
+# A workload Pahlevan should NOT block, and why that is a policy decision
+# rather than a limitation.
+#
+# Most examples here show blocking mode, because that is the point of the tool.
+# This one is the counter-example, and it is included deliberately: a security
+# tool that has no documented answer to "when should I not turn this on" is
+# one that gets turned on everywhere and then turned off everywhere after the
+# first outage.
+#
+# A CI runner executes arbitrary code. That is its function. Every build runs
+# binaries the previous build did not, reads paths nobody enumerated, and dials
+# whatever the dependency tree wants. A learned baseline over one build window
+# describes that build and nothing else, so blocking mode would deny the next
+# one - and the failure would arrive as a compile error nobody attributes to a
+# security policy for several hours.
+#
+# So this policy monitors. That is still worth a great deal:
+#
+#   - The baseline exists, and drift against it is visible.
+#   - Denials are counted as would-have-blocked, so you can see exactly what
+#     blocking mode would have cost before enabling it.
+#   - The events reach the same pipeline as everything else, so a runner that
+#     starts dialling an address no build has ever used is an alert rather than
+#     a forensic exercise after the fact.
+#
+# The honest summary: on a workload whose whole purpose is to be unpredictable,
+# Pahlevan is a detection tool. Everywhere else it is an enforcement tool.
+---
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: ci-runner-monitoring
+  namespace: ci
+  labels:
+    app.kubernetes.io/name: ci-runner-monitoring
+    app.kubernetes.io/component: security-policy
+  annotations:
+    policy.pahlevan.io/description: >-
+      Observation only. A CI runner's behavior is unbounded by design, so a
+      learned baseline cannot be enforced without breaking builds.
+    policy.pahlevan.io/use-case: "CI runners, build agents, anything executing user code"
+    policy.pahlevan.io/risk-level: "high"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: ci-runner
+
+  learningConfig:
+    # Long, because a representative sample of "what does CI do" is measured in
+    # days of builds rather than minutes of steady state. It is never going to
+    # converge, and that is the finding, not a misconfiguration.
+    duration: "24h"
+    # No automatic transition. Nothing here should flip to blocking because a
+    # timer elapsed.
+    autoTransition: false
+
+  enforcementConfig:
+    # Monitoring records what would have been denied without denying it. The
+    # counters are the same ones blocking mode increments, so
+    # pahlevan_ebpf_denials_total tells you the blast radius of enabling
+    # enforcement before you enable it.
+    mode: Monitoring
+
+  # Even in monitoring mode these two lists are worth writing, because they are
+  # what the "would have blocked" number is measured against. A runner reading
+  # the node's kubelet credentials is not a build step under any definition, and
+  # you want that visible on day one rather than after the baseline has quietly
+  # learned it as normal.
+  filePolicy:
+    deniedPaths:
+    - "/var/lib/kubelet"
+    - "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    - "/root/.ssh"
+    - "/etc/shadow"
+
+  networkPolicy:
+    # The registry and the SCM are the destinations a build legitimately needs.
+    # Everything else showing up in the events is worth a look, even though
+    # nothing is being blocked.
+    egressRules:
+    - peers:
+      - ipBlock:
+          cidr: "10.0.0.0/8"
+      ports:
+      - port: 443
+        protocol: TCP
+
+  selfHealing:
+    # Nothing to heal: nothing is being enforced.
+    enabled: false
+---
+# The migration path, kept next to the policy it migrates from.
+#
+# When the denial counters for the monitoring policy above have been flat for a
+# week - meaning the baseline has stopped growing - a narrower policy over the
+# runner's *sidecars* is where enforcement actually belongs. The sidecars are
+# ordinary workloads: a log shipper does the same thing every day, and there is
+# no reason for it to be unenforced just because it shares a pod with something
+# that cannot be.
+apiVersion: policy.pahlevan.io/v1alpha1
+kind: PahlevanPolicy
+metadata:
+  name: ci-runner-sidecars
+  namespace: ci
+  annotations:
+    policy.pahlevan.io/description: >-
+      Blocking for the predictable containers in an unpredictable pod. Selects
+      on the sidecar label rather than the pod, so the runner container itself
+      is untouched.
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: ci-runner-sidecar
+
+  learningConfig:
+    duration: "30m"
+    autoTransition: true
+
+  enforcementConfig:
+    mode: Blocking
+    blockUnknown: true
+    # Long enough that a slow first scrape or a delayed config reload is not
+    # mistaken for an intrusion.
+    gracePeriod: "2m"
+
+  selfHealing:
+    enabled: true
+    rollbackThreshold: 3
+    rollbackWindow: "5m"

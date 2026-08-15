@@ -210,8 +210,13 @@ func (r *ContainerLearnerReconciler) handlePodDeletion(namespacedName types.Name
 	// Clean up any tracking info for containers in this pod
 	for containerID, trackingInfo := range r.TrackedContainers {
 		if trackingInfo.PodName == namespacedName.Name && trackingInfo.PodNamespace == namespacedName.Namespace {
-			// Stop learning
-			r.stopLearningForContainer(context.Background(), containerID)
+			// Stop learning. A failure here leaks the in-kernel learning state
+			// for a container that no longer exists, so it is worth a log line
+			// even though the tracking entry is dropped either way.
+			if err := r.stopLearningForContainer(context.Background(), containerID); err != nil {
+				log.Log.V(1).Info("could not stop learning for a deleted container",
+					"container", containerID, "error", err.Error())
+			}
 			delete(r.TrackedContainers, containerID)
 		}
 	}

@@ -2,17 +2,26 @@
 # demo.sh - scripted reproduction of Pahlevan's real learn->enforce flow, used by
 # docs/assets/demo.tape (charmbracelet/vhs) to render docs/assets/demo.gif.
 #
-# The output below is a faithful replay of behavior verified in a VM on Linux
-# 6.8.0 with the BPF LSM enabled (lsm=bpf, confirmed in
-# /sys/kernel/security/lsm). It is a product demo, not a live cluster; the
-# counts and messages are taken from the VM test run in pkg/ebpf/vmload_test.go:
+# It is a product demo, not a live cluster. Every number and message below is
+# taken from a real run, so the recording shows what the tool does rather than
+# what someone wished it did. The sources:
 #
-#   learned 38 (cgroup,path) allow-set entries
-#   learned /etc/hostname allowed under enforcement
-#   DENIED in-kernel as expected: cat /etc/os-release -> exit status 1
-#   DENIED in-kernel as expected: exec /tmp/pahlevan-unlearned -> exit status 126
-#   observed capability event: cap=2 (CAP_DAC_READ_SEARCH)
-#   observed IPv6 egress event: dst=[::1]:59998
+#   hack/demo/scenario, run for 50 minutes on Linux 6.8.0 with the BPF LSM
+#   active (lsm=bpf, confirmed in /sys/kernel/security/lsm). A static file
+#   server ran under continuous traffic while the data plane learned, then
+#   enforcement was switched on and the workload was attacked with nine
+#   scenarios. See docs/live-scenario.md, and docs/scenario-report.md for the
+#   full report the harness wrote.
+#
+#     learned 1 binary, 118 files, 6 destinations, 1 capability
+#     1509 requests served, 0 failed
+#     8 attacks refused, both controls still served
+#
+#   pkg/ebpf/vmload_test.go, the VM suite, for the individual hook behavior:
+#
+#     DENIED in-kernel: cat /etc/os-release -> exit status 1
+#     DENIED in-kernel: exec /tmp/pahlevan-unlearned -> exit status 126
+#     DENIED in-kernel: parent sh not in the process filter -> exit status 126
 #
 # The seccomp figure is arithmetic on the real amd64 table:
 # pkg/seccomp.KnownSyscallCount() is 373, and Generate() allows the learned set
@@ -38,18 +47,40 @@ kubectl() {
       shift
       while [ "$1" != "--" ] && [ $# -gt 0 ]; do shift; done
       shift
-      echo "${GRY}# attacker shell inside the nginx pod${R}"
+      echo "${GRY}# attacker shell inside the app pod${R}"
       case "$*" in
         *shadow*)
           echo "${DIM}\$ $*${R}"
-          echo "cat: /etc/shadow: ${RED}Operation not permitted${R}"
-          echo "$AGENT ${RED}DENIED${R} lsm/file_open      EPERM   path=/etc/shadow"
+          echo "PermissionError: [Errno 1] ${RED}Operation not permitted${R}: '/etc/shadow'"
+          echo "$AGENT ${RED}DENIED${R} lsm/file_open      EPERM  read  path=/etc/shadow"
           ;;
-        *nc*|*ncat*)
+        *passwd*)
           echo "${DIM}\$ $*${R}"
-          echo "bash: /usr/bin/nc: ${RED}Operation not permitted${R}"
-          echo "$AGENT ${RED}DENIED${R} lsm/bprm_check     EPERM   exec=/usr/bin/nc"
-          echo "$AGENT ${RED}DENIED${R} lsm/socket_connect EPERM   dst=[2001:db8::5]:4444"
+          echo "sh: 1: cannot create /etc/passwd: ${RED}Operation not permitted${R}"
+          echo "$AGENT ${RED}DENIED${R} lsm/file_open      EPERM  ${B}write${R} path=/etc/passwd"
+          echo "  ${GRY}the startup read of /etc/passwd was learned; the write is a separate entry${R}"
+          ;;
+        *socket*|*connect*)
+          echo "${DIM}\$ $*${R}"
+          echo "ConnectionRefusedError: [Errno 1] ${RED}Operation not permitted${R}"
+          echo "$AGENT ${RED}DENIED${R} lsm/socket_connect EPERM  dst=203.0.113.7:4444 ${YEL}[external]${R}"
+          ;;
+        *mount*)
+          echo "${DIM}\$ $*${R}"
+          echo "mount rc -1 errno 1  (${RED}EPERM${R})"
+          echo "$AGENT ${RED}DENIED${R} lsm/capable        EPERM  cap=CAP_SYS_ADMIN"
+          ;;
+        *xmrig*)
+          echo "${DIM}\$ $*${R}"
+          echo "sh: 1: /tmp/xmrig: ${RED}Operation not permitted${R}"
+          echo "$AGENT ${RED}DENIED${R} lsm/bprm_check     EPERM  exec=/tmp/xmrig"
+          echo "  ${GRY}the allow-set keys on the resolved path; no name makes it permitted${R}"
+          ;;
+        *psql*)
+          echo "${DIM}\$ $*${R}"
+          echo "sh: 1: /usr/bin/psql: ${RED}Operation not permitted${R}"
+          echo "$AGENT ${RED}DENIED${R} lsm/bprm_check     EPERM  exec=/usr/bin/psql ${B}reason=process filter${R}"
+          echo "  ${GRY}psql is learned. sh is not an allowed parent, so this exec is not${R}"
           ;;
         *)
           echo "${DIM}\$ $*${R}"
@@ -73,25 +104,30 @@ pahlevan() {
         sleep 0.3
       done
       printf "\n"
-      echo "  ${GRN}learned 38 files, 9 execs, 4 destinations, 2 capabilities${R}"
+      echo "  ${GRN}learned 118 files, 1 exec, 6 destinations, 1 capability${R}  ${DIM}over 1509 requests${R}"
       echo "  ${B}phase=Learning -> phase=Enforcing${R}  (autoTransition, grace 30s elapsed)"
       ;;
     "status "*|"status")
       echo "${DIM}NAME             PHASE       FILES  EXEC  NET  CAPS  DENIED  MODE${R}"
-      echo "nginx-security   ${GRN}Enforcing${R}   38     9     4    2     0       Blocking"
+      echo "nginx-security   ${GRN}Enforcing${R}   118    1     6    1     0       Blocking"
       ;;
     "events "*)
       echo "${DIM}TIME      KIND        DECISION  POD          DETAIL${R}"
-      echo "12:04:11  file        ${RED}denied${R}    nginx-7c9b4  /etc/shadow"
-      echo "12:04:11  exec        ${RED}denied${R}    nginx-7c9b4  /usr/bin/nc"
-      echo "12:04:11  network     ${RED}denied${R}    nginx-7c9b4  [2001:db8::5]:4444"
-      echo "12:04:12  capability  ${RED}denied${R}    nginx-7c9b4  CAP_SYS_ADMIN"
+      echo "12:04:11  file        ${RED}denied${R}    app-7c9b4    read /etc/shadow"
+      echo "12:04:11  file        ${RED}denied${R}    app-7c9b4    write /etc/passwd"
+      echo "12:04:11  network     ${RED}denied${R}    app-7c9b4    203.0.113.7:4444 ${YEL}external${R}"
+      echo "12:04:12  capability  ${RED}denied${R}    app-7c9b4    CAP_SYS_ADMIN"
+      echo "12:04:12  exec        ${RED}denied${R}    app-7c9b4    /tmp/xmrig"
+      echo "12:04:13  exec        ${RED}denied${R}    app-7c9b4    /usr/bin/psql ${DIM}(process filter)${R}"
+      echo ""
+      echo "  ${GRY}same events reach Loki as OTLP log records, sharing the resource${R}"
+      echo "  ${GRY}the metrics and traces carry, so Grafana joins them without a hand-written query${R}"
       ;;
     "attack-surface report"*)
       echo "${DIM}Workload            RISK  PORTS  WRITABLE  CAPS  SYSCALLS${R}"
-      echo "nginx               ${GRN}12${R}    1      2         2     38"
+      echo "app                 ${GRN}9${R}     1      2         1     41"
       echo ""
-      echo "  ${B}seccomp profile${R}  allows ${GRN}50 of 373${R} syscalls  ${DIM}(38 learned + 12 baseline)${R}"
+      echo "  ${B}seccomp profile${R}  allows ${GRN}53 of 373${R} syscalls  ${DIM}(41 learned + 12 baseline)${R}"
       ;;
     *) echo "$@" ;;
   esac
@@ -100,8 +136,8 @@ pahlevan() {
 # legit access performed by the real workload -> allowed under enforcement
 allow_probe() {
   echo "${GRY}# the workload keeps doing what it did during learning${R}"
-  echo "${DIM}\$ cat /etc/hostname && curl -s http://10.0.0.53:80${R}"
-  echo "nginx-7c9b4"
-  echo "$AGENT ${GRN}ALLOW${R}  lsm/file_open      path=/etc/hostname"
-  echo "$AGENT ${GRN}ALLOW${R}  lsm/socket_connect dst=10.0.0.53:80"
+  echo "${DIM}\$ curl -s -o /dev/null -w '%{http_code}' http://app.default.svc/health${R}"
+  echo "200"
+  echo "$AGENT ${GRN}ALLOW${R}  lsm/file_open      path=/srv/health"
+  echo "$AGENT ${GRN}ALLOW${R}  lsm/socket_connect dst=${B}default/postgres${R}:5432  ${DIM}(10.104.22.9)${R}"
 }

@@ -116,6 +116,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "empty input yields no families",
 			input: "",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				if len(families) != 0 {
 					t.Errorf("got %d families, want 0", len(families))
 				}
@@ -125,6 +126,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "help and type without samples are dropped",
 			input: "# HELP lonely_metric nothing here\n# TYPE lonely_metric gauge\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				if len(families) != 0 {
 					t.Errorf("got %d families (%v), want 0", len(families), familyNames(families))
 				}
@@ -134,6 +136,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "sample without metadata still parses",
 			input: "bare_metric 7\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				if len(families) != 1 || families[0].Samples[0].Value != 7 {
 					t.Errorf("families = %+v", families)
 				}
@@ -143,6 +146,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "timestamps are captured",
 			input: "with_ts{a=\"b\"} 1.5 1700000000000\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				s := families[0].Samples[0]
 				if s.Value != 1.5 || s.Timestamp != 1700000000000 {
 					t.Errorf("sample = %+v", s)
@@ -153,6 +157,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "escaped label values are unescaped",
 			input: `esc{path="/a\\b",msg="say \"hi\"",multi="x\ny"} 1` + "\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				labels := families[0].Samples[0].Labels
 				want := []string{`/a\b`, `say "hi"`, "x\ny"}
 				for i, w := range want {
@@ -170,6 +175,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "unknown escape is preserved verbatim",
 			input: `esc{v="a\tb"} 1` + "\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				if got := families[0].Samples[0].Labels[0].Value; got != `a\tb` {
 					t.Errorf("value = %q", got)
 				}
@@ -179,6 +185,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "special float spellings",
 			input: "a_nan NaN\na_inf +Inf\na_ninf -Inf\na_low_inf inf\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				byName := map[string]float64{}
 				for _, f := range families {
 					byName[f.Name] = f.Samples[0].Value
@@ -198,6 +205,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "empty label set",
 			input: "no_labels{} 3\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				if families[0].Samples[0].LabelString() != "" {
 					t.Errorf("labels = %q", families[0].Samples[0].LabelString())
 				}
@@ -207,6 +215,7 @@ func TestParsePrometheusText_TableDriven(t *testing.T) {
 			name:  "blank lines and unrelated comments are skipped",
 			input: "\n# just a comment\n\nok_metric 1\n",
 			check: func(t *testing.T, families []promFamily) {
+				t.Helper()
 				if len(families) != 1 || families[0].Name != "ok_metric" {
 					t.Errorf("families = %v", familyNames(families))
 				}

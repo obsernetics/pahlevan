@@ -42,7 +42,7 @@ func DerivedPolicyName(policy string) string { return "pahlevan-derived-" + poli
 // DerivedBindingName is the object name for the matching binding.
 func DerivedBindingName(policy string) string { return "pahlevan-derived-" + policy }
 
-// Baseline is the learned behaviour a derived policy is built from, collapsed
+// Baseline is the learned behavior a derived policy is built from, collapsed
 // across every container the policy governs.
 type Baseline struct {
 	// Capabilities are the capability names observed, without the CAP_ prefix,
@@ -55,7 +55,7 @@ type Baseline struct {
 	Enforcing int
 }
 
-// CollapseBaseline unions the learned behaviour of the profiles governed by one
+// CollapseBaseline unions the learned behavior of the profiles governed by one
 // policy.
 //
 // The union, not the intersection: a capability one replica needed is a
@@ -198,7 +198,7 @@ func celStringList(items []string) string {
 // DerivedBinding binds a derived policy to the namespaces that opted in.
 //
 // It uses the same opt-in label as the static policy. Deriving a rule from
-// observed behaviour and applying it to a namespace that never asked for
+// observed behavior and applying it to a namespace that never asked for
 // admission control would be a surprise, and the failure mode is a pod that
 // will not start.
 func DerivedBinding(policy string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
@@ -236,7 +236,7 @@ func DerivedBinding(policy string) *admissionregistrationv1.ValidatingAdmissionP
 // loses its baseline has its derived objects removed rather than left behind
 // enforcing a constraint nothing supports any more.
 func EnsureDerived(ctx context.Context, c client.Client) (int, error) {
-	if !supported(ctx, c) {
+	if !supported(c) {
 		return 0, ErrUnsupported
 	}
 

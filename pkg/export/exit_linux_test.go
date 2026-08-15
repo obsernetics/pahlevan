@@ -61,13 +61,13 @@ func TestParentReachesTheEnvelope(t *testing.T) {
 	assert.Equal(t, uint32(300), net.Process.PPID)
 	assert.Equal(t, "sh", net.Process.ParentComm)
 
-	cap := FromCapabilityEvent(&ebpf.CapabilityEvent{
+	capEvt := FromCapabilityEvent(&ebpf.CapabilityEvent{
 		CgroupID: 1, PID: 400, Comm: "app", Capability: 21,
 		PPID: 300, ParentComm: "sh",
 	}, ancestryNow)
-	require.NotNil(t, cap)
-	assert.Equal(t, uint32(300), cap.Process.PPID)
-	assert.Equal(t, "sh", cap.Process.ParentComm)
+	require.NotNil(t, capEvt)
+	assert.Equal(t, uint32(300), capEvt.Process.PPID)
+	assert.Equal(t, "sh", capEvt.Process.ParentComm)
 }
 
 // A process with no recorded parent must omit the keys rather than emit a pid
