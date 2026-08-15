@@ -361,22 +361,22 @@ func (m *Manager) initializePrometheusMetrics() {
 
 	// Attack surface metrics
 	m.exposedSyscallsTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pahlevan_exposed_syscalls_total",
+		Name: "pahlevan_exposed_syscalls",
 		Help: "Number of exposed syscalls per container",
 	}, []string{"container_id", "criticality"})
 
 	m.exposedPortsTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pahlevan_exposed_ports_total",
+		Name: "pahlevan_exposed_ports",
 		Help: "Number of exposed network ports",
 	}, []string{"workload_name", "namespace", "protocol"})
 
 	m.writablePathsTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pahlevan_writable_paths_total",
+		Name: "pahlevan_writable_paths",
 		Help: "Number of writable file paths",
 	}, []string{"container_id", "path_type"})
 
 	m.capabilitiesTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "pahlevan_capabilities_total",
+		Name: "pahlevan_capabilities_granted",
 		Help: "Number of Linux capabilities granted",
 	}, []string{"container_id", "capability_type"})
 
