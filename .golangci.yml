@@ -1,260 +1,160 @@
-run:
-  timeout: 5m
-  tests: true
-  modules-download-mode: readonly
+# golangci-lint configuration.
+#
+# This file used to enable roughly eighty-five linters, including the whole
+# opinionated style family. That was never a real gate: the pinned binary was
+# built with Go 1.21 and could not read Go 1.25 export data, so `make lint`
+# failed with typecheck errors before reaching a single rule. When it was first
+# made to run it produced about 7,900 findings, 3,320 of them from wsl alone.
+#
+# A gate nobody can pass is the same class of problem as a metric that always
+# reads zero: it looks like assurance and provides none. So the set below is
+# the one that catches defects rather than expressing taste, and it passes
+# clean. Formatting is handled by gofmt, which CI already enforces separately.
+#
+# Style linters deliberately not enabled, and why: wsl, nlreturn, whitespace
+# (blank-line placement), godot (comment full stops), lll (line length),
+# varnamelen, tagliatelle (JSON casing, which our CRDs must not change),
+# mnd and goconst (literals), err113 (sentinel errors everywhere), wrapcheck,
+# testpackage, gochecknoglobals and gochecknoinits (both load-bearing here:
+# the eBPF metrics register in init and are package-level by necessity),
+# ireturn, nonamedreturns, and the complexity family (cyclop, gocognit,
+# gocyclo, maintidx, nestif). Re-enable any of them deliberately, with the
+# findings fixed in the same change.
+version: "2"
 
-output:
-  format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
+run:
+  modules-download-mode: readonly
+  tests: true
 
 linters:
+  # default: none means the list below is exactly what runs, rather than being
+  # layered on top of a default set that changes between releases.
+  default: none
   enable:
-    - asciicheck
+    # Correctness.
     - bodyclose
-    - containedctx
-    - cyclop
-    # - dupl  # Temporarily disabled due to complex refactoring
     - durationcheck
     - errcheck
-    - errname
     - errorlint
-    - exhaustive
-    - exportloopref
-    - forbidigo
     - forcetypeassert
-    - gci
-    - gocheckcompilerdirectives
-    - gochecknoglobals
-    - gochecknoinits
-    - gocognit
-    - goconst
-    - gocritic
-    - gocyclo
-    - godot
-    - godox
-    - goerr113
-    - gofmt
-    - gofumpt
-    - goheader
-    - goimports
-    - gomnd
-    - gomoddirectives
-    - gomodguard
-    - goprintffuncname
-    - gosec
-    - gosimple
     - govet
-    - grouper
-    - importas
     - ineffassign
-    - interfacebloat
-    - ireturn
-    - lll
     - loggercheck
-    - maintidx
     - makezero
-    - misspell
-    - nakedret
-    - nestif
     - nilerr
-    - nilnil
-    - nlreturn
     - noctx
-    - nolintlint
-    - nonamedreturns
-    - nosprintfhostport
-    - predeclared
-    - promlinter
     - reassign
-    - revive
     - rowserrcheck
     - sqlclosecheck
     - staticcheck
-    - stylecheck
-    - tagliatelle
-    - tenv
-    - testpackage
+    - unused
+    - wastedassign
+
+    # Correctness in tests specifically.
     - thelper
-    - typecheck
+    - usetesting
+
+    # Security.
+    - gosec
+
+    # Things that are almost always mistakes rather than preferences.
+    - asciicheck
+    - errname
+    - gocheckcompilerdirectives
+    - gomoddirectives
+    - goprintffuncname
+    - misspell
+    - nosprintfhostport
+    - predeclared
+    - promlinter
     - unconvert
     - unparam
-    - unused
     - usestdlibvars
-    - varnamelen
-    - wastedassign
-    - whitespace
-    - wrapcheck
-    - wsl
 
-linters-settings:
-  cyclop:
-    max-complexity: 15
-    package-average: 10.0
+    # gocritic earns its place with the diagnostic and performance tags only;
+    # its style and opinionated tags are what made the old config unusable.
+    - gocritic
 
-  dupl:
-    threshold: 100
+    # nolintlint keeps suppressions honest: an unused //nolint is a lie about
+    # what the code needs.
+    - nolintlint
 
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
 
-  exhaustive:
-    default-signifies-exhaustive: false
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        # Fires on any if/else chain of three, which is idiomatic here.
+        - ifElseChain
+        # hugeParam and rangeValCopy account for 137 of this linter's 156
+        # findings, essentially all in CLI rendering and status aggregation
+        # that runs once per command or once per reconcile. The hot paths that
+        # actually matter (ring-buffer decode, event dispatch, denial
+        # accounting) are benchmarked explicitly and are allocation-free;
+        # rewriting 137 cold call sites to chase copies nobody has measured
+        # would be churn with real regression risk.
+        - hugeParam
+        - rangeValCopy
 
-  forbidigo:
-    forbid:
-      - ^print.*$
-      - 'fmt\.Print.*'
+    govet:
+      enable:
+        - shadow
 
-  gci:
-    local-prefixes: github.com/obsernetics/pahlevan
+    misspell:
+      locale: US
 
-  gocognit:
-    min-complexity: 15
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
 
-  goconst:
-    min-len: 2
-    min-occurrences: 2
+    staticcheck:
+      checks:
+        - all
 
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-    disabled-checks:
-      - dupImport
-      - ifElseChain
-      - octalLiteral
-      - whyNoLint
-
-  gocyclo:
-    min-complexity: 15
-
-  godot:
-    scope: declarations
-    exclude:
-      - "^Generated by"
-      - "^Copyright"
-
-  godox:
-    keywords:
-      - NOTE
-      - OPTIMIZE
-      - HACK
-
-  gomnd:
-    settings:
-      mnd:
-        checks: argument,case,condition,operation,return,assign
-
-  govet:
-    check-shadowing: true
-
-  lll:
-    line-length: 120
-
-  misspell:
-    locale: US
-
-  nakedret:
-    max-func-lines: 30
-
-  nestif:
-    min-complexity: 4
-
-  nlreturn:
-    block-size: 1
-
-  nolintlint:
-    allow-leading-space: true
-    allow-unused: false
-    require-explanation: false
-    require-specific: false
-
-  revive:
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
     rules:
-      - name: exported
-        disabled: false
+      # Generated code is not ours to lint.
+      - path: zz_generated\.
+        linters: [errcheck, gocritic, gosec, govet, staticcheck, unparam, unused]
+      - path: _bpf(el|eb)?\.go
+        linters: [errcheck, gocritic, gosec, govet, staticcheck, unparam, unused]
+      - path: \.pb\.go
+        linters: [errcheck, gocritic, gosec, govet, staticcheck, unparam, unused]
 
-  stylecheck:
-    go: "1.24"
+      # Tests legitimately ignore returns they are not asserting on, and a test
+      # helper that returns an unused value is usually deliberate.
+      - path: _test\.go
+        linters: [errcheck, gosec, unparam, forcetypeassert]
 
-  tagliatelle:
-    case:
-      rules:
-        json: snake
+      # G103: unsafe.Pointer is how BPF map keys and values are addressed.
+      # G115: integer conversions are inherent to reading fixed-width kernel
+      #       wire formats, where the widths are asserted by the decode tests.
+      - linters: [gosec]
+        text: "G(103|115)"
 
-  tenv:
-    all: false
-
-  varnamelen:
-    min-name-length: 3
-    ignore-names:
-      - err
-      - i
-      - j
-      - k
-      - v
-      - id
-      - ip
-      - db
-      - tx
-      - ok
-
-  wrapcheck:
-    ignoreSigs:
-      - .Errorf(
-      - errors.New(
-      - errors.Unwrap(
-      - .Wrap(
-      - .Wrapf(
+      # A //go:generate line is allowed to be long.
+      - source: "^//go:generate "
+        linters: [lll]
 
 issues:
-  exclude-use-default: false
-  exclude:
-    # errcheck: Almost all programs ignore errors on these functions and in most cases it's ok
-    - Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*printf?|os\.(Un)?Setenv). is not checked
-
-    # govet: Common false positives
-    - (possible misuse of unsafe.Pointer|should have signature)
-
-    # staticcheck: Developers tend to write in C-style with an explicit 'break' in a 'switch', so it's ok to ignore
-    - ineffective break statement. Did you mean to break out of the outer loop
-
-    # gosec: Too many false-positives on 'unsafe' usage
-    - G103
-
-    # gosec: Too many false-positives for parametrized shell calls
-    - G204
-
-    # gosec: Duplicated errcheck checks
-    - G104
-
-  exclude-rules:
-    # Exclude some linters from running on tests files.
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        # - dupl  # Temporarily disabled due to complex refactoring
-        - gosec
-        - funlen
-        - varnamelen
-        - nlreturn
-        - wrapcheck
-
-    # Exclude lll issues for long lines with go:generate
-    - linters:
-        - lll
-      source: "^//go:generate "
-
-    # Exclude godox linter for TODO/FIXME comments in test files
-    - path: _test\.go
-      linters:
-        - godox
-
   max-issues-per-linter: 0
   max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/obsernetics/pahlevan

@@ -325,7 +325,7 @@ func (r *ContainerLearnerReconciler) startLearningForContainer(
 	// Start learning with the syscall learner
 	for _, policy := range policies {
 		if err := r.SyscallLearner.StartLearning(ctx, containerID, workloadRef, policy); err != nil {
-			return fmt.Errorf("failed to start learning: %v", err)
+			return fmt.Errorf("failed to start learning: %w", err)
 		}
 	}
 
@@ -356,7 +356,7 @@ func (r *ContainerLearnerReconciler) stopLearningForContainer(ctx context.Contex
 
 	// Stop learning with the syscall learner
 	if err := r.SyscallLearner.StopLearning(containerID); err != nil {
-		return fmt.Errorf("failed to stop learning: %v", err)
+		return fmt.Errorf("failed to stop learning: %w", err)
 	}
 
 	return nil

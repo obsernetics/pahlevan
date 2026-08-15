@@ -42,6 +42,18 @@ var baseline = []string{
 // syscalls plus the safety baseline. Unknown syscall numbers are skipped (they
 // cannot be named in a profile); callers can inspect the returned skipped count.
 func Generate(allowed []uint64) (Profile, int) {
+	return GenerateWithOverrides(allowed, nil, nil)
+}
+
+// GenerateWithOverrides is Generate plus the operator's syscall allow and deny
+// lists from a PahlevanPolicy. Denials are applied last and win over everything,
+// including the safety baseline: an operator who explicitly denies a syscall
+// meant it, and silently keeping it would make the profile a lie.
+//
+// Names are matched as written; an unrecognized name is reported through the
+// returned unknown list rather than dropped, so a typo surfaces instead of
+// quietly widening or narrowing the profile.
+func GenerateWithOverrides(allowed []uint64, allowNames, denyNames []string) (Profile, int) {
 	names := map[string]struct{}{}
 	for _, s := range baseline {
 		names[s] = struct{}{}
@@ -54,6 +66,14 @@ func Generate(allowed []uint64) (Profile, int) {
 			skipped++
 		}
 	}
+	for _, n := range allowNames {
+		if n != "" {
+			names[n] = struct{}{}
+		}
+	}
+	for _, n := range denyNames {
+		delete(names, n)
+	}
 	list := make([]string, 0, len(names))
 	for n := range names {
 		list = append(list, n)
@@ -62,12 +82,35 @@ func Generate(allowed []uint64) (Profile, int) {
 
 	return Profile{
 		DefaultAction: "SCMP_ACT_ERRNO",
-		Architectures: []string{"SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"},
+		Architectures: seccompArchitectures,
 		Syscalls: []SyscallRule{{
 			Names:  list,
 			Action: "SCMP_ACT_ALLOW",
 		}},
 	}, skipped
+}
+
+// KnownName reports whether a syscall name exists in the build architecture's
+// table, so a policy author's typo can be surfaced rather than silently applied.
+func KnownName(name string) bool {
+	for _, n := range SyscallName {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// KnownSyscallCount is the size of the syscall table for the build
+// architecture. It is the denominator for "how much of the syscall surface did
+// this workload actually need", which is the number that justifies enforcing.
+func KnownSyscallCount() int { return len(SyscallName) }
+
+// Architectures reports the seccomp architectures generated profiles declare.
+func Architectures() []string {
+	out := make([]string, len(seccompArchitectures))
+	copy(out, seccompArchitectures)
+	return out
 }
 
 // JSON renders the profile as the JSON a localhostProfile file must contain.

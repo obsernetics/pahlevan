@@ -53,7 +53,7 @@ func fullPahlevanPolicy() *PahlevanPolicy {
 					Operator: LabelSelectorOpIn,
 					Values:   []string{"frontend"},
 				}},
-				NamespaceSelector: &LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
+				NamespaceSelector: &NamespaceSelector{MatchLabels: map[string]string{"env": "prod"}},
 			},
 			LearningConfig: LearningConfig{
 				Duration:       dur(5 * time.Minute),
@@ -66,7 +66,7 @@ func fullPahlevanPolicy() *PahlevanPolicy {
 				Mode:         EnforcementModeBlocking,
 				GracePeriod:  dur(30 * time.Second),
 				AlertOnly:    true,
-				BlockUnknown: true,
+				BlockUnknown: boolPtr(true),
 				Exceptions: []EnforcementException{{
 					Type:      ExceptionTypeSyscall,
 					Patterns:  []string{"ptrace"},
@@ -479,3 +479,5 @@ func TestSchemeBuilder_GroupVersion(t *testing.T) {
 		t.Errorf("SchemeBuilder.GroupVersion = %v, want %v", SchemeBuilder.GroupVersion, GroupVersion)
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

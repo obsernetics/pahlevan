@@ -25,15 +25,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/obsernetics/pahlevan/internal/learner"
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
-	"github.com/obsernetics/pahlevan/pkg/policies"
 	"go.opentelemetry.io/otel/metric"
 	v1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/obsernetics/pahlevan/internal/learner"
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/policies"
 )
 
 // AttackSurfaceAnalyzer provides cluster-wide attack surface analysis and visualization
@@ -47,8 +48,6 @@ type AttackSurfaceAnalyzer struct {
 	clusterGraph         *ClusterAttackSurfaceGraph
 	workloadProfiles     map[string]*WorkloadAttackSurface
 	networkTopology      *NetworkTopology
-	systemCallMatrix     *SystemCallMatrix
-	exposureAnalysis     *ExposureAnalysis
 	vulnerabilityScanner *VulnerabilityScanner
 	threatModel          *ThreatModel
 
@@ -65,10 +64,8 @@ type AttackSurfaceAnalyzer struct {
 	customExporters []CustomExporter
 
 	// Metrics
-	analysisCounter    metric.Int64Counter
-	riskScoreGauge     metric.Float64Gauge
-	exposureCounter    metric.Int64Counter
-	vulnerabilityGauge metric.Int64Gauge
+	analysisCounter metric.Int64Counter
+	riskScoreGauge  metric.Float64Gauge
 
 	stopCh chan struct{}
 }
@@ -301,7 +298,7 @@ type RiskFactor struct {
 	Evidence    []string
 	CVSS        *CVSSScore
 	CWE         []string
-	MITRE       []string
+	MITER       []string
 	Remediation *RemediationGuidance
 }
 
@@ -467,9 +464,8 @@ type AttackSurfaceData struct {
 
 // Vulnerability scanning integration
 type VulnerabilityScanner struct {
-	scanners           map[string]VulnerabilityProvider
-	scanResults        map[string]*ScanResult
-	aggregatedFindings *AggregatedVulnerabilities
+	scanners    map[string]VulnerabilityProvider
+	scanResults map[string]*ScanResult
 }
 
 type VulnerabilityProvider interface {
@@ -554,7 +550,7 @@ func (asa *AttackSurfaceAnalyzer) Start(ctx context.Context) error {
 
 	// Initialize components
 	if err := asa.initializeComponents(); err != nil {
-		return fmt.Errorf("failed to initialize components: %v", err)
+		return fmt.Errorf("failed to initialize components: %w", err)
 	}
 
 	// Start analysis workers
@@ -584,27 +580,27 @@ func (asa *AttackSurfaceAnalyzer) AnalyzeClusterAttackSurface() (*ClusterAttackS
 
 	// Discover and analyze all workloads
 	if err := asa.discoverWorkloads(graph); err != nil {
-		return nil, fmt.Errorf("failed to discover workloads: %v", err)
+		return nil, fmt.Errorf("failed to discover workloads: %w", err)
 	}
 
 	// Analyze network topology
 	if err := asa.analyzeNetworkTopology(graph); err != nil {
-		return nil, fmt.Errorf("failed to analyze network topology: %v", err)
+		return nil, fmt.Errorf("failed to analyze network topology: %w", err)
 	}
 
 	// Perform risk analysis
 	if err := asa.performRiskAnalysis(graph); err != nil {
-		return nil, fmt.Errorf("failed to perform risk analysis: %v", err)
+		return nil, fmt.Errorf("failed to perform risk analysis: %w", err)
 	}
 
 	// Find exposure paths
 	if err := asa.identifyExposurePaths(graph); err != nil {
-		return nil, fmt.Errorf("failed to identify exposure paths: %v", err)
+		return nil, fmt.Errorf("failed to identify exposure paths: %w", err)
 	}
 
 	// Generate recommendations
 	if err := asa.generateRecommendations(graph); err != nil {
-		return nil, fmt.Errorf("failed to generate recommendations: %v", err)
+		return nil, fmt.Errorf("failed to generate recommendations: %w", err)
 	}
 
 	asa.clusterGraph = graph
@@ -637,27 +633,27 @@ func (asa *AttackSurfaceAnalyzer) AnalyzeWorkloadAttackSurface(
 
 	// Analyze containers
 	if err := asa.analyzeWorkloadContainers(surface); err != nil {
-		return nil, fmt.Errorf("failed to analyze containers: %v", err)
+		return nil, fmt.Errorf("failed to analyze containers: %w", err)
 	}
 
 	// Analyze service exposure
 	if err := asa.analyzeServiceExposure(surface); err != nil {
-		return nil, fmt.Errorf("failed to analyze service exposure: %v", err)
+		return nil, fmt.Errorf("failed to analyze service exposure: %w", err)
 	}
 
 	// Analyze network policies
 	if err := asa.analyzeNetworkPolicies(surface); err != nil {
-		return nil, fmt.Errorf("failed to analyze network policies: %v", err)
+		return nil, fmt.Errorf("failed to analyze network policies: %w", err)
 	}
 
 	// Analyze RBAC
 	if err := asa.analyzeRBAC(surface); err != nil {
-		return nil, fmt.Errorf("failed to analyze RBAC: %v", err)
+		return nil, fmt.Errorf("failed to analyze RBAC: %w", err)
 	}
 
 	// Calculate risk metrics
 	if err := asa.calculateWorkloadRisk(surface); err != nil {
-		return nil, fmt.Errorf("failed to calculate risk: %v", err)
+		return nil, fmt.Errorf("failed to calculate risk: %w", err)
 	}
 
 	asa.workloadProfiles[key] = surface
@@ -822,7 +818,7 @@ func (asa *AttackSurfaceAnalyzer) discoverWorkloads(graph *ClusterAttackSurfaceG
 	// Discover Pods
 	pods := &v1.PodList{}
 	if err := asa.client.List(context.Background(), pods); err != nil {
-		return fmt.Errorf("failed to list pods: %v", err)
+		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	for _, pod := range pods.Items {
@@ -857,7 +853,7 @@ func (asa *AttackSurfaceAnalyzer) discoverWorkloads(graph *ClusterAttackSurfaceG
 	// Discover Services
 	services := &v1.ServiceList{}
 	if err := asa.client.List(context.Background(), services); err != nil {
-		return fmt.Errorf("failed to list services: %v", err)
+		return fmt.Errorf("failed to list services: %w", err)
 	}
 
 	for _, service := range services.Items {
@@ -1125,7 +1121,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeWorkloadContainers(surface *WorkloadAtt
 	// Get pods for this workload
 	pods := &v1.PodList{}
 	if err := asa.client.List(context.Background(), pods, client.InNamespace(surface.WorkloadRef.Namespace)); err != nil {
-		return fmt.Errorf("failed to list pods: %v", err)
+		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	for _, pod := range pods.Items {
@@ -1185,7 +1181,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeServiceExposure(surface *WorkloadAttack
 	// Find services that expose this workload
 	services := &v1.ServiceList{}
 	if err := asa.client.List(context.Background(), services, client.InNamespace(surface.WorkloadRef.Namespace)); err != nil {
-		return fmt.Errorf("failed to list services: %v", err)
+		return fmt.Errorf("failed to list services: %w", err)
 	}
 
 	for _, service := range services.Items {
@@ -1226,7 +1222,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeNetworkPolicies(surface *WorkloadAttack
 	// Find network policies that apply to this workload
 	policies := &netv1.NetworkPolicyList{}
 	if err := asa.client.List(context.Background(), policies, client.InNamespace(surface.WorkloadRef.Namespace)); err != nil {
-		return fmt.Errorf("failed to list network policies: %v", err)
+		return fmt.Errorf("failed to list network policies: %w", err)
 	}
 
 	var applicablePolicies []*NetworkPolicyAnalysis
@@ -1271,7 +1267,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeRBAC(surface *WorkloadAttackSurface) er
 	// Get pods for this workload to find service accounts
 	pods := &v1.PodList{}
 	if err := asa.client.List(context.Background(), pods, client.InNamespace(surface.WorkloadRef.Namespace)); err != nil {
-		return fmt.Errorf("failed to list pods: %v", err)
+		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	serviceAccountName := "default"
@@ -1461,7 +1457,7 @@ func (asa *AttackSurfaceAnalyzer) calculateWorkloadRisk(surface *WorkloadAttackS
 		containerRisk += container.RiskScore
 	}
 	if len(surface.Containers) > 0 {
-		containerRisk = containerRisk / float64(len(surface.Containers))
+		containerRisk /= float64(len(surface.Containers))
 	}
 	riskDistribution.Categories["containers"] = containerRisk
 	totalRisk += containerRisk * 0.4 // 40% weight
@@ -2119,8 +2115,9 @@ func (asa *AttackSurfaceAnalyzer) riskToCriticality(score float64) CriticalityLe
 }
 
 func (asa *AttackSurfaceAnalyzer) calculateEdgeRisk(edge *AttackSurfaceEdge, graph *ClusterAttackSurfaceGraph) float64 {
-	// Risk based on edge type and connectivity
-	riskScore := 0.1
+	// Risk based on edge type and connectivity. Every arm assigns, including
+	// the default, so there is no initial value to carry.
+	var riskScore float64
 
 	switch edge.Type {
 	case EdgeTypeNetworkConnection:
@@ -2147,10 +2144,10 @@ func (asa *AttackSurfaceAnalyzer) calculateEdgeRisk(edge *AttackSurfaceEdge, gra
 	return riskScore
 }
 
-func (asa *AttackSurfaceAnalyzer) countNodesByRiskRange(nodes map[string]*AttackSurfaceNode, min, max float64) int {
+func (asa *AttackSurfaceAnalyzer) countNodesByRiskRange(nodes map[string]*AttackSurfaceNode, lo, hi float64) int {
 	count := 0
 	for _, node := range nodes {
-		if node.RiskScore >= min && node.RiskScore < max {
+		if node.RiskScore >= lo && node.RiskScore < hi {
 			count++
 		}
 	}
@@ -2557,7 +2554,7 @@ func (asa *AttackSurfaceAnalyzer) generateGeneralRecommendations(graph *ClusterA
 
 // prioritizeRecommendations sorts recommendations in place so the highest-value
 // actions come first. The rank is severity-dominant (Critical > High > Medium >
-// Low) and, within the same severity, favours quick wins by ordering lower
+// Low) and, within the same severity, favors quick wins by ordering lower
 // effort ahead of higher effort. The slice is mutated in place, so the caller's
 // backing array reflects the new order.
 func (asa *AttackSurfaceAnalyzer) prioritizeRecommendations(recommendations []*RecommendedAction) {
@@ -2956,7 +2953,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeResourceLimits(container *v1.Container)
 	case hasCPU || hasMem:
 		analysis.RiskScore = 2.5 // only one dimension bounded
 	default:
-		analysis.RiskScore = 4.0 // unbounded: DoS / noisy-neighbour exposure
+		analysis.RiskScore = 4.0 // unbounded: DoS / noisy-neighbor exposure
 	}
 
 	if container.Resources.Limits != nil {

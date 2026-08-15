@@ -17,6 +17,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"time"
 
 	"github.com/obsernetics/pahlevan/internal/admission"
 	"github.com/obsernetics/pahlevan/pkg/observability"
@@ -36,6 +37,11 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("operator-setup")
+
+	// derivedAdmissionInterval is how often admission rules are re-derived from
+	// the learned baselines. Slow, because a baseline only changes when a
+	// container finishes learning or a policy is deleted.
+	derivedAdmissionInterval = 2 * time.Minute
 )
 
 func init() {
@@ -71,6 +77,15 @@ func main() {
 	}
 	defer observabilityManager.Shutdown()
 
+	// os.Exit skips deferred calls, so a fatal startup error would drop every
+	// buffered span and metric - precisely the evidence needed to work out why
+	// startup failed. Fatal errors after this point go through fatalf instead.
+	fatalf := func(err error, msg string) {
+		setupLog.Error(err, msg)
+		_ = observabilityManager.Shutdown()
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                        scheme,
 		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
@@ -80,8 +95,7 @@ func main() {
 		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
+		fatalf(err, "unable to start manager")
 	}
 
 	// Control plane: ensure the CEL ValidatingAdmissionPolicy hardening baseline
@@ -98,22 +112,54 @@ func main() {
 		setupLog.Info("CEL ValidatingAdmissionPolicy ensured (pahlevan-pod-hardening)")
 		return nil
 	})); err != nil {
-		setupLog.Error(err, "unable to add admission runnable")
-		os.Exit(1)
+		fatalf(err, "unable to add admission runnable")
+	}
+
+	// Derived admission: rules generated from what each workload was observed
+	// doing, rather than a baseline written by hand.
+	//
+	// Re-derived on a timer because a baseline changes when a container
+	// finishes learning, and rolled back to nothing when a policy loses its
+	// baseline: a rule outliving the evidence for it looks deliberate and is
+	// the worst kind of stale.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(derivedAdmissionInterval)
+		defer ticker.Stop()
+		reconcile := func() {
+			n, err := admission.EnsureDerived(ctx, mgr.GetClient())
+			if errors.Is(err, admission.ErrUnsupported) {
+				return
+			}
+			if err != nil {
+				setupLog.V(1).Info("derived admission reconcile failed", "error", err.Error())
+				return
+			}
+			if n > 0 {
+				setupLog.Info("derived admission policies reconciled", "policies", n)
+			}
+		}
+		reconcile()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				reconcile()
+			}
+		}
+	})); err != nil {
+		fatalf(err, "unable to add derived admission runnable")
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+		fatalf(err, "unable to set up health check")
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+		fatalf(err, "unable to set up ready check")
 	}
 
 	setupLog.Info("starting pahlevan-operator")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running operator")
-		os.Exit(1)
+		fatalf(err, "problem running operator")
 	}
 }

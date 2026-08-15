@@ -46,6 +46,14 @@ rules:
 - apiGroups:
   - policy.pahlevan.io
   resources:
+  - containerprofiles
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - policy.pahlevan.io
+  resources:
   - pahlevanpolicies
   verbs:
   - create

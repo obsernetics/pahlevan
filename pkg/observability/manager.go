@@ -24,11 +24,12 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	// OTLP exporters commented out due to dependency issues
-	// "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	// "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+
 	// "go.opentelemetry.io/otel/sdk/instrumentation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -87,8 +88,11 @@ type Config struct {
 
 // ExporterConfig defines exporter configuration
 type ExporterConfig struct {
-	Type       ExporterType
-	Endpoint   string
+	Type ExporterType
+	// Endpoint is the collector address, e.g. otel-collector:4317 for OTLP/gRPC.
+	Endpoint string
+	// Insecure disables TLS to the collector (common for in-cluster collectors).
+	Insecure   bool
 	Headers    map[string]string
 	Attributes map[string]string
 	Config     map[string]interface{}
@@ -503,7 +507,7 @@ func NewManager(exportsList string) (*Manager, error) {
 	}
 
 	if err := manager.initializeProviders(); err != nil {
-		return nil, fmt.Errorf("failed to initialize providers: %v", err)
+		return nil, fmt.Errorf("failed to initialize providers: %w", err)
 	}
 
 	return manager, nil
@@ -519,20 +523,20 @@ func (m *Manager) initializeProviders() error {
 		),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create resource: %v", err)
+		return fmt.Errorf("failed to create resource: %w", err)
 	}
 
 	// Initialize metrics provider
 	if m.config.MetricsEnabled {
 		if err := m.initializeMetrics(res); err != nil {
-			return fmt.Errorf("failed to initialize metrics: %v", err)
+			return fmt.Errorf("failed to initialize metrics: %w", err)
 		}
 	}
 
 	// Initialize tracing provider
 	if m.config.TracingEnabled {
 		if err := m.initializeTracing(res); err != nil {
-			return fmt.Errorf("failed to initialize tracing: %v", err)
+			return fmt.Errorf("failed to initialize tracing: %w", err)
 		}
 	}
 
@@ -592,11 +596,34 @@ func (m *Manager) initializeTracing(res *resource.Resource) error {
 	for _, exporterConfig := range m.config.TracingExporters {
 		switch exporterConfig.Type {
 		case ExporterTypeOTLP:
-			// OTLP trace exporter temporarily disabled due to dependency issues
-			log.Log.Info("OTLP trace exporter temporarily disabled")
+			// Real OTLP/gRPC exporter. Both exporters used to be stubbed out with
+			// a log line, so the provider was built with zero span processors and
+			// tracing silently did nothing while still being advertised.
+			opts := []otlptracegrpc.Option{}
+			if exporterConfig.Endpoint != "" {
+				opts = append(opts, otlptracegrpc.WithEndpoint(exporterConfig.Endpoint))
+			}
+			if exporterConfig.Insecure {
+				opts = append(opts, otlptracegrpc.WithInsecure())
+			}
+			if len(exporterConfig.Headers) > 0 {
+				opts = append(opts, otlptracegrpc.WithHeaders(exporterConfig.Headers))
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			exp, err := otlptracegrpc.New(ctx, opts...)
+			cancel()
+			if err != nil {
+				log.Log.Error(err, "failed to create OTLP trace exporter", "endpoint", exporterConfig.Endpoint)
+				continue
+			}
+			exporters = append(exporters, exp)
 		case ExporterTypeConsole:
-			// Console trace exporter temporarily disabled due to API compatibility
-			log.Log.Info("Console trace exporter temporarily disabled")
+			exp, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+			if err != nil {
+				log.Log.Error(err, "failed to create console trace exporter")
+				continue
+			}
+			exporters = append(exporters, exp)
 		}
 	}
 
@@ -638,18 +665,18 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Start custom exporters
 	for _, exporter := range m.exporters {
 		if err := exporter.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start exporter %s: %v", exporter.GetType(), err)
+			return fmt.Errorf("failed to start exporter %s: %w", exporter.GetType(), err)
 		}
 	}
 
 	// Initialize default dashboards
 	if err := m.createDefaultDashboards(); err != nil {
-		return fmt.Errorf("failed to create default dashboards: %v", err)
+		return fmt.Errorf("failed to create default dashboards: %w", err)
 	}
 
 	// Initialize default alert rules
 	if err := m.createDefaultAlertRules(); err != nil {
-		return fmt.Errorf("failed to create default alert rules: %v", err)
+		return fmt.Errorf("failed to create default alert rules: %w", err)
 	}
 
 	return nil
@@ -661,13 +688,13 @@ func (m *Manager) Shutdown() error {
 	// Shutdown providers
 	if m.meterProvider != nil {
 		if err := m.meterProvider.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("failed to shutdown meter provider: %v", err)
+			return fmt.Errorf("failed to shutdown meter provider: %w", err)
 		}
 	}
 
 	if m.tracerProvider != nil {
 		if err := m.tracerProvider.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("failed to shutdown tracer provider: %v", err)
+			return fmt.Errorf("failed to shutdown tracer provider: %w", err)
 		}
 	}
 
@@ -696,7 +723,7 @@ func (m *Manager) CreateCounter(name, description, unit string) (metric.Int64Cou
 		metric.WithUnit(unit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create counter: %v", err)
+		return nil, fmt.Errorf("failed to create counter: %w", err)
 	}
 
 	m.mu.Lock()
@@ -713,7 +740,7 @@ func (m *Manager) CreateGauge(name, description, unit string) (metric.Float64His
 		metric.WithUnit(unit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gauge: %v", err)
+		return nil, fmt.Errorf("failed to create gauge: %w", err)
 	}
 
 	m.mu.Lock()
@@ -730,7 +757,7 @@ func (m *Manager) CreateHistogram(name, description, unit string) (metric.Float6
 		metric.WithUnit(unit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create histogram: %v", err)
+		return nil, fmt.Errorf("failed to create histogram: %w", err)
 	}
 
 	m.mu.Lock()
@@ -914,4 +941,31 @@ func (m *Manager) ExportObservabilityData() (*ObservabilityData, error) {
 	}
 
 	return data, nil
+}
+
+// StartSpan begins a span on the manager's tracer. It is safe to call before or
+// after tracing is configured: when tracing is disabled the global no-op tracer
+// is used, so callers never need to nil-check. Previously the manager built a
+// TracerProvider with no exporters and no caller ever started a span, so tracing
+// was advertised but produced nothing.
+func (m *Manager) StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	m.mu.RLock()
+	tr := m.tracer
+	m.mu.RUnlock()
+	if tr == nil {
+		tr = otel.Tracer("pahlevan.io/operator")
+	}
+	ctx, span := tr.Start(ctx, name)
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	return ctx, span
+}
+
+// TracingEnabled reports whether at least one span exporter is configured, so
+// callers and tests can distinguish "tracing off" from "tracing broken".
+func (m *Manager) TracingEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tracerProvider != nil
 }

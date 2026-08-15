@@ -122,10 +122,10 @@ func (tf *TestFramework) Setup(config *TestConfig) error {
 	// Initialize scheme
 	tf.scheme = runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(tf.scheme); err != nil {
-		return fmt.Errorf("failed to add client-go scheme: %v", err)
+		return fmt.Errorf("failed to add client-go scheme: %w", err)
 	}
 	if err := v1alpha1.AddToScheme(tf.scheme); err != nil {
-		return fmt.Errorf("failed to add pahlevan scheme: %v", err)
+		return fmt.Errorf("failed to add pahlevan scheme: %w", err)
 	}
 
 	// Set up test environment
@@ -138,13 +138,13 @@ func (tf *TestFramework) Setup(config *TestConfig) error {
 	// Start the test environment
 	cfg, err := tf.testEnv.Start()
 	if err != nil {
-		return fmt.Errorf("failed to start test environment: %v", err)
+		return fmt.Errorf("failed to start test environment: %w", err)
 	}
 
 	// Create Kubernetes client
 	tf.k8sClient, err = client.New(cfg, client.Options{Scheme: tf.scheme})
 	if err != nil {
-		return fmt.Errorf("failed to create kubernetes client: %v", err)
+		return fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
 
 	// Create manager
@@ -154,24 +154,24 @@ func (tf *TestFramework) Setup(config *TestConfig) error {
 		LeaderElection:         false, // Disable for tests
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create manager: %v", err)
+		return fmt.Errorf("failed to create manager: %w", err)
 	}
 	tf.manager = mgr
 
 	// Initialize components
 	if err := tf.initializeComponents(config); err != nil {
-		return fmt.Errorf("failed to initialize components: %v", err)
+		return fmt.Errorf("failed to initialize components: %w", err)
 	}
 
 	// Set up controllers
 	if err := tf.setupControllers(); err != nil {
-		return fmt.Errorf("failed to setup controllers: %v", err)
+		return fmt.Errorf("failed to setup controllers: %w", err)
 	}
 
 	// Create test namespace
 	tf.testNamespace = "test-" + tf.generateRandomString(8)
 	if err := tf.createTestNamespace(); err != nil {
-		return fmt.Errorf("failed to create test namespace: %v", err)
+		return fmt.Errorf("failed to create test namespace: %w", err)
 	}
 
 	// Start manager in background
@@ -184,7 +184,7 @@ func (tf *TestFramework) Setup(config *TestConfig) error {
 
 	// Wait for manager to be ready
 	if err := tf.waitForManagerReady(); err != nil {
-		return fmt.Errorf("manager failed to become ready: %v", err)
+		return fmt.Errorf("manager failed to become ready: %w", err)
 	}
 
 	return nil
@@ -206,7 +206,7 @@ func (tf *TestFramework) Cleanup() error {
 	// Stop test environment
 	if tf.testEnv != nil {
 		if err := tf.testEnv.Stop(); err != nil {
-			return fmt.Errorf("failed to stop test environment: %v", err)
+			return fmt.Errorf("failed to stop test environment: %w", err)
 		}
 	}
 
@@ -263,7 +263,7 @@ func (tf *TestFramework) setupControllers() error {
 	}
 
 	if err := policyController.SetupWithManager(tf.manager); err != nil {
-		return fmt.Errorf("failed to setup policy controller: %v", err)
+		return fmt.Errorf("failed to setup policy controller: %w", err)
 	}
 
 	// Set up Container Learner controller
@@ -277,7 +277,7 @@ func (tf *TestFramework) setupControllers() error {
 	}
 
 	if err := containerController.SetupWithManager(tf.manager); err != nil {
-		return fmt.Errorf("failed to setup container controller: %v", err)
+		return fmt.Errorf("failed to setup container controller: %w", err)
 	}
 
 	// Set up Attack Surface Analyzer controller
@@ -292,7 +292,7 @@ func (tf *TestFramework) setupControllers() error {
 	}
 
 	if err := attackSurfaceController.SetupWithManager(tf.manager); err != nil {
-		return fmt.Errorf("failed to setup attack surface controller: %v", err)
+		return fmt.Errorf("failed to setup attack surface controller: %w", err)
 	}
 
 	return nil
@@ -508,21 +508,21 @@ func (tf *TestFramework) RunScenario(scenario TestScenario) error {
 	// Setup
 	if scenario.Setup != nil {
 		if err := scenario.Setup(tf); err != nil {
-			return fmt.Errorf("scenario setup failed: %v", err)
+			return fmt.Errorf("scenario setup failed: %w", err)
 		}
 	}
 
 	// Execute
 	if scenario.Execute != nil {
 		if err := scenario.Execute(tf); err != nil {
-			return fmt.Errorf("scenario execution failed: %v", err)
+			return fmt.Errorf("scenario execution failed: %w", err)
 		}
 	}
 
 	// Verify
 	if scenario.Verify != nil {
 		if err := scenario.Verify(tf); err != nil {
-			return fmt.Errorf("scenario verification failed: %v", err)
+			return fmt.Errorf("scenario verification failed: %w", err)
 		}
 	}
 

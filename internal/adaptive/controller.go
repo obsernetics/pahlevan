@@ -4,26 +4,32 @@
 // It consumes the eBPF event stream, attributes each event to a Kubernetes pod
 // via the cgroup id, and drives each matched container through a learning window
 // and then into in-kernel enforcement - with no hand-written rules. This is the
-// behaviour that distinguishes Pahlevan from Falco (alert-only, manual rules) and
+// behavior that distinguishes Pahlevan from Falco (alert-only, manual rules) and
 // Tetragon (manual TracingPolicy).
 package adaptive
 
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/metrics"
 	"github.com/obsernetics/pahlevan/pkg/seccomp"
 )
 
@@ -41,28 +47,205 @@ type Enforcer interface {
 	SetFileEnforcement(cgroupID uint64, enforce bool) error
 	SetNetworkEnforcement(cgroupID uint64, enforce bool) error
 	SetExecEnforcement(cgroupID uint64, enforce bool) error
+	SetCapabilityEnforcement(cgroupID uint64, enforce bool) error
+
+	// The Allow* methods seed or revoke a single kernel allow-set entry, which
+	// is how an operator's policy overrides reach the data plane. They are
+	// applied just before a container flips to enforcing.
+	AllowFilePath(cgroupID uint64, path string, allowed bool) error
+	AllowFilePathMode(cgroupID uint64, path string, write, allowed bool) error
+	AllowExecPath(cgroupID uint64, path string, allowed bool) error
+	AllowCapability(cgroupID uint64, capability uint32, allowed bool) error
+	AllowNetworkDestination(cgroupID uint64, ip net.IP, port uint16, allowed bool) error
 }
 
 // PolicyResolver decides, for a given cgroup, whether a policy applies and how
 // long its learning window is. The agent supplies a real implementation backed by
 // pod labels + PahlevanPolicy selectors; tests supply a fake.
 type PolicyResolver interface {
-	// Resolve returns (learningWindow, blocking, ok). ok=false means no policy
-	// governs this cgroup yet (keep observing, don't enforce).
-	Resolve(cgroupID uint64, ref attribution.ContainerRef) (window time.Duration, blocking bool, ok bool)
+	// Resolve returns the governing decision. ok=false means no policy governs
+	// this cgroup yet, so keep observing and do not enforce.
+	Resolve(cgroupID uint64, ref attribution.ContainerRef) (d Decision, ok bool)
 	// PodMeta resolves a pod UID to its namespace and name (ok=false if unknown).
 	PodMeta(podUID string) (namespace, name string, ok bool)
 }
 
+// Denial markers set by the eBPF data plane. The contract is defined once, next
+// to the wire format it describes, and aliased here so this package keeps
+// reading naturally. Duplicating the literals invited the two halves to drift.
+const (
+	DeniedFlag      = ebpf.DeniedFlag
+	DeniedDirection = ebpf.DeniedDirection
+)
+
+// RollbackConfig tunes health-driven rollback out of enforcement. A container
+// that starts failing right after Pahlevan flips it to enforcing is, far more
+// often than not, failing *because* of an incomplete learned baseline. Rolling
+// back to learning is what makes the "self-healing" claim true.
+type RollbackConfig struct {
+	// ObservationWindow is how long after the enforce transition the controller
+	// watches the container for distress. Past this window the baseline is
+	// considered settled and rollback is no longer evaluated. Zero or negative
+	// disables health-driven rollback entirely.
+	ObservationWindow time.Duration
+
+	// DenialThreshold is the number of in-kernel denials observed within
+	// ObservationWindow that triggers a rollback. Because the count is bounded
+	// by the window, this is a denial rate. Zero or negative disables the
+	// denial-driven trigger (pod distress can still trigger).
+	DenialThreshold int
+
+	// Cooldown is the extra learning time imposed after a rollback, before the
+	// container may be considered for enforcement again. It is multiplied by the
+	// rollback count, so repeated failures back off linearly and cannot flap.
+	Cooldown time.Duration
+
+	// MaxAttempts caps how many times a single container may be transitioned to
+	// enforcing. Once reached the container stays in learning (monitor only)
+	// rather than being flipped back and forth forever. Zero or negative means
+	// unlimited.
+	MaxAttempts int
+}
+
+// DefaultRollbackConfig returns the rollback settings the node agent runs with.
+// They are deliberately conservative: react inside the first few minutes, when
+// a bad baseline shows up, and give up after a few attempts instead of flapping.
+func DefaultRollbackConfig() RollbackConfig {
+	return RollbackConfig{
+		ObservationWindow: 5 * time.Minute,
+		DenialThreshold:   10,
+		Cooldown:          10 * time.Minute,
+		MaxAttempts:       3,
+	}
+}
+
+// ContainerBaseline records the per-container runtime health of a pod at the
+// instant it transitioned to enforcing. Distress is judged relative to this, so
+// a pod that was already crash-looping before Pahlevan touched it does not get
+// blamed on enforcement.
+type ContainerBaseline struct {
+	// Restarts is the restart count per container name at the transition.
+	Restarts map[string]int32
+	// Ready is the readiness per container name at the transition.
+	Ready map[string]bool
+}
+
+// CaptureBaseline snapshots a pod's per-container restart counts and readiness.
+// A nil pod yields a zero baseline, which EvaluatePodDistress treats as
+// "nothing known", so an unreadable pod never triggers a rollback on its own.
+func CaptureBaseline(pod *corev1.Pod) ContainerBaseline {
+	b := ContainerBaseline{}
+	if pod == nil {
+		return b
+	}
+	b.Restarts = make(map[string]int32, len(pod.Status.ContainerStatuses))
+	b.Ready = make(map[string]bool, len(pod.Status.ContainerStatuses))
+	for _, cs := range pod.Status.ContainerStatuses {
+		b.Restarts[cs.Name] = cs.RestartCount
+		b.Ready[cs.Name] = cs.Ready
+	}
+	return b
+}
+
+// EvaluatePodDistress reports whether a pod has deteriorated relative to the
+// baseline captured when it began enforcing. It returns a human-readable reason
+// suitable for a Kubernetes Event.
+//
+// Distress is any of:
+//   - a container restarted since the transition,
+//   - a container is waiting in CrashLoopBackOff,
+//   - a container that was ready at the transition is no longer ready.
+//
+// It is a pure function so the decision is testable without a cluster.
+func EvaluatePodDistress(pod *corev1.Pod, base ContainerBaseline) (string, bool) {
+	if pod == nil {
+		return "", false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if w := cs.State.Waiting; w != nil && w.Reason == "CrashLoopBackOff" {
+			return fmt.Sprintf("container %q entered CrashLoopBackOff after enforcement began", cs.Name), true
+		}
+		if base.Restarts != nil {
+			if was, known := base.Restarts[cs.Name]; known && cs.RestartCount > was {
+				return fmt.Sprintf("container %q restarted after enforcement began (%d -> %d)", cs.Name, was, cs.RestartCount), true
+			}
+		}
+		if base.Ready != nil {
+			if wasReady, known := base.Ready[cs.Name]; known && wasReady && !cs.Ready {
+				return fmt.Sprintf("container %q became not ready after enforcement began", cs.Name), true
+			}
+		}
+	}
+	return "", false
+}
+
 type cgState struct {
-	cgroupID  uint64
+	cgroupID uint64
+	// firstSeen is when this cgroup was first observed. It never moves, so the
+	// reported profile age stays honest across rollbacks.
 	firstSeen time.Time
-	phase     Phase
-	ref       attribution.ContainerRef
-	syscalls  map[uint64]struct{}
-	files     map[string]struct{}
-	dests     map[string]struct{}
-	execs     map[string]struct{}
+	// learningSince is when the current learning window opened. It equals
+	// firstSeen until a rollback restarts learning.
+	learningSince time.Time
+	phase         Phase
+	ref           attribution.ContainerRef
+	syscalls      map[uint64]struct{}
+	// files and writeFiles are separate: learning a read of a path must not
+	// permit writing it. nginx reads /etc/passwd at startup, and keying on the
+	// path alone let an attacker append a root-equivalent account afterwards.
+	files      map[string]struct{}
+	writeFiles map[string]struct{}
+	dests      map[string]struct{}
+	execs      map[string]struct{}
+	caps       map[uint32]struct{}
+
+	// Enforcement health tracking.
+	enforcingSince time.Time
+	denials        int
+	// Per-signal breakdown of denials, reset alongside it. "Twelve denials" and
+	// "twelve denied egress attempts" are very different findings.
+	denialsByKind      map[string]int
+	attempts           int
+	rollbacks          int
+	lastRollback       time.Time
+	lastRollbackReason string
+	// holdUntil is the earliest time a new enforce attempt may be made. Set on
+	// rollback to impose the cooldown.
+	holdUntil time.Time
+	// baseline is the pod's runtime health at the last enforce transition.
+	baseline ContainerBaseline
+	// capLogged keeps the attempt-cap message to one line per container.
+	capLogged bool
+	// overrides are the operator corrections applied at the last enforce
+	// transition, retained so the generated seccomp profile matches what the
+	// kernel was actually told.
+	overrides Overrides
+	// policyName is the governing policy at that transition.
+	policyName string
+	// seccomp describes the profile last written for this container, so the
+	// ContainerProfile can point an operator at it.
+	seccomp *policyv1alpha1.SeccompProfileRef
+}
+
+// noteDenial records an in-kernel denial. Only denials observed while the
+// container is enforcing are meaningful: they are the ones caused by the
+// baseline Pahlevan just installed. Callers must hold c.mu.
+func (st *cgState) noteDenial(kind string) {
+	if st.phase != PhaseEnforcing {
+		return
+	}
+	st.denials++
+	if st.denialsByKind == nil {
+		st.denialsByKind = make(map[string]int, 4)
+	}
+	st.denialsByKind[kind]++
+}
+
+// resetDenials clears the counters at an enforce transition and on rollback, so
+// they always describe the current attempt rather than the container's history.
+func (st *cgState) resetDenials() {
+	st.denials = 0
+	st.denialsByKind = nil
 }
 
 // Controller tracks per-cgroup learning state and flips cgroups to enforcement
@@ -74,6 +257,11 @@ type Controller struct {
 	policies PolicyResolver
 	now      func() time.Time
 
+	// SeccompRoot is the kubelet's seccomp root, which localhostProfile paths
+	// are relative to. Used only to render the value an operator puts in a pod
+	// spec; the agent never reads it.
+	SeccompRoot string
+
 	// SeccompDir, when set, is where per-workload seccomp profiles generated from
 	// the learned syscall set are written on the enforce transition (for use as a
 	// pod localhostProfile). Empty disables seccomp profile emission.
@@ -83,6 +271,15 @@ type Controller struct {
 	// container (the inspectable baseline). Node labels the profile's origin.
 	Client client.Client
 	Node   string
+
+	// Rollback tunes health-driven rollback out of enforcement. NewController
+	// installs DefaultRollbackConfig; set ObservationWindow to zero to disable.
+	Rollback RollbackConfig
+
+	// Metrics, when set, receives the policy-plane series: transitions,
+	// rollbacks, denials, learning progress and the learned attack surface.
+	// Nil disables recording entirely, which is what the unit tests use.
+	Metrics *metrics.Manager
 
 	mu    sync.Mutex
 	state map[uint64]*cgState
@@ -97,6 +294,7 @@ func NewController(log logr.Logger, enforcer Enforcer, resolver *attribution.Res
 		policies: policies,
 		now:      time.Now,
 		state:    make(map[uint64]*cgState),
+		Rollback: DefaultRollbackConfig(),
 	}
 }
 
@@ -109,15 +307,19 @@ func (c *Controller) track(cgroupID uint64) *cgState {
 				ref = r
 			}
 		}
+		now := c.now()
 		st = &cgState{
-			cgroupID:  cgroupID,
-			firstSeen: c.now(),
-			phase:     PhaseLearning,
-			ref:       ref,
-			syscalls:  make(map[uint64]struct{}),
-			files:     make(map[string]struct{}),
-			dests:     make(map[string]struct{}),
-			execs:     make(map[string]struct{}),
+			cgroupID:      cgroupID,
+			firstSeen:     now,
+			learningSince: now,
+			phase:         PhaseLearning,
+			ref:           ref,
+			syscalls:      make(map[uint64]struct{}),
+			files:         make(map[string]struct{}),
+			writeFiles:    make(map[string]struct{}),
+			dests:         make(map[string]struct{}),
+			execs:         make(map[string]struct{}),
+			caps:          make(map[uint32]struct{}),
 		}
 		c.state[cgroupID] = st
 	}
@@ -146,8 +348,16 @@ func (c *Controller) HandleFileEvent(e *ebpf.FileEvent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
+	if e.Flags&DeniedFlag != 0 {
+		c.recordDenial(st, DenialKindFile)
+		return nil
+	}
 	if st.phase == PhaseLearning && e.Path != "" {
-		st.files[e.Path] = struct{}{}
+		if e.IsWrite() {
+			st.writeFiles[e.Path] = struct{}{}
+		} else {
+			st.files[e.Path] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -160,6 +370,10 @@ func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := c.track(e.CgroupID)
+	if e.Direction&DeniedDirection != 0 {
+		c.recordDenial(st, DenialKindNetwork)
+		return nil
+	}
 	if st.phase == PhaseLearning {
 		st.dests[netKey(e.DstIP, e.DstPort)] = struct{}{}
 	}
@@ -177,14 +391,75 @@ func (c *Controller) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// An exit is not an exec. Learning it would put an empty filename in the
+	// allow-set, and counting it as behaviour would make every terminating
+	// process look like new activity.
+	if e.IsExit() {
+		return nil
+	}
 	st := c.track(e.CgroupID)
+	if e.Flags&DeniedFlag != 0 {
+		c.recordDenial(st, DenialKindExec)
+		return nil
+	}
 	if st.phase == PhaseLearning && e.Filename != "" {
 		st.execs[e.Filename] = struct{}{}
 	}
 	return nil
 }
 
-// Profile is a snapshot of what a container learned.
+// HandleCapabilityEvent records an observed capability for the learning set.
+func (c *Controller) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
+	if e.CgroupID == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.track(e.CgroupID)
+	if e.Flags&DeniedFlag != 0 {
+		c.recordDenial(st, DenialKindCapability)
+		return nil
+	}
+	if st.phase == PhaseLearning {
+		st.caps[e.Capability] = struct{}{}
+	}
+	return nil
+}
+
+// Denial kinds, matching the eBPF event kinds. Used for the per-signal
+// breakdown reported on ContainerProfile and aggregated onto the policy.
+const (
+	DenialKindFile       = "file"
+	DenialKindNetwork    = "network"
+	DenialKindExec       = "exec"
+	DenialKindCapability = "capability"
+)
+
+// metricLabels builds the label set for a tracked container. PodMeta is
+// consulted only when a recorder is actually attached, so the nil-Metrics path
+// stays free. Callers must hold c.mu.
+func (c *Controller) metricLabels(st *cgState) metrics.MetricLabels {
+	l := metrics.MetricLabels{
+		ContainerID: st.ref.ContainerID,
+		Phase:       string(st.phase),
+	}
+	if ns, name, ok := c.policies.PodMeta(st.ref.PodUID); ok {
+		l.Namespace, l.PodName = ns, name
+	}
+	return l
+}
+
+// recordDenial notes an in-kernel denial on both the container state and the
+// policy-plane metrics. Callers must hold c.mu.
+func (c *Controller) recordDenial(st *cgState, kind string) {
+	st.noteDenial(kind)
+	if c.Metrics != nil && st.phase == PhaseEnforcing {
+		c.Metrics.RecordPolicyViolation(c.metricLabels(st))
+	}
+}
+
+// Profile is a snapshot of what a container learned, plus how its enforcement
+// attempts have gone.
 type Profile struct {
 	CgroupID  uint64
 	Ref       attribution.ContainerRef
@@ -192,6 +467,19 @@ type Profile struct {
 	Syscalls  []uint64
 	Files     []string
 	FirstSeen time.Time
+
+	// EnforcingSince is the time of the current enforce transition (zero while
+	// learning).
+	EnforcingSince time.Time
+	// Denials is the number of in-kernel denials seen since that transition.
+	Denials int
+	// Attempts is how many times this container has been flipped to enforcing.
+	Attempts int
+	// Rollbacks is how many of those attempts were rolled back.
+	Rollbacks int
+	// LastRollback / LastRollbackReason describe the most recent rollback.
+	LastRollback       time.Time
+	LastRollbackReason string
 }
 
 // Snapshot returns the current per-cgroup learned profiles (for status/CRD sync).
@@ -200,7 +488,18 @@ func (c *Controller) Snapshot() []Profile {
 	defer c.mu.Unlock()
 	out := make([]Profile, 0, len(c.state))
 	for id, st := range c.state {
-		p := Profile{CgroupID: id, Ref: st.ref, Phase: st.phase, FirstSeen: st.firstSeen}
+		p := Profile{
+			CgroupID:           id,
+			Ref:                st.ref,
+			Phase:              st.phase,
+			FirstSeen:          st.firstSeen,
+			EnforcingSince:     st.enforcingSince,
+			Denials:            st.denials,
+			Attempts:           st.attempts,
+			Rollbacks:          st.rollbacks,
+			LastRollback:       st.lastRollback,
+			LastRollbackReason: st.lastRollbackReason,
+		}
 		for s := range st.syscalls {
 			p.Syscalls = append(p.Syscalls, s)
 		}
@@ -212,43 +511,404 @@ func (c *Controller) Snapshot() []Profile {
 	return out
 }
 
-// Reconcile evaluates every tracked cgroup once: any container still learning
-// whose window has elapsed and whose policy is blocking is flipped to enforcing.
-// Exposed for tests; Run calls it on a ticker.
+// Reconcile evaluates every tracked cgroup once. Containers still learning whose
+// window has elapsed and whose policy is blocking are flipped to enforcing;
+// containers already enforcing are checked for distress and rolled back if the
+// baseline turns out to be wrong. Exposed for tests; Run calls it on a ticker.
 func (c *Controller) Reconcile() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// An Off policy is the operator saying "ignore this workload", so it must
+	// cost nothing: no learned set held in memory, no ContainerProfile, and any
+	// enforcement from a previous mode lifted. Dropping the state here is also
+	// what makes flipping a policy to Off take effect without restarting the
+	// agent.
 	for id, st := range c.state {
-		if st.phase != PhaseLearning {
+		d, ok := c.policies.Resolve(id, st.ref)
+		if !ok || d.Tracked() {
 			continue
 		}
-		window, blocking, ok := c.policies.Resolve(id, st.ref)
-		if !ok || !blocking {
-			continue
+		if st.phase == PhaseEnforcing {
+			c.clearEnforcement(id)
 		}
-		if c.now().Sub(st.firstSeen) < window {
-			continue
+		delete(c.state, id)
+		c.log.V(1).Info("dropped container governed by an Off policy",
+			"cgroup", id, "pod", st.ref.PodUID, "policy", d.PolicyName)
+	}
+
+	for id, st := range c.state {
+		switch st.phase {
+		case PhaseLearning:
+			c.maybeEnforce(id, st)
+		case PhaseEnforcing:
+			c.maybeRollback(id, st)
 		}
-		if err := c.enforcer.SetFileEnforcement(id, true); err != nil {
-			c.log.Error(err, "failed to enable file enforcement", "cgroup", id)
-			continue
-		}
-		if err := c.enforcer.SetNetworkEnforcement(id, true); err != nil {
-			// File enforcement is on; network is best-effort (needs bpf LSM too).
-			c.log.V(1).Info("network enforcement unavailable", "cgroup", id, "error", err.Error())
-		}
-		if err := c.enforcer.SetExecEnforcement(id, true); err != nil {
-			c.log.V(1).Info("exec enforcement unavailable", "cgroup", id, "error", err.Error())
-		}
-		st.phase = PhaseEnforcing
-		c.writeSeccompProfile(st)
-		c.log.Info("container transitioned to enforcing",
-			"cgroup", id, "pod", st.ref.PodUID,
-			"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs))
 	}
 	// Persist/refresh the inspectable ContainerProfile for every tracked container.
 	for _, st := range c.state {
 		c.persistProfile(st)
+	}
+	c.recordFleetMetrics()
+}
+
+// recordEnforceTransition publishes what a container learned at the moment the
+// kernel starts enforcing it. This is the only point where the learned set is
+// final, so it is where the attack-surface gauges are meaningful. Callers must
+// hold c.mu.
+func (c *Controller) recordEnforceTransition(st *cgState, learned time.Duration) {
+	if c.Metrics == nil {
+		return
+	}
+	labels := c.metricLabels(st)
+	c.Metrics.RecordEnforcementAction(labels, "enforce")
+	c.Metrics.RecordContainerLearningDuration(labels, learned)
+
+	// The privilege reduction is the point of the tool: the fraction of the
+	// syscall table the workload will no longer be permitted to call. Reported
+	// against the generated seccomp allow-list, which is the enforced artifact.
+	if total := seccomp.KnownSyscallCount(); total > 0 {
+		allowed := float64(len(st.syscalls))
+		c.Metrics.UpdatePrivilegeReductionRatio(labels, 1-allowed/float64(total))
+	}
+	c.Metrics.UpdateExposedSyscalls(labels, "learned", float64(len(st.syscalls)))
+	c.Metrics.UpdateWritablePaths(labels, "learned", float64(len(st.files)))
+	c.Metrics.UpdateCapabilities(labels, "learned", float64(len(st.caps)))
+}
+
+// recordFleetMetrics publishes the per-node aggregates. Called once per
+// reconcile rather than per event, so the cost is bounded by the tick.
+// Callers must hold c.mu.
+func (c *Controller) recordFleetMetrics() {
+	if c.Metrics == nil {
+		return
+	}
+	var learning, enforcing float64
+	for _, st := range c.state {
+		switch st.phase {
+		case PhaseLearning:
+			learning++
+		case PhaseEnforcing:
+			enforcing++
+		}
+	}
+	c.Metrics.UpdateContainerCounts(float64(len(c.state)), learning, enforcing)
+
+	// Learning progress is the share of tracked containers that have made it
+	// all the way to enforcing. A fleet stuck at 0 means learning windows are
+	// not elapsing or no policy is blocking, which is worth alerting on.
+	progress := float64(0)
+	if len(c.state) > 0 {
+		progress = enforcing / float64(len(c.state))
+	}
+	c.Metrics.UpdateLearningProgress(metrics.MetricLabels{}, progress)
+}
+
+// maybeEnforce flips a learning container to enforcing when its window has
+// elapsed, its policy is blocking, it is not in a post-rollback cooldown, and it
+// has attempts left. Callers must hold c.mu.
+func (c *Controller) maybeEnforce(id uint64, st *cgState) {
+	d, ok := c.policies.Resolve(id, st.ref)
+	if !ok || !d.Blocking() {
+		return
+	}
+	now := c.now()
+	// The grace period is held after the learning window so a workload whose
+	// startup differs from its steady state is observed in both before anything
+	// is denied. Before this it was parsed from the CRD and dropped.
+	if now.Sub(st.learningSince) < d.EnforceAfter() {
+		return
+	}
+	if now.Before(st.holdUntil) {
+		// Post-rollback cooldown: keep learning, do not flap back to enforcing.
+		return
+	}
+	if c.Rollback.MaxAttempts > 0 && st.attempts >= c.Rollback.MaxAttempts {
+		if !st.capLogged {
+			st.capLogged = true
+			c.log.Info("enforcement attempt cap reached; container stays in learning (monitor only)",
+				"cgroup", id, "pod", st.ref.PodUID, "attempts", st.attempts,
+				"maxAttempts", c.Rollback.MaxAttempts, "lastRollbackReason", st.lastRollbackReason)
+		}
+		return
+	}
+	// Seed the operator's overrides first. Flipping enforcement on before the
+	// exceptions are installed would leave a window in which a legitimately
+	// excepted path is denied - brief, but long enough to kill a pod.
+	c.applyOverrides(id, st, d.Overrides)
+
+	if err := c.enforcer.SetFileEnforcement(id, true); err != nil {
+		c.log.Error(err, "failed to enable file enforcement", "cgroup", id)
+		return
+	}
+	if err := c.enforcer.SetNetworkEnforcement(id, true); err != nil {
+		// File enforcement is on; network is best-effort (needs bpf LSM too).
+		c.log.V(1).Info("network enforcement unavailable", "cgroup", id, "error", err.Error())
+	}
+	if err := c.enforcer.SetExecEnforcement(id, true); err != nil {
+		c.log.V(1).Info("exec enforcement unavailable", "cgroup", id, "error", err.Error())
+	}
+	if err := c.enforcer.SetCapabilityEnforcement(id, true); err != nil {
+		c.log.V(1).Info("capability enforcement unavailable", "cgroup", id, "error", err.Error())
+	}
+	st.phase = PhaseEnforcing
+	st.enforcingSince = now
+	st.attempts++
+	st.resetDenials()
+	st.overrides = d.Overrides
+	st.policyName = d.PolicyName
+	st.baseline = CaptureBaseline(c.fetchPod(st))
+	c.writeSeccompProfile(st)
+	c.recordEnforceTransition(st, now.Sub(st.learningSince))
+	c.log.Info("container transitioned to enforcing",
+		"cgroup", id, "pod", st.ref.PodUID, "attempt", st.attempts,
+		"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs), "caps", len(st.caps))
+}
+
+// applyOverrides writes the operator's corrections into the kernel allow-sets.
+//
+// Errors are logged and counted, never fatal: a node whose kernel lacks the BPF
+// LSM runs the agent in observation-only mode, and one unseeded exception must
+// not stop the other signals from being enforced. Callers must hold c.mu.
+func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
+	if o.Empty() {
+		return
+	}
+	failed := 0
+	note := func(err error, kind, what string) {
+		if err == nil {
+			return
+		}
+		failed++
+		c.log.V(1).Info("could not seed allow-set entry",
+			"cgroup", id, "kind", kind, "entry", what, "error", err.Error())
+	}
+
+	for _, p := range o.AllowedFiles {
+		note(c.enforcer.AllowFilePathMode(id, p, false, true), "file:read", p)
+	}
+	for _, p := range o.DeniedFiles {
+		note(c.enforcer.AllowFilePathMode(id, p, false, false), "file:read", p)
+	}
+	for _, p := range o.AllowedWriteFiles {
+		note(c.enforcer.AllowFilePathMode(id, p, true, true), "file:write", p)
+	}
+	for _, p := range o.DeniedWriteFiles {
+		note(c.enforcer.AllowFilePathMode(id, p, true, false), "file:write", p)
+	}
+	for _, p := range o.AllowedExecs {
+		note(c.enforcer.AllowExecPath(id, p, true), "exec", p)
+	}
+	for _, p := range o.DeniedExecs {
+		note(c.enforcer.AllowExecPath(id, p, false), "exec", p)
+	}
+	for _, cap := range o.AllowedCapabilities {
+		note(c.enforcer.AllowCapability(id, cap, true), "capability", fmt.Sprint(cap))
+	}
+	for _, cap := range o.DeniedCapabilities {
+		note(c.enforcer.AllowCapability(id, cap, false), "capability", fmt.Sprint(cap))
+	}
+	for _, d := range o.AllowedDestinations {
+		note(c.enforcer.AllowNetworkDestination(id, d.IP, d.Port, true), "destination", destString(d))
+	}
+	for _, d := range o.DeniedDestinations {
+		note(c.enforcer.AllowNetworkDestination(id, d.IP, d.Port, false), "destination", destString(d))
+	}
+
+	c.log.Info("applied policy overrides to the kernel allow-sets",
+		"cgroup", id, "pod", st.ref.PodUID, "policy", st.policyName,
+		"allowedFiles", len(o.AllowedFiles), "deniedFiles", len(o.DeniedFiles),
+		"allowedWriteFiles", len(o.AllowedWriteFiles), "deniedWriteFiles", len(o.DeniedWriteFiles),
+		"allowedExecs", len(o.AllowedExecs), "deniedExecs", len(o.DeniedExecs),
+		"allowedCapabilities", len(o.AllowedCapabilities),
+		"allowedDestinations", len(o.AllowedDestinations),
+		"failed", failed)
+}
+
+func destString(d Destination) string {
+	return net.JoinHostPort(d.IP.String(), fmt.Sprint(d.Port))
+}
+
+// maybeRollback checks a recently-enforcing container for signs that the learned
+// baseline is wrong, and rolls enforcement back if so. Callers must hold c.mu.
+//
+// Only the ObservationWindow immediately after the transition is examined: that
+// is the interval in which a breakage is attributable to enforcement. Past it
+// the baseline is treated as settled, so a container that is fine for an hour
+// and then legitimately gets denied is not un-enforced by an attacker's noise.
+func (c *Controller) maybeRollback(id uint64, st *cgState) {
+	cfg := c.rollbackConfigFor(id, st)
+	if cfg.ObservationWindow <= 0 {
+		return
+	}
+	elapsed := c.now().Sub(st.enforcingSince)
+	if elapsed < 0 || elapsed > cfg.ObservationWindow {
+		return
+	}
+	reason := ""
+	switch {
+	case cfg.DenialThreshold > 0 && st.denials >= cfg.DenialThreshold:
+		reason = fmt.Sprintf("%d in-kernel denials within %s of enforcement (threshold %d)",
+			st.denials, elapsed.Round(time.Second), cfg.DenialThreshold)
+	default:
+		if r, distressed := EvaluatePodDistress(c.fetchPod(st), st.baseline); distressed {
+			reason = r
+		}
+	}
+	if reason == "" {
+		return
+	}
+	c.rollback(id, st, reason)
+}
+
+// rollbackConfigFor resolves the rollback settings for a container: the
+// controller defaults, overridden by whatever spec.selfHealing sets.
+//
+// spec.selfHealing was previously ignored outright, so a policy that switched
+// self-healing off still had its containers un-enforced by denial noise, and
+// rollbackThreshold and rollbackWindow were accepted by the API and never
+// read. Callers must hold c.mu.
+func (c *Controller) rollbackConfigFor(id uint64, st *cgState) RollbackConfig {
+	cfg := c.Rollback
+	d, ok := c.policies.Resolve(id, st.ref)
+	if !ok {
+		return cfg
+	}
+	if !d.SelfHealing.Enabled {
+		// An operator who turned self-healing off wants the container to stay
+		// enforcing whatever happens. Zeroing the window disables the check.
+		cfg.ObservationWindow = 0
+		return cfg
+	}
+	if d.SelfHealing.Threshold > 0 {
+		cfg.DenialThreshold = d.SelfHealing.Threshold
+	}
+	if d.SelfHealing.Window > 0 {
+		cfg.ObservationWindow = d.SelfHealing.Window
+	}
+	return cfg
+}
+
+// rollback returns a container to learning: it clears every enforcement bit in
+// the eBPF maps, restarts the learning window behind a cooldown, and records why
+// on both the log and a Kubernetes Event. Callers must hold c.mu.
+func (c *Controller) rollback(id uint64, st *cgState, reason string) {
+	c.clearEnforcement(id)
+
+	now := c.now()
+	st.phase = PhaseLearning
+	st.rollbacks++
+	st.lastRollback = now
+	st.lastRollbackReason = reason
+	st.resetDenials()
+	st.enforcingSince = time.Time{}
+	st.baseline = ContainerBaseline{}
+	// Restart the learning window and hold off the next attempt. The cooldown
+	// grows with each rollback so a container that keeps failing backs off
+	// instead of flapping. firstSeen deliberately stays put.
+	st.learningSince = now
+	if c.Rollback.Cooldown > 0 {
+		st.holdUntil = now.Add(time.Duration(st.rollbacks) * c.Rollback.Cooldown)
+	}
+
+	if c.Metrics != nil {
+		labels := c.metricLabels(st)
+		c.Metrics.RecordRollbackAction(labels)
+		// A rollback IS the self-healing action; they are counted separately
+		// because the second is the headline number and the first is the
+		// mechanism, and a future healing action may not be a rollback.
+		c.Metrics.RecordSelfHealingAction(labels)
+	}
+
+	c.log.Info("rolled back enforcement to learning",
+		"cgroup", id, "pod", st.ref.PodUID, "reason", reason,
+		"rollbacks", st.rollbacks, "attempts", st.attempts, "holdUntil", st.holdUntil)
+	c.emitRollbackEvent(st, reason)
+}
+
+// clearEnforcement turns every enforcement bit off for a cgroup. Every setter is
+// attempted even if an earlier one fails: leaving a container half-enforcing is
+// strictly worse than a noisy log. Callers must hold c.mu.
+func (c *Controller) clearEnforcement(id uint64) {
+	if err := c.enforcer.SetFileEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable file enforcement", "cgroup", id)
+	}
+	if err := c.enforcer.SetNetworkEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable network enforcement", "cgroup", id)
+	}
+	if err := c.enforcer.SetExecEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable exec enforcement", "cgroup", id)
+	}
+	if err := c.enforcer.SetCapabilityEnforcement(id, false); err != nil {
+		c.log.Error(err, "failed to disable capability enforcement", "cgroup", id)
+	}
+}
+
+// fetchPod reads the pod backing a tracked cgroup. Returns nil when there is no
+// client, no resolvable pod, or the read fails: callers must treat nil as
+// "no health signal", never as "unhealthy". Callers must hold c.mu.
+func (c *Controller) fetchPod(st *cgState) *corev1.Pod {
+	if c.Client == nil || st.ref.PodUID == "" {
+		return nil
+	}
+	ns, name, ok := c.policies.PodMeta(st.ref.PodUID)
+	if !ok || ns == "" || name == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pod := &corev1.Pod{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, pod); err != nil {
+		c.log.V(1).Info("failed to read pod for enforcement health check", "pod", name, "error", err.Error())
+		return nil
+	}
+	return pod
+}
+
+// emitRollbackEvent records a Warning Event on the pod so the rollback is
+// visible to whoever is looking at the workload, not just in agent logs.
+// The agent's own client is used (it already has events create/patch), so this
+// works without wiring a recorder through the binary. Callers must hold c.mu.
+func (c *Controller) emitRollbackEvent(st *cgState, reason string) {
+	if c.Client == nil || st.ref.PodUID == "" {
+		return
+	}
+	ns, name, ok := c.policies.PodMeta(st.ref.PodUID)
+	if !ok || ns == "" || name == "" {
+		return
+	}
+	now := metav1.NewTime(c.now())
+	ev := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s.pahlevan-rollback.%x", name, c.now().UnixNano()),
+			Namespace: ns,
+			Labels: map[string]string{
+				"app.kubernetes.io/part-of": "pahlevan",
+			},
+		},
+		InvolvedObject: corev1.ObjectReference{
+			APIVersion: "v1",
+			Kind:       "Pod",
+			Namespace:  ns,
+			Name:       name,
+			UID:        types.UID(st.ref.PodUID),
+		},
+		Reason: "EnforcementRolledBack",
+		Message: fmt.Sprintf(
+			"Pahlevan returned this container to learning: %s. The learned baseline was incomplete; enforcement is off and relearning has started.",
+			reason),
+		Type:                corev1.EventTypeWarning,
+		Source:              corev1.EventSource{Component: "pahlevan-agent", Host: c.Node},
+		FirstTimestamp:      now,
+		LastTimestamp:       now,
+		EventTime:           metav1.MicroTime{Time: c.now()},
+		Count:               1,
+		ReportingController: "pahlevan-agent",
+		ReportingInstance:   c.Node,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Client.Create(ctx, ev); err != nil && !apierrors.IsAlreadyExists(err) {
+		c.log.V(1).Info("failed to emit rollback event", "pod", name, "error", err.Error())
 	}
 }
 
@@ -263,7 +923,12 @@ func (c *Controller) writeSeccompProfile(st *cgState) {
 	for s := range st.syscalls {
 		syscalls = append(syscalls, s)
 	}
-	prof, skipped := seccomp.Generate(syscalls)
+	// The operator's syscall lists are part of the enforced artifact, so the
+	// generated profile has to reflect them. Denies win over the safety
+	// baseline: an explicit denial that was quietly kept would make the profile
+	// misrepresent what the workload can call.
+	prof, skipped := seccomp.GenerateWithOverrides(
+		syscalls, st.overrides.AllowedSyscalls, st.overrides.DeniedSyscalls)
 	data, err := prof.JSON()
 	if err != nil {
 		c.log.Error(err, "failed to render seccomp profile")
@@ -282,7 +947,39 @@ func (c *Controller) writeSeccompProfile(st *cgState) {
 		c.log.Error(err, "failed to write seccomp profile", "path", path)
 		return
 	}
-	c.log.Info("wrote learned seccomp profile", "path", path, "allowed", len(prof.Syscalls[0].Names), "skippedUnknown", skipped)
+	now := metav1.NewTime(c.now())
+	st.seccomp = &policyv1alpha1.SeccompProfileRef{
+		LocalhostProfile: c.localhostProfile(path),
+		Path:             path,
+		Node:             c.Node,
+		AllowedSyscalls:  int32(len(prof.Syscalls[0].Names)),
+		TotalSyscalls:    int32(seccomp.KnownSyscallCount()),
+		SkippedUnknown:   int32(skipped),
+		GeneratedAt:      &now,
+	}
+
+	c.log.Info("wrote learned seccomp profile", "path", path,
+		"localhostProfile", st.seccomp.LocalhostProfile,
+		"allowed", len(prof.Syscalls[0].Names), "of", seccomp.KnownSyscallCount(),
+		"skippedUnknown", skipped,
+		"policyAllowed", len(st.overrides.AllowedSyscalls),
+		"policyDenied", len(st.overrides.DeniedSyscalls))
+}
+
+// localhostProfile renders the value a pod's
+// securityContext.seccompProfile.localhostProfile needs, which is the path
+// relative to the kubelet's seccomp root. Returns "" when the profile is not
+// under that root, since a value the kubelet cannot resolve is worse than none.
+func (c *Controller) localhostProfile(path string) string {
+	root := c.SeccompRoot
+	if root == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return rel
 }
 
 // persistProfile upserts a ContainerProfile CR reflecting the container's learned
@@ -317,6 +1014,15 @@ func (c *Controller) persistProfile(st *cgState) {
 	}
 	sort.Strings(execs)
 
+	// Capability names without the CAP_ prefix, which is the spelling a pod
+	// spec uses in securityContext.capabilities, so admission can compare the
+	// two without translating.
+	caps := make([]string, 0, len(st.caps))
+	for c := range st.caps {
+		caps = append(caps, strings.TrimPrefix(ebpf.CapabilityName(c), "CAP_"))
+	}
+	sort.Strings(caps)
+
 	now := metav1.Now()
 	cp := &policyv1alpha1.ContainerProfile{
 		TypeMeta: metav1.TypeMeta{
@@ -335,7 +1041,7 @@ func (c *Controller) persistProfile(st *cgState) {
 			PodName:     podName,
 			Namespace:   ns,
 			ContainerID: st.ref.ContainerID,
-			CgroupID:    st.cgroupID,
+			CgroupID:    int64(st.cgroupID),
 			Node:        c.Node,
 		},
 		Status: policyv1alpha1.ContainerProfileStatus{
@@ -344,15 +1050,28 @@ func (c *Controller) persistProfile(st *cgState) {
 			LearnedFiles:               files,
 			LearnedNetworkDestinations: dests,
 			LearnedExecutables:         execs,
+			LearnedCapabilities:        caps,
 			SyscallCount:               int32(len(syscalls)),
 			FileCount:                  int32(len(files)),
 			NetworkCount:               int32(len(dests)),
 			FirstSeen:                  &metav1.Time{Time: st.firstSeen},
 			LastUpdated:                &now,
+			EnforcementAttempts:        int32(st.attempts),
+			RollbackCount:              int32(st.rollbacks),
+			LastRollbackReason:         st.lastRollbackReason,
+			Seccomp:                    st.seccomp,
+			DenialCount:                int32(st.denials),
+			DeniedFiles:                int32(st.denialsByKind[DenialKindFile]),
+			DeniedNetwork:              int32(st.denialsByKind[DenialKindNetwork]),
+			DeniedExecs:                int32(st.denialsByKind[DenialKindExec]),
+			DeniedCapabilities:         int32(st.denialsByKind[DenialKindCapability]),
 		},
 	}
-	if st.phase == PhaseEnforcing {
-		cp.Status.EnforcingSince = &now
+	if st.phase == PhaseEnforcing && !st.enforcingSince.IsZero() {
+		cp.Status.EnforcingSince = &metav1.Time{Time: st.enforcingSince}
+	}
+	if !st.lastRollback.IsZero() {
+		cp.Status.LastRollbackTime = &metav1.Time{Time: st.lastRollback}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -371,7 +1090,7 @@ func profileName(ref attribution.ContainerRef) string {
 	return name
 }
 
-// Run drives Reconcile on an interval until ctx is cancelled.
+// Run drives Reconcile on an interval until ctx is canceled.
 func (c *Controller) Run(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()

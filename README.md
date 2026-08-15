@@ -19,7 +19,7 @@ Self-learning workload baselines, enforced <i>in-kernel</i> - no hand-written ru
   <a href="#contributing"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
 </p>
 
-<img src="docs/assets/demo.gif" alt="Pahlevan learn-then-enforce demo: a workload is profiled during a learning window, then an attacker's read of /etc/shadow is denied in-kernel with EPERM" width="820" />
+<img src="docs/assets/demo.gif" alt="Pahlevan learn-then-enforce demo: a workload is profiled during a learning window, then an attacker's read of /etc/shadow, exec of nc, and IPv6 egress are each denied in-kernel with EPERM" width="880" />
 
 </div>
 
@@ -28,17 +28,18 @@ Self-learning workload baselines, enforced <i>in-kernel</i> - no hand-written ru
 Most runtime tools either *watch* (alert-only) or make you *write the rules yourself*.
 Pahlevan learns what a workload does, then blocks the rest in-kernel.
 
-- **Auto-learning, not manual rules.** Files opened, destinations dialed, and binaries executed during a learning window become a per-cgroup allow-set.
-- **Real in-kernel enforcement.** LSM BPF hooks deny unlearned opens, egress, and execs with `EPERM`. The syscall never succeeds.
+- **Auto-learning, not manual rules.** Files opened, destinations dialed, binaries executed, and capabilities used during a learning window become a per-cgroup allow-set.
+- **Real in-kernel enforcement.** LSM BPF hooks deny unlearned file opens, egress (IPv4 and IPv6), execs, and capability use with `EPERM`. The syscall never succeeds.
 - **Accurate attribution.** Events tie to the container via `bpf_get_current_cgroup_id()`; paths resolve in-kernel with `bpf_d_path()`.
+- **Events leave the process.** A gRPC streaming API with server-side filtering, plus JSON-lines file and webhook export. Every event carries the node, pod, image, owning workload, labels, the process lineage, and for an exec its full command line. Stream it with `pahlevan events --grpc host:port` or `--file`.
 - **Kubernetes-native and self-healing.** Three CRDs drive the lifecycle, a seccomp profile is generated from the learned syscalls, and enforcement rolls back automatically if it disrupts the workload.
 
 | | **Pahlevan** | Falco | Tetragon | Cilium |
 | --- | --- | --- | --- | --- |
 | Learns behavior | **Auto (per-cgroup)** | Manual rules | Manual `TracingPolicy` | Static policy |
-| Blocks in-kernel | **Files, egress, exec** | Alert only | Possible, hand-written | Network only |
+| Blocks in-kernel | **Files, egress, exec, capabilities** | Alert only | Possible, hand-written | Network only |
 | Rules to author | **None (learned)** | Many | Per-policy | Network rules |
-| Coverage | Syscalls, files, egress, exec | Runtime events | Kernel tracing | L3-L7 traffic |
+| Coverage | Syscalls, files, egress, exec, capabilities | Runtime events | Kernel tracing | L3-L7 traffic |
 
 Falco and Tetragon are excellent observability tools. Pahlevan's claim is closing the
 loop: learn the baseline, then *prevent* the deviation.
@@ -92,17 +93,27 @@ Flip the mode to `Blocking` once you trust the baseline. More in [`examples/`](e
 ## Benchmarks
 
 Measured head-to-head against Falco and Tetragon in a kernel-isolated k3s VM: one
-tool at a time, same `nginx:1.27` workload, same four attack scenarios, defaults.
+tool at a time, same `nginx:1.27` workload, 26 ATT&CK-mapped attack scenarios plus
+3 benign controls, vendor defaults, with a no-tool control run for attribution.
 
 | | **Pahlevan** | Falco | Tetragon |
 | --- | :---: | :---: | :---: |
-| Attacks blocked | **4 / 4** (in-kernel `EPERM`) | 0 / 4 (alert-only) | 0 / 4 (no blocking by default) |
-| Attacks detected | 3 / 4 | 2 / 4 (default rules) | 4 / 4 (exec telemetry) |
+| Attacks blocked | **25 / 26** (in-kernel `EPERM`) | 0 / 26 (alert-only) | 0 / 26 (no blocking by default) |
+| Attacks detected | 25 / 26 | 9 / 26 (default rules) | 25 / 26 (exec telemetry) |
+| Benign controls blocked | **3 / 3** | 0 / 3 | 0 / 3 |
+| Agent memory | **66.7 MiB** | 195.3 MiB | 78.2 MiB |
+| Agent CPU under load | 11.3 % | 10.7 % | **7.8 %** |
 
-Tetragon can block with a hand-written `TracingPolicy`, but an unscoped node-wide kill policy
-froze process creation on the node. Methodology, environment, resource measurements, and honest
-caveats: [`docs/benchmarks/results.md`](docs/benchmarks/results.md). Every number comes from
-`test/benchmark/run.sh`.
+Read the third row before the first. Blocking everything outside a learned baseline
+also blocks `curl`, `cat` and `getent`: nginx itself never broke (HTTP 200 throughout,
+zero restarts), but anything an operator might type into the container is refused.
+That is the tradeoff, not a footnote.
+
+Falco is alert-only by design and Tetragon blocks only with a hand-written
+`TracingPolicy`, so their zeros are posture, not incapability. Methodology,
+environment, per-scenario results, the one attack that got through, and the rest of
+the caveats: [`docs/benchmarks/results.md`](docs/benchmarks/results.md). Every number
+comes from `test/benchmark/run.sh`.
 
 ## Requirements
 

@@ -35,7 +35,6 @@ var (
 	kubeClient      kubernetes.Interface
 	restConfig      *rest.Config
 	globalNamespace string
-	globalVerbose   bool
 	clientsReady    bool
 )
 
@@ -44,7 +43,6 @@ var (
 // (for core/apps/admissionregistration APIs) used by the CLI commands.
 func InitializeClients(kubeconfig, namespace string, verbose bool) error {
 	globalNamespace = namespace
-	globalVerbose = verbose
 
 	var err error
 	if kubeconfig != "" {

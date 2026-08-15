@@ -53,6 +53,7 @@ type PahlevanPolicyReconciler struct {
 //+kubebuilder:rbac:groups=policy.pahlevan.io,resources=pahlevanpolicies,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=policy.pahlevan.io,resources=pahlevanpolicies/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=policy.pahlevan.io,resources=pahlevanpolicies/finalizers,verbs=update
+//+kubebuilder:rbac:groups=policy.pahlevan.io,resources=containerprofiles,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apps,resources=deployments;replicasets;daemonsets;statefulsets,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;update;patch
@@ -144,7 +145,7 @@ func (r *PahlevanPolicyReconciler) handleInitialization(ctx context.Context, pol
 	// Discover target workloads
 	workloads, err := r.discoverTargetWorkloads(ctx, policy)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to discover target workloads: %v", err)
+		return ctrl.Result{}, fmt.Errorf("failed to discover target workloads: %w", err)
 	}
 
 	if len(workloads) == 0 {
@@ -274,10 +275,13 @@ func (r *PahlevanPolicyReconciler) handleTransition(ctx context.Context, policy 
 		}
 	}
 
-	// Wait for enforcement delay
-	time.Sleep(r.EnforcementDelay)
-
-	// Transition to enforcing phase
+	// Transition to enforcing phase.
+	//
+	// This used to time.Sleep(r.EnforcementDelay) here, which blocks one of the
+	// controller's worker goroutines for the whole delay and stalls every other
+	// policy behind it. The delay is honored by requeueing instead; the node
+	// agent is the component that actually gates the transition on its own
+	// learning window and grace period.
 	policy.Status.Phase = policyv1alpha1.PolicyPhaseEnforcing
 	policy.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{
 		StartTime: &metav1.Time{Time: time.Now()},
@@ -296,8 +300,15 @@ func (r *PahlevanPolicyReconciler) handleEnforcement(ctx context.Context, policy
 	logger := log.FromContext(ctx)
 	logger.Info("Handling enforcement phase", "policy", policy.Name)
 
-	// Monitor enforcement status and update metrics
-	// This would integrate with the enforcement engine to get real-time stats
+	// The node agents own the data plane and publish what they saw on
+	// ContainerProfile. Rolling that up here is what makes the policy's
+	// blocked* counters real; they previously stayed at zero forever while the
+	// printed column claimed to show blocked syscalls.
+	if err := r.aggregateProfiles(ctx, policy); err != nil {
+		// A failed roll-up must not stop enforcement from being managed, so it
+		// is logged and the stale counters are left in place.
+		logger.V(1).Info("could not aggregate container profiles", "error", err.Error())
+	}
 
 	// Check for self-healing triggers
 	if policy.Spec.SelfHealing.Enabled && r.shouldTriggerSelfHealing(policy) {
@@ -537,20 +548,67 @@ func (r *PahlevanPolicyReconciler) shouldTransitionToEnforcement(policy *policyv
 	return false
 }
 
+// aggregateProfiles rolls the per-container ContainerProfile status published
+// by the node agents up onto the governing policy.
+func (r *PahlevanPolicyReconciler) aggregateProfiles(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) error {
+	var profiles policyv1alpha1.ContainerProfileList
+	if err := r.List(ctx, &profiles, client.InNamespace(policy.Namespace)); err != nil {
+		return err
+	}
+
+	st := policyv1alpha1.EnforcementStatus{}
+	if policy.Status.EnforcementStatus != nil {
+		// StartTime is set at the transition and must survive the roll-up.
+		st.StartTime = policy.Status.EnforcementStatus.StartTime
+	}
+
+	var rollbacks int32
+	for i := range profiles.Items {
+		p := &profiles.Items[i]
+		if p.Spec.PolicyRef != policy.Name {
+			continue
+		}
+		st.TotalContainers++
+		if p.Status.Phase == "Enforcing" {
+			st.EnforcingContainers++
+		}
+		st.BlockedFileAccess += int64(p.Status.DeniedFiles)
+		st.BlockedNetworkConnections += int64(p.Status.DeniedNetwork)
+		st.BlockedExecs += int64(p.Status.DeniedExecs)
+		st.BlockedCapabilities += int64(p.Status.DeniedCapabilities)
+		rollbacks += p.Status.RollbackCount
+	}
+	st.BlockedTotal = st.BlockedFileAccess + st.BlockedNetworkConnections +
+		st.BlockedExecs + st.BlockedCapabilities
+	st.RollbackCount = rollbacks
+
+	policy.Status.EnforcementStatus = &st
+	return nil
+}
+
 func (r *PahlevanPolicyReconciler) shouldTriggerSelfHealing(policy *policyv1alpha1.PahlevanPolicy) bool {
 	// Check enforcement status for failure indicators
 	if policy.Status.EnforcementStatus == nil {
 		return false
 	}
 
-	// Simple heuristic: if we have too many blocked events, consider rollback
-	totalBlocked := policy.Status.EnforcementStatus.BlockedSyscalls +
-		policy.Status.EnforcementStatus.BlockedNetworkConnections +
-		policy.Status.EnforcementStatus.BlockedFileAccess
-
-	// If blocking more than expected, trigger self-healing
-	return totalBlocked > 1000 // Threshold can be configurable
+	// Per-container rollback already happens in the node agent, which has the
+	// pod health signal and the observation window. This is the cluster-wide
+	// backstop: a policy denying heavily across many containers at once is more
+	// likely a bad baseline than an attack on all of them.
+	//
+	// The threshold is per container rather than absolute, so a large
+	// deployment does not trip it simply by being large.
+	st := policy.Status.EnforcementStatus
+	if st.TotalContainers == 0 {
+		return false
+	}
+	return st.BlockedTotal/int64(st.TotalContainers) > selfHealingDenialsPerContainer
 }
+
+// selfHealingDenialsPerContainer is the average in-kernel denial count per
+// governed container above which the cluster-wide backstop fires.
+const selfHealingDenialsPerContainer = 1000
 
 func (r *PahlevanPolicyReconciler) workloadsToReferences(workloads []metav1.Object) []policyv1alpha1.WorkloadReference {
 	var refs []policyv1alpha1.WorkloadReference
@@ -637,6 +695,10 @@ func (h *PolicyEventHandler) HandleFileEvent(event *ebpf.FileEvent) error {
 
 func (h *PolicyEventHandler) HandleProcessEvent(event *ebpf.ProcessEvent) error {
 	// Handle process (exec) events
+	return nil
+}
+
+func (h *PolicyEventHandler) HandleCapabilityEvent(event *ebpf.CapabilityEvent) error {
 	return nil
 }
 

@@ -38,7 +38,7 @@ spec:
     - jsonPath: .status.learningStatus.progress
       name: Learning
       type: string
-    - jsonPath: .status.enforcementStatus.blockedSyscalls
+    - jsonPath: .status.enforcementStatus.blockedTotal
       name: Blocked
       type: integer
     - jsonPath: .metadata.creationTimestamp
@@ -76,7 +76,13 @@ spec:
                     description: AlertOnly enables alert-only mode for testing
                     type: boolean
                   blockUnknown:
-                    description: BlockUnknown blocks unknown syscalls/access patterns
+                    description: |-
+                      BlockUnknown blocks behavior outside the learned baseline. Nil means
+                      "the default for the mode", which is true under Blocking: default-deny of
+                      unlearned behavior is the only enforcement the data plane performs, so a
+                      Blocking policy that did not block it would enforce nothing. Explicitly
+                      false downgrades the policy to Monitoring. A bare bool could not express
+                      the difference between unset and false.
                     type: boolean
                   exceptions:
                     description: Exceptions defines enforcement exceptions
@@ -119,7 +125,13 @@ spec:
                 description: FilePolicy defines file access policies
                 properties:
                   allowedPaths:
-                    description: AllowedPaths explicitly allows specific paths
+                    description: |-
+                      AllowedPaths explicitly allows specific paths.
+
+                      Paths must be fully resolved and exact. Enforcement keys on the path the
+                      kernel resolves, which follows symlinks, so "/etc/os-release" grants
+                      nothing where it links to /usr/lib/os-release. Wildcards are not
+                      supported and are matched literally.
                     items:
                       type: string
                     type: array
@@ -128,7 +140,9 @@ spec:
                       paths
                     type: string
                   deniedPaths:
-                    description: DeniedPaths explicitly denies specific paths
+                    description: |-
+                      DeniedPaths explicitly denies specific paths, removing them from the
+                      learned baseline. The same resolution rules as AllowedPaths apply.
                     items:
                       type: string
                     type: array
@@ -255,8 +269,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                               podSelector:
                                 description: PodSelector selects pods
@@ -290,8 +338,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                             type: object
                           type: array
@@ -384,8 +466,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                               podSelector:
                                 description: PodSelector selects pods
@@ -419,8 +535,42 @@ spec:
                                       pairs
                                     type: object
                                   namespaceSelector:
-                                    description: NamespaceSelector specifies target
-                                      namespaces
+                                    description: |-
+                                      NamespaceSelector specifies target namespaces, matched against the
+                                      namespace's own labels.
+                                    properties:
+                                      matchExpressions:
+                                        description: MatchExpressions is a list of
+                                          namespace label selector requirements.
+                                        items:
+                                          description: LabelSelectorRequirement contains
+                                            a key, operator, and values for label
+                                            selection
+                                          properties:
+                                            key:
+                                              type: string
+                                            operator:
+                                              description: LabelSelectorOperator represents
+                                                a label selector operator
+                                              type: string
+                                            values:
+                                              items:
+                                                type: string
+                                              type: array
+                                          required:
+                                          - key
+                                          - operator
+                                          type: object
+                                        type: array
+                                      matchLabels:
+                                        additionalProperties:
+                                          type: string
+                                        description: |-
+                                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                                          selecting a namespace by name works through this field.
+                                        type: object
+                                    type: object
                                 type: object
                             type: object
                           type: array
@@ -602,7 +752,41 @@ spec:
                     description: MatchLabels is a map of {key,value} pairs
                     type: object
                   namespaceSelector:
-                    description: NamespaceSelector specifies target namespaces
+                    description: |-
+                      NamespaceSelector specifies target namespaces, matched against the
+                      namespace's own labels.
+                    properties:
+                      matchExpressions:
+                        description: MatchExpressions is a list of namespace label
+                          selector requirements.
+                        items:
+                          description: LabelSelectorRequirement contains a key, operator,
+                            and values for label selection
+                          properties:
+                            key:
+                              type: string
+                            operator:
+                              description: LabelSelectorOperator represents a label
+                                selector operator
+                              type: string
+                            values:
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                          selecting a namespace by name works through this field.
+                        type: object
+                    type: object
                 type: object
               selfHealing:
                 description: SelfHealing enables automatic policy rollback on failures
@@ -745,18 +929,46 @@ spec:
                     description: AlertsGenerated indicates alerts generated count
                     format: int64
                     type: integer
+                  blockedCapabilities:
+                    description: BlockedCapabilities indicates capability checks denied
+                      in-kernel.
+                    format: int64
+                    type: integer
+                  blockedExecs:
+                    description: BlockedExecs indicates execve calls denied in-kernel.
+                    format: int64
+                    type: integer
                   blockedFileAccess:
-                    description: BlockedFileAccess indicates blocked file access count
+                    description: BlockedFileAccess indicates file opens denied in-kernel.
                     format: int64
                     type: integer
                   blockedNetworkConnections:
-                    description: BlockedNetworkConnections indicates blocked network
-                      connections
+                    description: BlockedNetworkConnections indicates connect() calls
+                      denied in-kernel.
                     format: int64
                     type: integer
                   blockedSyscalls:
-                    description: BlockedSyscalls indicates blocked syscall count
+                    description: |-
+                      BlockedSyscalls indicates blocked syscall count.
+
+                      Always zero today, and kept for API compatibility. Syscalls are confined
+                      by the generated seccomp profile, whose denials the kernel does not
+                      report back to this agent, while the BPF syscall program is observation
+                      only. The counters below are the ones that carry real numbers.
                     format: int64
+                    type: integer
+                  blockedTotal:
+                    description: |-
+                      BlockedTotal is the sum of every in-kernel denial across the containers
+                      this policy governs. It exists so the printed column reports the whole
+                      picture rather than one signal.
+                    format: int64
+                    type: integer
+                  enforcingContainers:
+                    description: |-
+                      EnforcingContainers and TotalContainers describe how many of the
+                      containers this policy selects have actually reached enforcement.
+                    format: int32
                     type: integer
                   rollbackCount:
                     description: RollbackCount indicates number of rollbacks performed
@@ -766,6 +978,9 @@ spec:
                     description: StartTime indicates when enforcement started
                     format: date-time
                     type: string
+                  totalContainers:
+                    format: int32
+                    type: integer
                 type: object
               lastUpdated:
                 description: LastUpdated indicates when status was last updated
@@ -869,6 +1084,9 @@ spec:
     - jsonPath: .status.fileCount
       name: Files
       type: integer
+    - jsonPath: .status.rollbackCount
+      name: Rollbacks
+      type: integer
     - jsonPath: .spec.node
       name: Node
       type: string
@@ -878,7 +1096,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ContainerProfile is the learned behavioural baseline for a single
+        description: ContainerProfile is the learned behavioral baseline for a single
           container.
         properties:
           apiVersion:
@@ -903,8 +1121,12 @@ spec:
               belongs to.
             properties:
               cgroupID:
-                description: CgroupID is the cgroup v2 id the eBPF data plane keys
-                  enforcement on.
+                description: |-
+                  CgroupID is the cgroup v2 id the eBPF data plane keys enforcement on.
+                  Signed because Kubernetes API types may not use unsigned integers; the
+                  serialized schema is int64 either way, and cgroup ids never approach the
+                  sign bit. Using uint64 here also broke server-side apply, whose
+                  structured-merge-diff reflection has no uint64 kind.
                 format: int64
                 type: integer
               containerID:
@@ -949,11 +1171,39 @@ spec:
             type: object
           status:
             description: |-
-              ContainerProfileStatus is the learned behavioural baseline reported by the
+              ContainerProfileStatus is the learned behavioral baseline reported by the
               node agent. It is what the kernel enforces once the container is enforcing -
               a first-class, inspectable, git-backupable record (no equivalent in Falco or
               Tetragon).
             properties:
+              denialCount:
+                description: |-
+                  DenialCount is the number of in-kernel denials observed since the current
+                  enforce transition. It resets on every transition and on rollback.
+                format: int32
+                type: integer
+              deniedCapabilities:
+                format: int32
+                type: integer
+              deniedExecs:
+                format: int32
+                type: integer
+              deniedFiles:
+                description: |-
+                  Per-signal breakdown of DenialCount. Split out because "twelve denials"
+                  and "twelve denied egress attempts" are very different findings, and the
+                  operator aggregates these into the governing policy's status.
+                format: int32
+                type: integer
+              deniedNetwork:
+                format: int32
+                type: integer
+              enforcementAttempts:
+                description: |-
+                  EnforcementAttempts is how many times this container has been transitioned
+                  to enforcing. More than one means an earlier attempt was rolled back.
+                format: int32
+                type: integer
               enforcingSince:
                 format: date-time
                 type: string
@@ -964,10 +1214,31 @@ spec:
                 description: FirstSeen / EnforcingSince timestamps.
                 format: date-time
                 type: string
+              lastRollbackReason:
+                description: |-
+                  LastRollbackReason explains the most recent rollback (denial rate or the
+                  specific pod distress that was observed).
+                type: string
+              lastRollbackTime:
+                description: LastRollbackTime is when the most recent rollback happened.
+                format: date-time
+                type: string
               lastUpdated:
                 description: LastUpdated is when the agent last refreshed this profile.
                 format: date-time
                 type: string
+              learnedCapabilities:
+                description: |-
+                  LearnedCapabilities is the set of Linux capabilities the container was
+                  observed using, as names without the CAP_ prefix so they match the
+                  spelling a pod spec uses in securityContext.capabilities.
+
+                  Reported because it was otherwise the only learned signal invisible from
+                  outside the agent, and because it is what lets admission reject a new
+                  revision asking for privilege the workload has never needed.
+                items:
+                  type: string
+                type: array
               learnedExecutables:
                 description: LearnedExecutables is the set of binary paths the container
                   executed.
@@ -999,6 +1270,53 @@ spec:
               phase:
                 description: Phase is Learning or Enforcing.
                 type: string
+              rollbackCount:
+                description: |-
+                  RollbackCount is how many times self-healing returned this container from
+                  enforcing to learning because the learned baseline was breaking it.
+                format: int32
+                type: integer
+              seccomp:
+                description: |-
+                  Seccomp describes the profile generated from LearnedSyscalls, if the
+                  agent was configured to emit one.
+                properties:
+                  allowedSyscalls:
+                    description: |-
+                      AllowedSyscalls is how many syscalls the profile permits, including the
+                      safety baseline. TotalSyscalls is the size of the architecture's syscall
+                      table, so the pair states the privilege reduction without arithmetic.
+                    format: int32
+                    type: integer
+                  generatedAt:
+                    description: GeneratedAt is when the profile was last written.
+                    format: date-time
+                    type: string
+                  localhostProfile:
+                    description: |-
+                      LocalhostProfile is the value to put in the pod's
+                      securityContext.seccompProfile.localhostProfile. It is relative to the
+                      kubelet's seccomp root, which is what that field expects.
+                    type: string
+                  node:
+                    description: |-
+                      Node is the node the file lives on. The profile is written by each node's
+                      agent, so it exists only where that container ran.
+                    type: string
+                  path:
+                    description: Path is the absolute path on the node, for debugging.
+                    type: string
+                  skippedUnknown:
+                    description: |-
+                      SkippedUnknown counts learned syscall numbers with no name in this
+                      architecture's table. They cannot appear in a profile, so a non-zero
+                      value means the profile is narrower than what was observed.
+                    format: int32
+                    type: integer
+                  totalSyscalls:
+                    format: int32
+                    type: integer
+                type: object
               syscallCount:
                 description: Counts for quick inspection / printcolumns.
                 format: int32
@@ -1187,6 +1505,25 @@ rules:
 - apiGroups: [""]
   resources: ["pods", "nodes"]
   verbs: ["get", "list", "watch"]
+# namespaces back PahlevanPolicy's selector.namespaceSelector, which matches on
+# the namespace's own labels.
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+# The agent runs AttackSurfaceAnalyzerReconciler, which Owns() these and lists
+# them. Without the grant its informers never sync and the manager exits after
+# the cache timeout: measured as four restarts in ten minutes, each one wiping
+# the learned baseline, with the agent observed enforcing a baseline of a
+# single file. Read-only, because the agent never writes them.
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
@@ -1225,7 +1562,13 @@ rules:
   resources: ["pahlevanpolicies/status", "containerprofiles/status", "attacksurfaces/status"]
   verbs: ["get", "update", "patch"]
 - apiGroups: [""]
-  resources: ["pods", "nodes", "namespaces"]
+  resources: ["pods", "nodes", "namespaces", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["events"]
@@ -1337,6 +1680,16 @@ spec:
         - --learning-window=5m
         - --enforcement-delay=30s
         - --observability-exports=prometheus,otel
+        # Generated seccomp profiles are written under the kubelet's seccomp
+        # root so the kubelet can actually resolve them as a localhostProfile.
+        # Writing them anywhere else produces a file nothing can reference.
+        - --seccomp-root=/var/lib/kubelet/seccomp
+        - --seccomp-dir=/var/lib/kubelet/seccomp/pahlevan
+        # The gRPC event stream is off by default because it is plaintext and
+        # unauthenticated: anything that can reach the port receives every
+        # security event this node sees. Uncomment, and add the port below, only
+        # behind a NetworkPolicy or on a trusted network.
+        # - --grpc-bind-address=:9090
         securityContext:
           # eBPF program load/attach and LSM/seccomp enforcement need real
           # privilege in the init namespace. CAP_BPF + CAP_PERFMON is the modern
@@ -1369,6 +1722,9 @@ spec:
           containerPort: 8080
         - name: health
           containerPort: 8081
+        # Uncomment alongside --grpc-bind-address above.
+        # - name: grpc
+        #   containerPort: 9090
         livenessProbe:
           httpGet:
             path: /healthz
@@ -1409,10 +1765,19 @@ spec:
         - name: proc
           mountPath: /host/proc
           readOnly: true
+        # Writable, and deliberately scoped to pahlevan's own subdirectory
+        # rather than the whole seccomp root: the agent needs to create the
+        # profiles it generates and nothing else there.
+        - name: seccomp-profiles
+          mountPath: /var/lib/kubelet/seccomp/pahlevan
       volumes:
       - name: bpffs
         hostPath:
           path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: seccomp-profiles
+        hostPath:
+          path: /var/lib/kubelet/seccomp/pahlevan
           type: DirectoryOrCreate
       - name: btf
         hostPath:

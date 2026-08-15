@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -162,7 +163,10 @@ func TestManager_PolicyAndContainerCounts(t *testing.T) {
 }
 
 func TestManager_VectorRecorders(t *testing.T) {
-	m := NewManager()
+	// The per-container vectors only collect at DetailHigh; see
+	// TestDetailLevelGating for the default behaviour.
+	reg := prometheus.NewRegistry()
+	m := NewManagerWithDetail(reg, reg, DetailHigh)
 	labels := MetricLabels{ContainerID: "c1", PolicyName: "p1", WorkloadName: "w", Namespace: "ns"}
 
 	m.RecordSyscallEvent(labels, "open", "allow")
@@ -269,7 +273,7 @@ func TestManager_SetMeterProviderEnablesOTelPath(t *testing.T) {
 	m.UpdateAttackSurfaceRiskScore(1.0)
 
 	provider := sdkmetric.NewMeterProvider()
-	t.Cleanup(func() { _ = provider.Shutdown(nil) })
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	m.SetMeterProvider(provider)
 
 	if m.meter == nil {

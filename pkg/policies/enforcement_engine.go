@@ -25,23 +25,23 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/obsernetics/pahlevan/internal/learner"
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
-	"go.opentelemetry.io/otel/metric"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // EnforcementEngine implements adaptive policy generation and enforcement
 type EnforcementEngine struct {
-	mu                 sync.RWMutex
-	ebpfManager        *ebpf.Manager
-	learner            *learner.SyscallLearner
-	containerPolicies  map[string]*ContainerPolicyState
-	globalConfig       *GlobalEnforcementConfig
-	enforcementQueue   chan *EnforcementAction
-	selfHealingEnabled bool
-	stopCh             chan struct{}
+	mu                sync.RWMutex
+	ebpfManager       *ebpf.Manager
+	learner           *learner.SyscallLearner
+	containerPolicies map[string]*ContainerPolicyState
+	globalConfig      *GlobalEnforcementConfig
+	enforcementQueue  chan *EnforcementAction
+	stopCh            chan struct{}
 
 	// Metrics
 	policyGenerationCounter  metric.Int64Counter
@@ -503,7 +503,7 @@ func (ee *EnforcementEngine) GeneratePolicy(containerID string) (*GeneratedPolic
 	// Get learning profile
 	profile, err := ee.learner.GetProfile(containerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get learning profile: %v", err)
+		return nil, fmt.Errorf("failed to get learning profile: %w", err)
 	}
 
 	policy := &GeneratedPolicy{
@@ -544,7 +544,7 @@ func (ee *EnforcementEngine) GeneratePolicy(containerID string) (*GeneratedPolic
 
 	// Apply policy to eBPF
 	if err := ee.applyPolicyToEBPF(containerID, policy); err != nil {
-		return nil, fmt.Errorf("failed to apply policy to eBPF: %v", err)
+		return nil, fmt.Errorf("failed to apply policy to eBPF: %w", err)
 	}
 
 	// Update metrics
@@ -838,14 +838,15 @@ func (ee *EnforcementEngine) generateNetworkPolicy(profile *learner.LearningProf
 
 	// Generate rules from learned network flows
 	for flowKey, flowProfile := range profile.AllowedNetworkFlows {
-		if flowProfile.Direction == "outbound" {
+		switch flowProfile.Direction {
+		case "outbound":
 			egressRule := &NetworkRule{
 				Protocol:  flowProfile.Protocol,
 				Direction: "outbound",
 				Action:    PolicyActionAllow,
 			}
 			egressRules = append(egressRules, egressRule)
-		} else if flowProfile.Direction == "inbound" {
+		case "inbound":
 			ingressRule := &NetworkRule{
 				Protocol:  flowProfile.Protocol,
 				Direction: "inbound",
@@ -1130,16 +1131,6 @@ func (ee *EnforcementEngine) applyPolicyToEBPF(containerID string, policy *Gener
 		return fmt.Errorf("eBPF manager not available")
 	}
 
-	// Convert container ID to uint32 for eBPF using proper hashing
-	h := fnv.New32a()
-	h.Write([]byte(containerID))
-	containerIDHash := h.Sum32()
-
-	// Ensure consistent mapping by using modulo for range constraints
-	if containerIDHash == 0 {
-		containerIDHash = 1 // Avoid zero container ID
-	}
-
 	// Create eBPF container policy from generated policy
 	ebpfPolicy := &ebpf.ContainerPolicy{
 		AllowedSyscalls:  make(map[uint64]bool),
@@ -1329,18 +1320,18 @@ func (ee *EnforcementEngine) updateExistingPolicy(containerID string) error {
 	// Get updated learning profile
 	_, err := ee.learner.GetProfile(containerID)
 	if err != nil {
-		return fmt.Errorf("failed to get learning profile: %v", err)
+		return fmt.Errorf("failed to get learning profile: %w", err)
 	}
 
 	// Generate new policy based on updated profile
 	newPolicy, err := ee.GeneratePolicy(containerID)
 	if err != nil {
-		return fmt.Errorf("failed to generate updated policy: %v", err)
+		return fmt.Errorf("failed to generate updated policy: %w", err)
 	}
 
 	// Apply the updated policy
 	if err := ee.applyPolicyToEBPF(containerID, newPolicy); err != nil {
-		return fmt.Errorf("failed to apply updated policy: %v", err)
+		return fmt.Errorf("failed to apply updated policy: %w", err)
 	}
 
 	ee.mu.Lock()
@@ -1444,7 +1435,7 @@ func (ee *EnforcementEngine) tightenPolicy(containerID string, violation *Policy
 
 	// Apply the tightened policy
 	if err := ee.applyPolicyToEBPF(containerID, tightenedPolicy); err != nil {
-		return fmt.Errorf("failed to apply tightened policy: %v", err)
+		return fmt.Errorf("failed to apply tightened policy: %w", err)
 	}
 
 	// Update container state, preserving the prior policy so a subsequent

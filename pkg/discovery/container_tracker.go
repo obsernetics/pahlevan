@@ -28,10 +28,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/obsernetics/pahlevan/pkg/metrics"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/obsernetics/pahlevan/pkg/metrics"
 )
 
 // procRoot is the procfs mount point. It is a variable so tests can point it at
@@ -298,7 +299,7 @@ func (ct *ContainerTracker) discoverExistingContainers(ctx context.Context) erro
 
 	podList := &corev1.PodList{}
 	if err := ct.client.List(ctx, podList); err != nil {
-		return fmt.Errorf("failed to list pods: %v", err)
+		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	for _, pod := range podList.Items {
@@ -743,31 +744,6 @@ func (ct *ContainerTracker) updateContainer(container *ContainerInfo) {
 		Timestamp: time.Now(),
 		Source:    "container-tracker",
 	})
-}
-
-// handlePodDeletion handles pod deletion events
-func (ct *ContainerTracker) handlePodDeletion(pod *corev1.Pod) {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
-
-	var deletedContainers []*ContainerInfo
-	for containerID, container := range ct.containers {
-		if container.PodNamespace == pod.Namespace && container.PodName == pod.Name {
-			deletedContainers = append(deletedContainers, container)
-			delete(ct.containers, containerID)
-		}
-	}
-
-	// Emit termination events
-	for _, container := range deletedContainers {
-		ct.emitEvent(&ContainerEvent{
-			Type:      ContainerEventTerminated,
-			Container: container,
-			Timestamp: time.Now(),
-			Source:    "container-tracker",
-			Reason:    "PodDeleted",
-		})
-	}
 }
 
 // emitEvent sends an event to all registered handlers

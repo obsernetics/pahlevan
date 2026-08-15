@@ -20,6 +20,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func installFakeClients(t *testing.T, objs ...crclient.Object) (crclient.Client,
 		WithObjects(objs...).
 		WithStatusSubresource(&policyv1alpha1.PahlevanPolicy{}).
 		Build()
-	kc := k8sfake.NewSimpleClientset()
+	kc := k8sfake.NewClientset()
 
 	prevK8s, prevKube, prevNs, prevReady := k8sClient, kubeClient, globalNamespace, clientsReady
 	k8sClient = fc
@@ -252,8 +253,11 @@ func TestPolicyCreate_FromFlags(t *testing.T) {
 	if got.Spec.EnforcementConfig.Mode != policyv1alpha1.EnforcementModeBlocking {
 		t.Errorf("created mode = %q, want Blocking", got.Spec.EnforcementConfig.Mode)
 	}
-	if !got.Spec.EnforcementConfig.BlockUnknown {
-		t.Error("blocking mode should set BlockUnknown")
+	// BlockUnknown is left nil so the mode's default applies. Pinning it here
+	// would freeze the created policy against a later change of that default,
+	// and nil already means "block" under Blocking.
+	if got.Spec.EnforcementConfig.BlockUnknown != nil {
+		t.Errorf("BlockUnknown should be left unset, got %v", *got.Spec.EnforcementConfig.BlockUnknown)
 	}
 	if got.Spec.Selector.MatchLabels["app"] != "demo" {
 		t.Errorf("selector = %v", got.Spec.Selector.MatchLabels)
@@ -653,11 +657,11 @@ func TestIsNoKindMatch(t *testing.T) {
 		t.Error("nil error is not a no-kind-match")
 	}
 	for _, msg := range []string{"no matches for kind", "no kind is registered", "the server could not find the requested resource"} {
-		if !isNoKindMatch(errString(msg)) {
+		if !isNoKindMatch(stringError(msg)) {
 			t.Errorf("expected isNoKindMatch true for %q", msg)
 		}
 	}
-	if isNoKindMatch(errString("some other error")) {
+	if isNoKindMatch(stringError("some other error")) {
 		t.Error("unrelated error should not match")
 	}
 }
@@ -673,9 +677,9 @@ func TestCheckPahlevanPolicyCRD(t *testing.T) {
 	}
 }
 
-type errString string
+type stringError string
 
-func (e errString) Error() string { return string(e) }
+func (e stringError) Error() string { return string(e) }
 
 // --- version / completion / stub commands ---------------------------------
 
@@ -713,25 +717,47 @@ func TestCompletionCommand(t *testing.T) {
 	}
 }
 
-func TestStubCommands(t *testing.T) {
-	// attack-surface analyze/report subcommands.
-	for _, sub := range []string{"analyze", "report"} {
-		as := NewAttackSurfaceCommand()
-		as.SetArgs([]string{sub})
-		if err := withSilencedStdout(t, as.Execute); err != nil {
-			t.Errorf("attack-surface %s error: %v", sub, err)
-		}
+// TestNoStubCommandsRemain guards the regression this package was built to fix:
+// every command that once printed "to be implemented" now either does real work
+// or fails loudly because it cannot reach a cluster. Silently succeeding while
+// doing nothing is the behavior under test.
+func TestNoStubCommandsRemain(t *testing.T) {
+	clearClients(t)
+
+	commands := map[string]*cobra.Command{
+		"attack-surface analyze": NewAttackSurfaceAnalyzeCommand(),
+		"attack-surface report":  NewAttackSurfaceReportCommand(),
+		"logs":                   NewLogsCommand(),
+		"metrics":                NewMetricsCommand(),
+		"debug":                  NewDebugCommand(),
 	}
-	if n := len(NewAttackSurfaceCommand().Commands()); n != 2 {
-		t.Errorf("attack-surface should have 2 subcommands, got %d", n)
+	for name, cmd := range commands {
+		t.Run(name, func(t *testing.T) {
+			out, err := runCommand(t, cmd)
+			if err == nil {
+				t.Fatalf("%s succeeded without a cluster; a command that cannot do its job must say so", name)
+			}
+			if !strings.Contains(err.Error(), "not initialized") {
+				t.Errorf("error should explain the missing cluster connection: %v", err)
+			}
+			if strings.Contains(out, "to be implemented") {
+				t.Errorf("%s still prints a stub message: %s", name, out)
+			}
+		})
 	}
 
-	// logs/metrics/debug stubs.
-	for _, mk := range []func() *cobra.Command{NewLogsCommand, NewMetricsCommand, NewDebugCommand} {
-		cmd := mk()
-		cmd.SetArgs([]string{})
-		if err := withSilencedStdout(t, cmd.Execute); err != nil {
-			t.Errorf("%s stub error: %v", cmd.Use, err)
+	// The help text must not advertise unimplemented behavior either.
+	all := []*cobra.Command{
+		NewAttackSurfaceCommand(), NewAttackSurfaceAnalyzeCommand(), NewAttackSurfaceReportCommand(),
+		NewLogsCommand(), NewMetricsCommand(), NewDebugCommand(),
+	}
+	for _, cmd := range all {
+		if strings.Contains(cmd.Long, "to be implemented") || strings.Contains(cmd.Short, "to be implemented") {
+			t.Errorf("%s help still says 'to be implemented'", cmd.Name())
 		}
+	}
+
+	if n := len(NewAttackSurfaceCommand().Commands()); n != 2 {
+		t.Errorf("attack-surface should have 2 subcommands, got %d", n)
 	}
 }

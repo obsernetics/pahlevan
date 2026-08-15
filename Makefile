@@ -72,13 +72,43 @@ help: ## Display this help.
 
 ##@ Development
 
+# hack/vm/smoke is its own Go module, so "./..." makes controller-gen try to
+# load it against this module's go.sum and fail. Generation only ever needs the
+# API types and the controllers anyway.
+GEN_PATHS ?= paths="./pkg/apis/..." paths="./internal/..."
+
+.PHONY: proto
+proto: ## Regenerate the gRPC API from api/v1alpha1/events.proto (needs protoc)
+	@command -v protoc >/dev/null || { echo "protoc not found"; exit 1; }
+	GOBIN=$(LOCALBIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+	GOBIN=$(LOCALBIN) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+	PATH=$(LOCALBIN):$$PATH protoc \
+		--go_out=. --go_opt=module=github.com/obsernetics/pahlevan \
+		--go-grpc_out=. --go-grpc_opt=module=github.com/obsernetics/pahlevan \
+		api/v1alpha1/events.proto
+	@echo "regenerated api/v1alpha1/*.pb.go"
+
+.PHONY: demo-gif
+demo-gif: ## Re-render docs/assets/demo.gif from the vhs tape (needs vhs + ffmpeg)
+	@command -v vhs >/dev/null || { echo "vhs not found: https://github.com/charmbracelet/vhs"; exit 1; }
+	@command -v ffmpeg >/dev/null || { echo "ffmpeg not found"; exit 1; }
+	vhs docs/assets/demo.tape
+	@# vhs emits ~1100 frames at full width; 12fps at 1000px is visually
+	@# identical in a README and about a third of the bytes.
+	ffmpeg -loglevel error -y -i docs/assets/demo.gif \
+		-vf "fps=12,scale=1000:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" \
+		docs/assets/demo.opt.gif
+	mv docs/assets/demo.opt.gif docs/assets/demo.gif
+	cp docs/assets/demo.gif pages/assets/demo.gif
+	@echo "rendered $$(du -h docs/assets/demo.gif | cut -f1) docs/assets/demo.gif (and the pages copy)"
+
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd output:rbac:artifacts:config=config/rbac
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook $(GEN_PATHS) output:crd:artifacts:config=config/crd output:rbac:artifacts:config=config/rbac
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" $(GEN_PATHS)
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -156,6 +186,13 @@ ebpf-compile: ebpf-deps ## Compile eBPF programs
 	@echo "eBPF programs compiled successfully"
 
 BPFTOOL ?= $(shell command -v bpftool 2>/dev/null || echo /usr/lib/linux-tools-$(shell uname -r)/bpftool)
+
+.PHONY: syscall-tables
+syscall-tables: ## Regenerate the per-arch syscall name tables in pkg/seccomp
+	@echo "Regenerating syscall tables from kernel headers..."
+	@python3 hack/gen-syscall-tables.py
+	@gofmt -w pkg/seccomp/syscalls_linux_*.go
+	@echo "Syscall tables regenerated"
 
 .PHONY: vmlinux
 vmlinux: ## Generate bpf/vmlinux.h from the running kernel BTF (for CO-RE builds)
