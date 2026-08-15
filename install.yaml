@@ -77,9 +77,9 @@ spec:
                     type: boolean
                   blockUnknown:
                     description: |-
-                      BlockUnknown blocks behaviour outside the learned baseline. Nil means
+                      BlockUnknown blocks behavior outside the learned baseline. Nil means
                       "the default for the mode", which is true under Blocking: default-deny of
-                      unlearned behaviour is the only enforcement the data plane performs, so a
+                      unlearned behavior is the only enforcement the data plane performs, so a
                       Blocking policy that did not block it would enforce nothing. Explicitly
                       false downgrades the policy to Monitoring. A bare bool could not express
                       the difference between unset and false.
@@ -1096,7 +1096,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: ContainerProfile is the learned behavioural baseline for a single
+        description: ContainerProfile is the learned behavioral baseline for a single
           container.
         properties:
           apiVersion:
@@ -1171,7 +1171,7 @@ spec:
             type: object
           status:
             description: |-
-              ContainerProfileStatus is the learned behavioural baseline reported by the
+              ContainerProfileStatus is the learned behavioral baseline reported by the
               node agent. It is what the kernel enforces once the container is enforcing -
               a first-class, inspectable, git-backupable record (no equivalent in Falco or
               Tetragon).
@@ -1227,6 +1227,18 @@ spec:
                 description: LastUpdated is when the agent last refreshed this profile.
                 format: date-time
                 type: string
+              learnedCapabilities:
+                description: |-
+                  LearnedCapabilities is the set of Linux capabilities the container was
+                  observed using, as names without the CAP_ prefix so they match the
+                  spelling a pod spec uses in securityContext.capabilities.
+
+                  Reported because it was otherwise the only learned signal invisible from
+                  outside the agent, and because it is what lets admission reject a new
+                  revision asking for privilege the workload has never needed.
+                items:
+                  type: string
+                type: array
               learnedExecutables:
                 description: LearnedExecutables is the set of binary paths the container
                   executed.

@@ -50,6 +50,15 @@ type ContainerProfileStatus struct {
 	// LearnedExecutables is the set of binary paths the container executed.
 	LearnedExecutables []string `json:"learnedExecutables,omitempty"`
 
+	// LearnedCapabilities is the set of Linux capabilities the container was
+	// observed using, as names without the CAP_ prefix so they match the
+	// spelling a pod spec uses in securityContext.capabilities.
+	//
+	// Reported because it was otherwise the only learned signal invisible from
+	// outside the agent, and because it is what lets admission reject a new
+	// revision asking for privilege the workload has never needed.
+	LearnedCapabilities []string `json:"learnedCapabilities,omitempty"`
+
 	// Counts for quick inspection / printcolumns.
 	SyscallCount int32 `json:"syscallCount,omitempty"`
 	FileCount    int32 `json:"fileCount,omitempty"`

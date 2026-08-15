@@ -228,7 +228,7 @@ which does close this loop and does it for SELinux and AppArmor as well.
 | Webhook required | **No.** No webhook server, no certificate rotation, no availability risk in the API server path | n/a | n/a |
 | Scope | Opt in per namespace, via the label `pahlevan.io/admission=enforce` | n/a | n/a |
 | Requires | Kubernetes 1.30 or newer for `ValidatingAdmissionPolicy`. The operator degrades gracefully on older clusters | n/a | n/a |
-| Derived from learned data | **No.** The CEL rules are hardcoded in Go and are not generated from any `PahlevanPolicy` | n/a | n/a |
+| Derived from learned data | **Yes**, and neither comparator does this. Alongside the static hardening baseline, a ValidatingAdmissionPolicy is generated per `PahlevanPolicy` from the capabilities its containers were observed using, so a revision asking for privilege the workload has never needed is rejected before it runs. Nothing is derived until a container has finished learning, and the derived objects are removed when the baseline goes: a rule outliving its evidence looks deliberate | n/a | n/a |
 
 Admission control is a genuine Pahlevan feature that neither comparator has. It
 is also narrow: four fixed pod-hardening checks that overlap substantially with
