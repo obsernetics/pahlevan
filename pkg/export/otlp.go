@@ -230,6 +230,13 @@ func (e *OTLPExporter) record(ev *Event) otellog.Record {
 		addInt("server.port", int64(ev.Network.DestinationPort))
 		addStr("network.transport", strings.ToLower(ev.Network.Protocol))
 		addStr("pahlevan.network.direction", ev.Network.Direction)
+		// What the cluster says the far end is. destinationKind is the field to
+		// alert on: "external" is the shape exfiltration takes, and it is a
+		// different finding from a denied connect to a Service this workload
+		// simply may not use.
+		addStr("pahlevan.destination.name", ev.Network.DestinationName)
+		addStr("pahlevan.destination.kind", ev.Network.DestinationKind)
+		addStr("pahlevan.destination.port_name", ev.Network.DestinationPortName)
 	case ev.Exec != nil:
 		addStr("process.executable.path", ev.Exec.Binary)
 		addStr("process.command_line", ev.Exec.CommandLine)
@@ -297,9 +304,17 @@ func SummaryLine(ev *Event) string {
 		}
 		return fmt.Sprintf("%s %s of %s by %s%s", verb, mode, ev.File.Path, who, where)
 	case ev.Network != nil:
-		return fmt.Sprintf("%s %s connect to %s:%d by %s%s", verb,
-			strings.ToLower(ev.Network.Protocol), ev.Network.DestinationIP,
-			ev.Network.DestinationPort, who, where)
+		// Name the destination when the cluster knows it. "prod/postgres:5432"
+		// is a line an operator can act on; the address alone is one they have
+		// to go and look up first.
+		dest := fmt.Sprintf("%s:%d", ev.Network.DestinationIP, ev.Network.DestinationPort)
+		if n := ev.Network.DestinationName; n != "" && n != "external" {
+			dest = fmt.Sprintf("%s (%s:%d)", n, ev.Network.DestinationIP, ev.Network.DestinationPort)
+		} else if ev.Network.DestinationKind == "external" {
+			dest += " [external]"
+		}
+		return fmt.Sprintf("%s %s connect to %s by %s%s", verb,
+			strings.ToLower(ev.Network.Protocol), dest, who, where)
 	case ev.Exec != nil:
 		if ev.Exec.Exited {
 			return fmt.Sprintf("exit of %s%s", who, where)

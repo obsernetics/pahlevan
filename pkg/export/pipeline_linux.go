@@ -78,6 +78,10 @@ type Config struct {
 
 	// Attribution fills in pod metadata from a cgroup id. Optional.
 	Attribution AttributionFunc
+
+	// Destination names the far end of a network event from what the cluster
+	// knows. Optional; without it a denial reports an address and nothing else.
+	Destination DestinationFunc
 	// OnError, when set, receives every sink failure. It must not block.
 	OnError func(err error)
 }
@@ -218,6 +222,7 @@ func New(cfg Config) (*Pipeline, error) {
 	handler := NewHandler(sink, HandlerOptions{
 		Filter:      filter,
 		Attribution: cfg.Attribution,
+		Destination: cfg.Destination,
 	})
 
 	return &Pipeline{Handler: handler, Queue: queue, Exporter: exporter}, nil
