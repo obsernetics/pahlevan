@@ -86,6 +86,7 @@ func ToProto(e *export.Event) *apiv1alpha1.Event {
 	case e.Exec != nil:
 		exec := &apiv1alpha1.ExecInfo{
 			Binary:        e.Exec.Binary,
+			Cwd:           e.Exec.Cwd,
 			Exited:        e.Exec.Exited,
 			CommandLine:   e.Exec.CommandLine,
 			ArgsTruncated: e.Exec.ArgsTruncated,

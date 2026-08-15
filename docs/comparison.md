@@ -128,7 +128,7 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | Hook | `lsm/bprm_check_security` (`bpf/exec_monitor.c`) | Driver-level `execve` and clone tracking with a full userspace thread table | Dedicated process sensor with exec and exit tracking |
 | Binary path | Yes, resolved in-kernel | Yes | Yes |
 | Command-line arguments | **Yes.** Captured at the execve and execveat syscall tracepoints, where argv is still readable in the caller's address space, and joined onto the exec event within the same syscall. Capped at 20 arguments and 256 bytes with a truncation flag, so a prefix is never read as the whole invocation | Yes | Yes |
-| Working directory, environment | **No** | Yes for cwd | Yes for cwd |
+| Working directory, environment | cwd **yes**, on exec events: "nc run from /tmp" and "nc run from the application's install directory" are different findings. Environment no | Yes for cwd | Yes for cwd |
 | Blocking | Yes, `EPERM` on exec of a binary not in the learned set. There is also an in-kernel `SIGKILL` mode in the C program that the control plane does not currently expose | No | Yes: `Sigkill`, `Override`, and other actions |
 | Exit tracking | **Yes**, `sched/sched_process_exit`, thread-group leaders only so a threaded process reports one exit rather than one per thread. Exits share the exec record with a marker flag, since the fields that matter on an exit are ones an exec already carries | Yes | Yes |
 
@@ -352,10 +352,11 @@ Listed plainly, worst first. Every item here is real and current.
 3. **No rule or content ecosystem.** By design there are no rules to share, but
    the consequence is real: there is no community content, no detection
    coverage you can adopt, and nothing to compare against MITRE ATT&CK coverage.
-4. **Process ancestry is bounded and exec-only.** Four levels, walked in-kernel
-   and shipped with the event, but there is no process cache, so the depth is
-   fixed and file, network and syscall events still carry no lineage. Ancestry
-   cannot be matched on in a policy. Tetragon is still ahead here.
+4. **Process ancestry is bounded, and one hop outside exec.** Exec events carry
+   four levels walked in-kernel; file, network and capability events carry the
+   immediate parent only; syscall events carry none. There is no process cache,
+   so the depth is fixed rather than complete, and ancestry cannot be matched on
+   in a policy. Tetragon is still ahead here.
 5. **arm64 is built but unverified.** Per-arch BPF objects and a multi-arch
    image ship, and CI cross-compiles on every PR, but the VM harness is amd64
    so no arm64 kernel has ever loaded these programs. Falco and Tetragon test

@@ -154,7 +154,7 @@ func FromProcessEvent(e *ebpf.ProcessEvent, now time.Time) *Event {
 
 // execInfo carries the binary and the lineage that led to it.
 func execInfo(e *ebpf.ProcessEvent) *ExecInfo {
-	info := &ExecInfo{Binary: e.Filename, Exited: e.IsExit()}
+	info := &ExecInfo{Binary: e.Filename, Cwd: e.Cwd, Exited: e.IsExit()}
 	if len(e.Args) > 0 {
 		info.Args = append([]string(nil), e.Args...)
 		info.CommandLine = e.CommandLine()

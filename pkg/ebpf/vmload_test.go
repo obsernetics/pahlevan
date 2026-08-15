@@ -160,23 +160,34 @@ func TestVMLoadFileMonitor(t *testing.T) {
 		}
 	}()
 
-	rd.SetDeadline(time.Now().Add(5 * time.Second))
-	rec, err := rd.Read()
-	if err != nil {
-		t.Fatalf("ringbuf read (no file events): %v", err)
+	// Wait for this test's own open rather than asserting on whatever arrives
+	// first. The hook sees the whole node: an unrelated containerd-shim open
+	// whose path bpf_d_path could not resolve used to fail this run, which is a
+	// flaky test rather than a real finding.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("no file event for this test's own open of /etc/hostname")
+		}
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			t.Fatalf("ringbuf read (no file events): %v", err)
+		}
+		ev := parseFileEvent(rec.RawSample)
+		if ev == nil {
+			t.Fatalf("failed to parse file event from %d bytes", len(rec.RawSample))
+		}
+		if ev.Path != "/etc/hostname" {
+			continue
+		}
+		if ev.CgroupID == 0 {
+			t.Errorf("expected non-zero cgroup id")
+		}
+		t.Logf("observed file event: path=%q comm=%q pid=%d cgroup=%d flags=%#x",
+			ev.Path, ev.Comm, ev.PID, ev.CgroupID, ev.Flags)
+		return
 	}
-	ev := parseFileEvent(rec.RawSample)
-	if ev == nil {
-		t.Fatalf("failed to parse file event from %d bytes", len(rec.RawSample))
-	}
-	if ev.Path == "" {
-		t.Errorf("expected a resolved path")
-	}
-	if ev.CgroupID == 0 {
-		t.Errorf("expected non-zero cgroup id")
-	}
-	t.Logf("observed file event: path=%q comm=%q pid=%d cgroup=%d flags=%#x",
-		ev.Path, ev.Comm, ev.PID, ev.CgroupID, ev.Flags)
 }
 
 // TestVMFileAdaptiveEnforcement proves the full adaptive loop with LSM BPF:
@@ -1263,6 +1274,18 @@ func TestVMExecArgumentsAreCaptured(t *testing.T) {
 		}
 		if len(ev.Args) != 4 {
 			t.Errorf("argv = %q, want 4 arguments", ev.Args)
+		}
+
+		// bpf_d_path needs a trusted pointer, which is why this reads the task
+		// through bpf_get_current_task_btf; the scalar from
+		// bpf_get_current_task is rejected by the verifier outright.
+		if ev.Cwd == "" {
+			t.Error("exec event carries no working directory")
+		} else {
+			t.Logf("cwd: %s", ev.Cwd)
+			if !strings.HasPrefix(ev.Cwd, "/") {
+				t.Errorf("cwd %q is not an absolute path", ev.Cwd)
+			}
 		}
 		return
 	}
