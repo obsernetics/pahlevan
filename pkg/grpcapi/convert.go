@@ -25,11 +25,13 @@ func ToProto(e *export.Event) *apiv1alpha1.Event {
 		KernelTimeNs: e.KernelTimeNs,
 		CgroupId:     e.CgroupID,
 		Process: &apiv1alpha1.ProcessInfo{
-			Pid:  e.Process.PID,
-			Tgid: e.Process.TGID,
-			Uid:  e.Process.UID,
-			Gid:  e.Process.GID,
-			Comm: e.Process.Comm,
+			Pid:        e.Process.PID,
+			Tgid:       e.Process.TGID,
+			Uid:        e.Process.UID,
+			Gid:        e.Process.GID,
+			Comm:       e.Process.Comm,
+			Ppid:       e.Process.PPID,
+			ParentComm: e.Process.ParentComm,
 		},
 	}
 

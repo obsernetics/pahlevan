@@ -1412,3 +1412,84 @@ func TestVMSyscallCountsAccumulate(t *testing.T) {
 	t.Logf("SyscallCounts reported %d distinct syscalls, busiest %s=%d",
 		len(counts), counts[0].Name, counts[0].Count)
 }
+
+// TestVMNonExecEventsCarryParent proves the one-hop lineage on the signals that
+// are not execs.
+//
+// A denied file open attributed only to "cat" says what was refused and not who
+// tried. These events are deduplicated in-kernel, so the two credential reads
+// happen once per new path rather than on every open, which is what makes them
+// affordable outside the exec path. VM-only.
+func TestVMNonExecEventsCarryParent(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadFileMonitor()
+	if err != nil {
+		t.Fatalf("LoadFileMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(file_open): %v", err)
+	}
+	defer l.Close()
+	rd, err := ringbuf.NewReader(coll.Maps["file_events"])
+	if err != nil {
+		t.Fatalf("ringbuf: %v", err)
+	}
+	defer rd.Close()
+
+	// A known parent: this shell stays alive while cat opens the file, so the
+	// parent of the cat process is a shell and not the test binary.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = exec.Command("/bin/sh", "-c", "cat /etc/hostname >/dev/null; :").Run()
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		rd.SetDeadline(time.Now().Add(2 * time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseFileEvent(rec.RawSample)
+		if ev == nil || ev.Comm != "cat" {
+			continue
+		}
+		t.Logf("file event: comm=%q path=%q ppid=%d parent=%q",
+			ev.Comm, ev.Path, ev.PPID, ev.ParentComm)
+
+		if ev.PPID == 0 {
+			t.Error("file event carries no parent pid; the credentials walk did not resolve")
+		}
+		if ev.ParentComm == "" {
+			t.Error("file event carries no parent comm")
+		}
+		if ev.ParentComm != "sh" {
+			t.Errorf("parent comm = %q, want the shell that spawned cat", ev.ParentComm)
+		}
+		if ev.PPID == ev.PID {
+			t.Error("a process is not its own parent")
+		}
+		return
+	}
+	t.Fatal("no file event from cat observed")
+}

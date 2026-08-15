@@ -129,10 +129,15 @@ func protoEventToJSON(ev *apiv1alpha1.Event) map[string]interface{} {
 		"cgroupId":  ev.GetCgroupId(),
 	}
 	if p := ev.GetProcess(); p != nil {
-		out["process"] = map[string]interface{}{
+		proc := map[string]interface{}{
 			"pid": p.GetPid(), "tgid": p.GetTgid(),
 			"uid": p.GetUid(), "gid": p.GetGid(), "comm": p.GetComm(),
 		}
+		if p.GetPpid() != 0 {
+			proc["ppid"] = p.GetPpid()
+			proc["parentComm"] = p.GetParentComm()
+		}
+		out["process"] = proc
 	}
 	if k := ev.GetKubernetes(); k != nil {
 		kube := map[string]interface{}{}

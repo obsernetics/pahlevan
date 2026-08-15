@@ -19,15 +19,33 @@ func buildSyscallRec(cgroup, ts, nr uint64, pid, uid, gid uint32, comm string) [
 }
 
 func buildFileRec(cgroup, ts uint64, pid, uid, gid, flags uint32, comm, path string) []byte {
-	b := make([]byte, 176)
+	return buildFileRecParent(cgroup, ts, pid, uid, gid, flags, comm, path, 0, "")
+}
+
+// buildFileRecParent encodes the whole struct file_event, parent included. The
+// layout is spelled out independently of the constants in manager.go, so a
+// change to one side fails the test rather than both moving together.
+func buildFileRecParent(cgroup, ts uint64, pid, uid, gid, flags uint32, comm, path string,
+	ppid uint32, pcomm string,
+) []byte {
+	const (
+		offComm  = 32
+		offPPID  = 48
+		offPComm = 56
+		offPath  = 72
+		total    = offPath + 128 // 200
+	)
+	b := make([]byte, total)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
 	binary.LittleEndian.PutUint64(b[8:], ts)
 	binary.LittleEndian.PutUint32(b[16:], pid)
 	binary.LittleEndian.PutUint32(b[20:], uid)
 	binary.LittleEndian.PutUint32(b[24:], gid)
 	binary.LittleEndian.PutUint32(b[28:], flags)
-	copy(b[32:48], comm)
-	copy(b[48:176], path)
+	copy(b[offComm:offComm+16], comm)
+	binary.LittleEndian.PutUint32(b[offPPID:], ppid)
+	copy(b[offPComm:offPComm+16], pcomm)
+	copy(b[offPath:total], path)
 	return b
 }
 
@@ -37,7 +55,21 @@ func buildNetRec(cgroup, ts uint64, pid, saddr, daddr uint32, sport, dport uint1
 
 // buildNetRecFamily builds the 72-byte dual-stack network_event wire record.
 func buildNetRecFamily(cgroup, ts uint64, pid, saddr, daddr uint32, sport, dport uint16, proto, dir, family uint8, daddr6 []byte, comm string) []byte {
-	b := make([]byte, 72)
+	return buildNetRecParent(cgroup, ts, pid, saddr, daddr, sport, dport, proto, dir, family, daddr6, comm, 0, "")
+}
+
+// buildNetRecParent encodes the whole struct network_event, parent included.
+func buildNetRecParent(cgroup, ts uint64, pid, saddr, daddr uint32, sport, dport uint16,
+	proto, dir, family uint8, daddr6 []byte, comm string, ppid uint32, pcomm string,
+) []byte {
+	const (
+		offDstIP6 = 36
+		offPPID   = 52
+		offPComm  = 60
+		offComm   = 76
+		total     = offComm + 16 // 96
+	)
+	b := make([]byte, total)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
 	binary.LittleEndian.PutUint64(b[8:], ts)
 	binary.LittleEndian.PutUint32(b[16:], pid)
@@ -48,8 +80,10 @@ func buildNetRecFamily(cgroup, ts uint64, pid, saddr, daddr uint32, sport, dport
 	b[32] = proto
 	b[33] = dir
 	b[34] = family
-	copy(b[36:52], daddr6)
-	copy(b[52:68], comm)
+	copy(b[offDstIP6:offDstIP6+16], daddr6)
+	binary.LittleEndian.PutUint32(b[offPPID:], ppid)
+	copy(b[offPComm:offPComm+16], pcomm)
+	copy(b[offComm:total], comm)
 	return b
 }
 
@@ -139,7 +173,9 @@ func buildCapRecSets(cgroup, ts uint64, pid, capability, flags uint32, comm stri
 		offInheritable = 32
 		offPID         = 40
 		offComm        = 56
-		total          = offComm + 16 // 72
+		offPPID        = 72
+		offPComm       = 80
+		total          = offPComm + 16 // 96
 	)
 	b := make([]byte, total)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
