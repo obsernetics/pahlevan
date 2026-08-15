@@ -1,0 +1,289 @@
+# Pahlevan on the LGTM stack: Loki, Grafana, Tempo, Mimir.
+#
+# Everything the agent emits goes to one OpenTelemetry collector, which fans it
+# out to the three backends. That is the whole design decision here, and it is
+# worth stating why rather than just doing it.
+#
+# The alternative - a log shipper tailing the agent's JSON-lines file, a
+# ServiceMonitor scraping its /metrics, and traces going somewhere separate -
+# works, and it produces three views of the same node that cannot be joined.
+# The shipper labels the file by pod, Prometheus labels the scrape by instance,
+# and the trace carries whatever the SDK defaulted to. When a denial spike
+# appears on a dashboard at 03:00, nobody can get from it to the events that
+# caused it without knowing, by hand, which label means which.
+#
+# Routing everything through the collector means every signal carries the same
+# OpenTelemetry resource: service.name, service.instance.id, k8s.node.name,
+# k8s.namespace.name, k8s.pod.name. Those are the labels Grafana joins on. The
+# agent sets them from the downward API, which is why deploy/base mounts pod
+# name and namespace into the container.
+#
+# Apply after the operator:
+#   kubectl apply -f examples/observability/lgtm-stack.yaml
+#
+# Then point the agent at the collector:
+#   --otlp-endpoint=otel-collector.pahlevan-system.svc:4317
+# or set OTEL_EXPORTER_OTLP_ENDPOINT, which the flag defaults to.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pahlevan-otel-collector
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/part-of: pahlevan
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      # A denial burst during an incident is exactly when the collector is under
+      # the most pressure. Bounding memory here means the collector sheds load
+      # rather than being OOM-killed, which would take every signal with it.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 15
+
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+
+      # Adds k8s.deployment.name, k8s.daemonset.name and the pod's labels to
+      # whatever the agent already set. The agent knows its own pod; only the
+      # collector can cheaply resolve what owns it.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+            - k8s.deployment.name
+            - k8s.daemonset.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+          - sources:
+              - from: connection
+
+    exporters:
+      # Loki via OTLP. Only a small, bounded set of attributes is promoted to
+      # stream labels: Loki indexes labels, and promoting file.path or
+      # server.address - which are unbounded - would build one stream per
+      # distinct path and bring the ingester down. The rest stay in the
+      # structured metadata of the record, where they are still queryable.
+      otlphttp/loki:
+        endpoint: http://loki-gateway.monitoring.svc:3100/otlp
+        tls:
+          insecure: true
+
+      otlp/tempo:
+        endpoint: tempo.monitoring.svc:4317
+        tls:
+          insecure: true
+
+      otlphttp/mimir:
+        endpoint: http://mimir-nginx.monitoring.svc/otlp
+        tls:
+          insecure: true
+
+    service:
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [otlphttp/loki]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [otlphttp/mimir]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pahlevan-otel-collector
+  namespace: pahlevan-system
+---
+# The k8sattributes processor needs to read pods to resolve what owns them.
+# Nothing else: it never needs secrets, and it never writes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pahlevan-otel-collector
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pahlevan-otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pahlevan-otel-collector
+subjects:
+- kind: ServiceAccount
+  name: pahlevan-otel-collector
+  namespace: pahlevan-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: pahlevan
+spec:
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: pahlevan
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/part-of: pahlevan
+    spec:
+      serviceAccountName: pahlevan-otel-collector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: collector
+        image: otel/opentelemetry-collector-contrib:0.116.1
+        args: ["--config=/conf/config.yaml"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        - containerPort: 4318
+          name: otlp-http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+      volumes:
+      - name: config
+        configMap:
+          name: pahlevan-otel-collector
+---
+# Grafana datasources with the correlation wired up.
+#
+# The derived field is the part that matters. Without it, a denial in Loki is a
+# dead end: the operator reads "DENIED exec of /tmp/xmrig by sh" and has to go
+# find the pod by hand. With it, the pod name in the log line becomes a link
+# into the metrics for that pod, and the trace id (when the event was produced
+# during a reconcile that was traced) becomes a link into Tempo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pahlevan-grafana-datasources
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+    app.kubernetes.io/part-of: pahlevan
+data:
+  pahlevan-datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Mimir
+        type: prometheus
+        uid: pahlevan-mimir
+        url: http://mimir-nginx.monitoring.svc/prometheus
+        jsonData:
+          # Exemplars are what let a click on a denial-rate spike land on the
+          # trace that produced it.
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: pahlevan-tempo
+
+      - name: Loki
+        type: loki
+        uid: pahlevan-loki
+        url: http://loki-gateway.monitoring.svc:3100
+        jsonData:
+          derivedFields:
+            - name: TraceID
+              matcherRegex: '"trace_id":"(\w+)"'
+              url: '$${__value.raw}'
+              datasourceUid: pahlevan-tempo
+
+      - name: Tempo
+        type: tempo
+        uid: pahlevan-tempo
+        url: http://tempo.monitoring.svc:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: pahlevan-loki
+            spanStartTimeShift: '-5m'
+            spanEndTimeShift: '5m'
+            # The join keys. These are the resource attributes the agent sets
+            # from the downward API; if the agent did not set them, every one
+            # of these links returns nothing.
+            tags:
+              - key: 'k8s.pod.name'
+                value: 'pod'
+              - key: 'k8s.namespace.name'
+                value: 'namespace'
+              - key: 'k8s.node.name'
+                value: 'node'
+          tracesToMetrics:
+            datasourceUid: pahlevan-mimir
+            tags:
+              - key: 'k8s.node.name'
+                value: 'node'
