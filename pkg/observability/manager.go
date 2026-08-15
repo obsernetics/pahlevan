@@ -23,9 +23,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -37,6 +41,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // Manager provides comprehensive observability for Pahlevan
@@ -543,32 +548,101 @@ func (m *Manager) initializeProviders() error {
 	return nil
 }
 
+// wantedReader counts the exporter configs this package knows how to build.
+// A datadog or grafana entry is not a failure when no reader appears for it -
+// those are served by exporters registered through RegisterExporter.
+func wantedReader(configs []ExporterConfig) int {
+	n := 0
+	for _, c := range configs {
+		switch c.Type {
+		case ExporterTypePrometheus, ExporterTypeOTLP, ExporterTypeConsole:
+			n++
+		}
+	}
+	return n
+}
+
+// newPrometheusReader builds the pull-based Prometheus reader against a given
+// registerer. The registerer is a parameter rather than hard-coded so a test
+// can assert on a private registry instead of whatever the process has
+// accumulated globally.
+func newPrometheusReader(reg prometheus.Registerer) (sdkmetric.Reader, error) {
+	return otelprom.New(otelprom.WithRegisterer(reg))
+}
+
 func (m *Manager) initializeMetrics(res *resource.Resource) error {
 	var exporters []sdkmetric.Exporter
+
+	// Every branch here used to be a log line saying the exporter was
+	// "temporarily disabled", which meant the meter provider was built with no
+	// readers at all: instruments recorded happily and nothing ever left the
+	// process, while --observability-exports still reported the exporter as
+	// configured. That is the same failure the tracing side had, fixed the same
+	// way.
+	var readers []sdkmetric.Reader
 
 	for _, exporterConfig := range m.config.MetricsExporters {
 		switch exporterConfig.Type {
 		case ExporterTypePrometheus:
-			// Prometheus exporter temporarily disabled due to API compatibility
-			log.Log.Info("Prometheus exporter temporarily disabled")
+			// The Prometheus exporter is a reader, not a pull-based Exporter:
+			// it registers as a collector and is scraped, so it does not belong
+			// behind a PeriodicReader. Registering into the controller-runtime
+			// registry puts OTel instruments on the same /metrics endpoint the
+			// native collectors already serve.
+			exp, err := newPrometheusReader(ctrlmetrics.Registry)
+			if err != nil {
+				log.Log.Error(err, "failed to create Prometheus metric exporter")
+				continue
+			}
+			readers = append(readers, exp)
 
 		case ExporterTypeOTLP:
-			// OTLP exporter temporarily disabled due to dependency issues
-			log.Log.Info("OTLP metrics exporter temporarily disabled")
+			opts := []otlpmetricgrpc.Option{}
+			if exporterConfig.Endpoint != "" {
+				opts = append(opts, otlpmetricgrpc.WithEndpoint(exporterConfig.Endpoint))
+			}
+			if exporterConfig.Insecure {
+				opts = append(opts, otlpmetricgrpc.WithInsecure())
+			}
+			if len(exporterConfig.Headers) > 0 {
+				opts = append(opts, otlpmetricgrpc.WithHeaders(exporterConfig.Headers))
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			exp, err := otlpmetricgrpc.New(ctx, opts...)
+			cancel()
+			if err != nil {
+				log.Log.Error(err, "failed to create OTLP metric exporter", "endpoint", exporterConfig.Endpoint)
+				continue
+			}
+			exporters = append(exporters, exp)
+
 		case ExporterTypeConsole:
-			// Console exporter temporarily disabled due to API compatibility
-			log.Log.Info("Console metrics exporter temporarily disabled")
+			exp, err := stdoutmetric.New()
+			if err != nil {
+				log.Log.Error(err, "failed to create console metric exporter")
+				continue
+			}
+			exporters = append(exporters, exp)
 		}
 	}
 
-	// Create readers for each exporter
-	var readers []sdkmetric.Reader
+	// Push-based exporters are driven by a periodic reader; the Prometheus
+	// reader added above is pull-based and is already in the list.
 	for _, exporter := range exporters {
 		reader := sdkmetric.NewPeriodicReader(
 			exporter,
 			sdkmetric.WithInterval(m.config.MetricsInterval),
 		)
 		readers = append(readers, reader)
+	}
+
+	// Configured but nothing built: the operator asked for metrics export and
+	// would otherwise get a provider that accepts every recording and drops it.
+	// Unknown exporter types (datadog, grafana) are not counted, since those are
+	// served by registered custom exporters rather than by this function.
+	if wantedReader(m.config.MetricsExporters) > 0 && len(readers) == 0 {
+		return fmt.Errorf("none of the %d configured metrics exporters could be created",
+			wantedReader(m.config.MetricsExporters))
 	}
 
 	// Create meter provider
@@ -627,6 +701,11 @@ func (m *Manager) initializeTracing(res *resource.Resource) error {
 		}
 	}
 
+	if wantedReader(m.config.TracingExporters) > 0 && len(exporters) == 0 {
+		return fmt.Errorf("none of the %d configured tracing exporters could be created",
+			wantedReader(m.config.TracingExporters))
+	}
+
 	// Create span processors
 	var processors []sdktrace.SpanProcessor
 	for _, exporter := range exporters {
@@ -682,29 +761,49 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
+// shutdownTimeout bounds the final flush.
+//
+// An OTLP exporter whose collector is unreachable retries until its own
+// deadline, so an unbounded shutdown makes the agent hang on exit for as long
+// as the collector stays down - during a rollout, on every pod, while the
+// kubelet counts toward the termination grace period and then SIGKILLs it.
+// Losing the last batch of spans is much cheaper than that.
+const shutdownTimeout = 5 * time.Second
+
+// Shutdown flushes and stops every provider.
+//
+// Each provider is shut down even if an earlier one failed, and the errors are
+// reported together. Returning at the first failure used to leave the tracer
+// provider running, so a meter that could not flush also cost every buffered
+// span.
 func (m *Manager) Shutdown() error {
 	close(m.stopCh)
 
-	// Shutdown providers
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	var errs []string
 	if m.meterProvider != nil {
-		if err := m.meterProvider.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("failed to shutdown meter provider: %w", err)
+		if err := m.meterProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Sprintf("meter provider: %v", err))
 		}
 	}
-
 	if m.tracerProvider != nil {
-		if err := m.tracerProvider.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("failed to shutdown tracer provider: %w", err)
+		if err := m.tracerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Sprintf("tracer provider: %v", err))
 		}
 	}
 
 	// Stop custom exporters
 	for _, exporter := range m.exporters {
-		if err := exporter.Stop(context.Background()); err != nil {
+		if err := exporter.Stop(ctx); err != nil {
 			log.Log.Error(err, "Failed to stop exporter", "type", exporter.GetType())
 		}
 	}
 
+	if len(errs) > 0 {
+		return fmt.Errorf("observability shutdown: %s", strings.Join(errs, "; "))
+	}
 	return nil
 }
 
