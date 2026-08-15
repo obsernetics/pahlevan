@@ -87,7 +87,7 @@ they use every day.
 | Mechanism | `raw_tracepoint/sys_enter` (`bpf/syscall_monitor.c`) | Modern eBPF CO-RE probe, legacy eBPF probe, or kernel module | kprobes, tracepoints, and LSM hooks, selected per policy |
 | What is captured | **The syscall number only.** Deduplicated in-kernel per `(cgroup, syscall)`, so userspace sees each pair exactly once | Full events with **arguments**, return values, and derived fields (`fd.name`, `evt.args`, and so on) | Rich arguments for the hooks a policy selects, including strings, file paths, and socket details |
 | Syscall arguments | **No.** Not captured anywhere | Yes | Yes, per hook |
-| Counts and rates | **No.** Dedup means you learn the syscall *set*, not how often each one happened | Yes | Yes |
+| Counts and rates | **Yes.** The map that deduplicates events counts every occurrence, so frequency comes for free with no extra event volume, read on demand rather than streamed. Approximate under concurrency: the kernel increments without an atomic, since an exact count is not worth a contended atomic on the hottest path and a lost increment only shifts a ranking by one | Yes | Yes |
 | Syscall-level blocking | **No.** A raw tracepoint cannot deny. See seccomp below | No | Yes, for hooks where an `Override` or LSM action applies |
 | Cost model | Low steady state, because dedup collapses repeats after the first sighting | Proportional to syscall volume, mitigated by tuned rulesets | Proportional to the events the loaded policies select |
 

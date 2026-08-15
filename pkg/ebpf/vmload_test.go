@@ -1340,3 +1340,75 @@ func TestVMExecArgumentsAreNotReusedAcrossExecs(t *testing.T) {
 	}
 	t.Skip("no exec of /bin/true observed within the window")
 }
+
+// TestVMSyscallCountsAccumulate proves the dedup map really counts.
+//
+// Events are emitted once per (cgroup, syscall), which is what keeps userspace
+// volume sane, so the frequency has to come from the map rather than the event
+// stream. This asserts the counter climbs past one: a workload's syscall set
+// and its syscall profile are different things, and only the second tells you
+// which entries in an allow-set are load-bearing. VM-only.
+func TestVMSyscallCountsAccumulate(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadSyscallMonitor()
+	if err != nil {
+		t.Fatalf("LoadSyscallMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	l, err := link.AttachRawTracepoint(link.RawTracepointOptions{
+		Name: "sys_enter", Program: coll.Programs["handle_sys_enter"],
+	})
+	if err != nil {
+		t.Fatalf("AttachRawTracepoint(sys_enter): %v", err)
+	}
+	defer l.Close()
+
+	// Make a lot of syscalls, so at least one pair is well past its first.
+	for i := 0; i < 2000; i++ {
+		_, _ = os.Stat("/proc/self/status")
+	}
+
+	m := &Manager{syscallCollection: coll}
+	var maxCount uint64
+	var busiest SyscallCount
+	// The counts are per cgroup and this test process's cgroup id is whatever
+	// the harness runs under, so scan every key rather than guessing it.
+	mp := coll.Maps["syscall_seen"]
+	var key, count uint64
+	it := mp.Iterate()
+	for it.Next(&key, &count) {
+		if count > maxCount {
+			maxCount = count
+			busiest = SyscallCount{Number: key & 0xffff, Name: SyscallNameOrNumber(key & 0xffff), Count: count}
+		}
+	}
+	if maxCount <= 1 {
+		t.Fatalf("no syscall counted more than once (max %d); the map is still a flag, not a counter", maxCount)
+	}
+	t.Logf("busiest syscall: %s (nr %d) counted %d times", busiest.Name, busiest.Number, busiest.Count)
+
+	// And the accessor must agree for the cgroup it is asked about.
+	cg := key >> 16
+	counts := m.SyscallCounts(cg)
+	if len(counts) == 0 {
+		t.Fatalf("SyscallCounts(%d) returned nothing while the map holds entries", cg)
+	}
+	for i := 1; i < len(counts); i++ {
+		if counts[i-1].Count < counts[i].Count {
+			t.Errorf("counts are not sorted busiest-first: %v", counts[:i+1])
+			break
+		}
+	}
+	t.Logf("SyscallCounts reported %d distinct syscalls, busiest %s=%d",
+		len(counts), counts[0].Name, counts[0].Count)
+}
