@@ -148,6 +148,9 @@ message ExecInfo {
   repeated Ancestor ancestry = 5;
   string ancestry_chain = 6;
 
+  // Working directory at exec.
+  string cwd = 8;
+
   // The record is a process exit rather than an exec. An exit carries no
   // binary, argv or ancestry, so a client must check this before reading them.
   bool exited = 7;

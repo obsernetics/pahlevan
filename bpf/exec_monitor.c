@@ -97,6 +97,9 @@ struct exec_event {
 	 * as "nginx -> sh -> curl" than as "curl was denied". */
 	struct ancestor ancestry[ANCESTRY_DEPTH];
 	__u8  filename[PATH_MAX_LEN];
+	/* Working directory at exec. "nc run from /tmp" and "nc run from the app's
+	 * install dir" are different findings, and both comparators report it. */
+	__u8  cwd[PATH_MAX_LEN];
 	/* NUL separated argv, captured at sys_enter. */
 	__u32 args_count;
 	__u32 args_len;
@@ -361,6 +364,21 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	e->filename[0] = 0;
 	if (fname)
 		bpf_probe_read_kernel_str(e->filename, sizeof(e->filename), fname);
+
+	/* Working directory. bpf_d_path is allowlisted per hook, so this may not
+	 * verify on bprm_check_security; the field stays empty if the helper is
+	 * unavailable rather than failing the load. */
+	e->cwd[0] = 0;
+	{
+		/* bpf_d_path demands a trusted pointer. bpf_get_current_task_btf
+		 * returns one, unlike the scalar from bpf_get_current_task. */
+		struct task_struct *task = bpf_get_current_task_btf();
+		if (task && task->fs) {
+			long n = bpf_d_path(&task->fs->pwd, (char *)e->cwd, sizeof(e->cwd));
+			if (n < 0)
+				e->cwd[0] = 0;
+		}
+	}
 
 	/* Attach the argv captured on entry to this same execve. */
 	e->args_count = 0;

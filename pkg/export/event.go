@@ -205,6 +205,11 @@ type ExecInfo struct {
 	// whole invocation is exactly the mistake this prevents.
 	ArgsTruncated bool `json:"argsTruncated,omitempty"`
 
+	// Cwd is the working directory the exec happened in. "nc run from /tmp"
+	// and "nc run from the application's install directory" are different
+	// findings.
+	Cwd string `json:"cwd,omitempty"`
+
 	// Exited marks the record as a process exit rather than an exec. An exit
 	// carries no binary, argv or ancestry, so a consumer must check this
 	// before reading them.

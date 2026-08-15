@@ -217,11 +217,12 @@ func buildExecRecFull(cgroup, ts uint64, pid, uid, flags uint32, comm, filename 
 		offAncestry  = 64
 		ancSize      = 20
 		offFilename  = offAncestry + 4*ancSize // 144
-		offArgsCount = offFilename + 128       // 272
-		offArgsLen   = offArgsCount + 4        // 276
-		offArgsTrunc = offArgsLen + 4          // 280
-		offArgs      = offArgsTrunc + 1        // 281
-		total        = offArgs + 256           // 544
+		offCwd       = offFilename + 128       // 272
+		offArgsCount = offCwd + 128            // 400
+		offArgsLen   = offArgsCount + 4        // 404
+		offArgsTrunc = offArgsLen + 4          // 408
+		offArgs      = offArgsTrunc + 1        // 409
+		total        = offArgs + 256           // 672
 	)
 	b := make([]byte, total)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
