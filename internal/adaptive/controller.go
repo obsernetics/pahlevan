@@ -62,6 +62,11 @@ type Enforcer interface {
 	// constrains who may exec rather than what may be exec'd. Passing an empty
 	// filter clears it.
 	SetProcFilter(cgroupID uint64, f *ebpf.ProcFilter) error
+
+	// SetNetworkRelax installs blanket egress permissions - loopback, DNS -
+	// which name a class of destination rather than an address and so cannot be
+	// allow-set entries. A mask of zero clears them.
+	SetNetworkRelax(cgroupID uint64, mask uint8) error
 }
 
 // PolicyResolver decides, for a given cgroup, whether a policy applies and how
@@ -731,6 +736,8 @@ func ApplyOverrides(e Enforcer, id uint64, o Overrides, onFailure func(kind, ent
 	for _, d := range o.DeniedDestinations {
 		note(e.AllowNetworkDestination(id, d.IP, d.Port, false), "destination", destString(d))
 	}
+	note(e.SetNetworkRelax(id, o.NetworkRelax), "networkRelax",
+		ebpf.NetworkRelaxString(o.NetworkRelax))
 	note(e.SetProcFilter(id, o.ProcFilter), "procFilter",
 		ebpf.FilterMaskString(o.ProcFilter.Mask()))
 	return failed
@@ -755,6 +762,7 @@ func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
 		"allowedCapabilities", len(o.AllowedCapabilities),
 		"allowedDestinations", len(o.AllowedDestinations),
 		"procFilter", ebpf.FilterMaskString(o.ProcFilter.Mask()),
+		"networkRelax", ebpf.NetworkRelaxString(o.NetworkRelax),
 		"failed", failed)
 }
 

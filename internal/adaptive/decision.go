@@ -64,6 +64,11 @@ type Overrides struct {
 	AllowedSyscalls []string
 	DeniedSyscalls  []string
 
+	// NetworkRelax carries blanket egress permissions - loopback, DNS - that
+	// cannot be expressed as allow-set entries because they name a class of
+	// destination rather than an address. Zero means none.
+	NetworkRelax uint8
+
 	// ProcFilter constrains who may exec, as opposed to what may be exec'd.
 	// It is not an allow-set correction like the fields above: the allow-set
 	// answers "has this container run this binary", and the filter answers
@@ -80,7 +85,7 @@ func (o Overrides) Empty() bool {
 		len(o.AllowedCapabilities) == 0 && len(o.DeniedCapabilities) == 0 &&
 		len(o.AllowedDestinations) == 0 && len(o.DeniedDestinations) == 0 &&
 		len(o.AllowedSyscalls) == 0 && len(o.DeniedSyscalls) == 0 &&
-		o.ProcFilter.Empty()
+		o.NetworkRelax == 0 && o.ProcFilter.Empty()
 }
 
 // Decision is how one PahlevanPolicy governs one container. It replaces the

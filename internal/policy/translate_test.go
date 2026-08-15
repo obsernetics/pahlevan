@@ -12,6 +12,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 var now = time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
@@ -389,10 +390,6 @@ func TestUnrepresentableNetworkInputs(t *testing.T) {
 		{"ingress is out of scope",
 			policyv1alpha1.NetworkPolicy{IngressRules: []policyv1alpha1.NetworkRule{{}}},
 			"egress only"},
-		{"allowDNS needs an address",
-			policyv1alpha1.NetworkPolicy{AllowDNS: true}, "need a concrete address"},
-		{"allowLoopback needs an address",
-			policyv1alpha1.NetworkPolicy{AllowLoopback: true}, "need a concrete address"},
 		{"label-selected peers have no fixed address",
 			policyv1alpha1.NetworkPolicy{EgressRules: []policyv1alpha1.NetworkRule{{
 				Ports: []policyv1alpha1.NetworkPort{{Port: i32(80)}},
@@ -599,4 +596,98 @@ func BenchmarkTranslateEmptySpec(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = Translate("bench", spec, now)
 	}
+}
+
+// allowDNS and allowLoopback name a class of destination rather than an
+// address, so they cannot be allow-set entries - the allow-set is a hash of the
+// exact destination. They used to be accepted by the API and do nothing but
+// produce a warning; they are a per-cgroup flag checked in socket_connect now.
+func TestBlanketEgressPermissionsAreEnforced(t *testing.T) {
+	for name, tc := range map[string]struct {
+		np   policyv1alpha1.NetworkPolicy
+		want uint8
+	}{
+		"neither":  {policyv1alpha1.NetworkPolicy{}, 0},
+		"dns":      {policyv1alpha1.NetworkPolicy{AllowDNS: true}, ebpf.RelaxDNS},
+		"loopback": {policyv1alpha1.NetworkPolicy{AllowLoopback: true}, ebpf.RelaxLoopback},
+		"both": {
+			policyv1alpha1.NetworkPolicy{AllowDNS: true, AllowLoopback: true},
+			ebpf.RelaxDNS | ebpf.RelaxLoopback,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			np := tc.np
+			d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+				EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+				NetworkPolicy:     &np,
+			}, now)
+			assert.Equal(t, tc.want, d.Overrides.NetworkRelax)
+			assert.False(t, hasWarning(warnings, "need a concrete address"),
+				"these are enforced now, not reported as unrepresentable")
+		})
+	}
+}
+
+// A policy that sets only a blanket permission still has something to apply, so
+// Empty() must not report it as nothing to do - the controller skips
+// applyOverrides entirely on an empty override set.
+func TestBlanketPermissionAloneIsNotAnEmptyOverride(t *testing.T) {
+	np := policyv1alpha1.NetworkPolicy{AllowDNS: true}
+	d, _ := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		NetworkPolicy:     &np,
+	}, now)
+	assert.False(t, d.Overrides.Empty())
+}
+
+// A mode the controller does not recognize is mapped onto Monitoring, which is
+// the safe default and an invisible one: the policy looks applied and enforces
+// nothing. It must be reported.
+func TestUnknownModeIsReported(t *testing.T) {
+	for mode, want := range map[string]string{
+		"Enforce":  "not one of Off, Monitoring or Blocking",
+		"blocking": "not one of Off, Monitoring or Blocking",
+		"":         "",
+		"Off":      "",
+		"Blocking": "",
+	} {
+		t.Run(mode, func(t *testing.T) {
+			_, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+				EnforcementConfig: policyv1alpha1.EnforcementConfig{
+					Mode: policyv1alpha1.EnforcementMode(mode),
+				},
+			}, now)
+			if want == "" {
+				assert.False(t, hasWarning(warnings, "enforcementConfig.mode"),
+					"warnings were %v", warnings)
+				return
+			}
+			assert.True(t, hasWarning(warnings, want), "warnings were %v", warnings)
+		})
+	}
+}
+
+// `mode: Off` unquoted is a YAML 1.1 boolean, so it arrives as "false" and a
+// policy the author meant to switch off keeps running. That is not a typo and
+// deserves its own message.
+func TestYAMLBooleanModeIsExplained(t *testing.T) {
+	for _, mode := range []string{"false", "true"} {
+		_, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+			EnforcementConfig: policyv1alpha1.EnforcementConfig{
+				Mode: policyv1alpha1.EnforcementMode(mode),
+			},
+		}, now)
+		assert.True(t, hasWarning(warnings, "unquoted Off or On"),
+			"mode %q: warnings were %v", mode, warnings)
+	}
+}
+
+// An Off policy returns early, so the mode warning has to be emitted before
+// that or the one mode most worth reporting would be the one that is not.
+func TestUnknownModeIsReportedEvenThoughItBecomesMonitoring(t *testing.T) {
+	d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: "Enforce"},
+	}, now)
+	assert.Equal(t, adaptive.ModeMonitoring, d.Mode)
+	assert.True(t, hasWarning(warnings, "enforces nothing"), "warnings were %v", warnings)
 }

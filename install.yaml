@@ -118,7 +118,20 @@ spec:
                       enforcement
                     type: string
                   mode:
-                    description: Mode specifies the enforcement mode
+                    description: |-
+                      Mode specifies the enforcement mode.
+
+                      The enum is load-bearing rather than decorative. Without it the API
+                      server accepts any string and the controller maps whatever it does not
+                      recognize onto Monitoring, so a typo produces a policy that looks applied
+                      and enforces nothing. The trap that found this: `mode: Off` unquoted is a
+                      YAML 1.1 boolean, so it arrives as `false` and silently became Monitoring
+                      - the opposite of switching a policy off. Quote it, or the API server now
+                      says so.
+                    enum:
+                    - "Off"
+                    - Monitoring
+                    - Blocking
                     type: string
                 type: object
               filePolicy:
