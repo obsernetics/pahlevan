@@ -28,11 +28,38 @@ char LICENSE[] SEC("license") = "GPL";
 struct cap_event {
 	__u64 cgroup_id;
 	__u64 timestamp_ns;
+	/* The task's capability sets at the time of the check. Seeing only the
+	 * capability being checked answers "what did it want"; the sets answer
+	 * "what could it have done", which is the question that decides whether a
+	 * container is over-privileged. Both comparators report these. */
+	__u64 cap_effective;
+	__u64 cap_permitted;
+	__u64 cap_inheritable;
 	__u32 pid; /* tgid */
 	__u32 cap; /* capability number, e.g. CAP_SYS_ADMIN = 21 */
 	__u32 flags; /* bit 0x80000000 => denied */
+	__u32 pad;
 	__u8  comm[16];
 };
+
+/* fill_cap_sets reads the current task's credentials. kernel_cap_t is a struct
+ * wrapping a u64 on modern kernels; BPF_CORE_READ resolves the field through
+ * BTF, so a layout change is handled by relocation rather than by breaking. */
+static __always_inline void fill_cap_sets(struct cap_event *e)
+{
+	e->cap_effective = 0;
+	e->cap_permitted = 0;
+	e->cap_inheritable = 0;
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	if (!task)
+		return;
+	const struct cred *cred = BPF_CORE_READ(task, cred);
+	if (!cred)
+		return;
+	e->cap_effective = BPF_CORE_READ(cred, cap_effective.val);
+	e->cap_permitted = BPF_CORE_READ(cred, cap_permitted.val);
+	e->cap_inheritable = BPF_CORE_READ(cred, cap_inheritable.val);
+}
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -87,6 +114,8 @@ int BPF_PROG(capable_check, const struct cred *cred, struct user_namespace *ns,
 			e->pid = tgid;
 			e->cap = (__u32)cap;
 			e->flags = 0x80000000; /* denied */
+			e->pad = 0;
+			fill_cap_sets(e);
 			bpf_get_current_comm(&e->comm, sizeof(e->comm));
 			bpf_ringbuf_submit(e, 0);
 		}
@@ -107,6 +136,8 @@ int BPF_PROG(capable_check, const struct cred *cred, struct user_namespace *ns,
 	e->pid = tgid;
 	e->cap = (__u32)cap;
 	e->flags = 0;
+	e->pad = 0;
+	fill_cap_sets(e);
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
 	bpf_ringbuf_submit(e, 0);
 	return 0;

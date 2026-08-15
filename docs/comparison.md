@@ -127,7 +127,7 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 |---|---|---|---|
 | Hook | `lsm/bprm_check_security` (`bpf/exec_monitor.c`) | Driver-level `execve` and clone tracking with a full userspace thread table | Dedicated process sensor with exec and exit tracking |
 | Binary path | Yes, resolved in-kernel | Yes | Yes |
-| Command-line arguments | **No.** Not captured | Yes | Yes |
+| Command-line arguments | **Yes.** Captured at the execve and execveat syscall tracepoints, where argv is still readable in the caller's address space, and joined onto the exec event within the same syscall. Capped at 20 arguments and 256 bytes with a truncation flag, so a prefix is never read as the whole invocation | Yes | Yes |
 | Working directory, environment | **No** | Yes for cwd | Yes for cwd |
 | Blocking | Yes, `EPERM` on exec of a binary not in the learned set. There is also an in-kernel `SIGKILL` mode in the C program that the control plane does not currently expose | No | Yes: `Sigkill`, `Override`, and other actions |
 | Exit tracking | **No** | Yes | Yes |
@@ -154,7 +154,7 @@ Pahlevan is not close.
 |---|---|---|---|
 | Observes capability checks | Yes, `lsm/capable` (`bpf/capability_monitor.c`), learned per `(cgroup, capability)`. This landed after `v2.0.0` and is not yet covered by a published benchmark run | Capability-related syscalls, and thread capability sets as event fields | Yes, capability sets on process events, and capability-related hooks in policies |
 | Enforces on capabilities | **Yes**, `EPERM` for a capability outside the learned set. Newly landed and less exercised than the file path | No | Yes, with a policy |
-| Reports the process capability set | **No.** Pahlevan sees the check, not the full permitted, effective, and inheritable sets | Yes | Yes |
+| Reports the process capability set | **Yes.** Every capability event carries the task's effective, permitted and inheritable sets, read from its credentials and rendered as names. The checked capability says what the workload wanted; the sets say what it could have done, which is what identifies a container holding privilege it never exercises | Yes | Yes |
 
 ## Enforcement mechanisms and available actions
 
@@ -186,7 +186,7 @@ nothing.
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
 | Generates a seccomp profile from observed behavior | **Yes**, from the learned syscall set (`pkg/seccomp`), written to a node directory when `--seccomp-dir` is set | No | No |
-| Applies the generated profile | **No.** The profile is written and nothing reads it back. Nothing sets `securityContext.seccompProfile.localhostProfile`. The loop is not closed | n/a | n/a |
+| Applies the generated profile | **No, but no longer invisible.** The profile is reported on `ContainerProfile` with its `localhostProfile` value, node and syscall counts, and `pahlevan profile patch` prints the exact securityContext change. Nothing applies it: a pod's `seccompProfile` cannot change after admission and the operator runs without a mutating webhook, so the rollout is yours | n/a | n/a |
 | Architectures in the generated profile | Matches the build architecture: `SCMP_ARCH_X86_64`/`X86`/`X32` on amd64, `SCMP_ARCH_AARCH64` on arm64. It was hardcoded to x86-64 regardless of target, which produced a profile naming the wrong ABI on arm64 | n/a | n/a |
 
 Automatic seccomp profile generation is genuinely something neither Falco nor
@@ -203,9 +203,9 @@ which does close this loop and does it for SELinux and AppArmor as well.
 | Namespace, pod name, container id | Yes | Yes | Yes |
 | Node, owning workload, pod labels, image | Yes, on every exported event. The ReplicaSet a Deployment owns is unwound to the Deployment, and the image is joined from the pod's containerStatuses | Yes | Yes |
 | Command-line arguments | Yes, captured at the execve syscall tracepoint and joined onto the exec event within the same syscall. Capped at 20 arguments and 256 bytes, with a truncation flag so a prefix is never read as the whole invocation | Yes | Yes |
-| Container image | **No** | Yes | Yes |
-| Pod labels and annotations | **No** | Yes | Yes |
-| Workload owner, such as Deployment or Job | **No.** `ContainerProfile` declares `workload` and `policyRef` fields and the agent does not populate them | Yes | Yes |
+| Container image | **Yes**, joined from the pod's `containerStatuses` against the runtime container id the cgroup yields. Init and ephemeral containers included | Yes | Yes |
+| Pod labels and annotations | Labels **yes**, on every exported event, which is what makes denials groupable by team or service. Annotations no | Yes | Yes |
+| Workload owner, such as Deployment or Job | **Yes**, on every exported event. The ReplicaSet a Deployment owns is unwound to the Deployment, since nobody reasons in ReplicaSets | Yes | Yes |
 | QoS class, runtime | Yes, both derived from the cgroup path | Partially | Yes |
 | Enrichment on the event stream | Only on the `ContainerProfile` resource and on log lines today. The new JSON envelope has a `kubernetes` block that nothing populates yet | Yes, on every event | Yes, on every event |
 

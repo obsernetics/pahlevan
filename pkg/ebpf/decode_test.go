@@ -124,13 +124,33 @@ func BenchmarkFnvPathHash(b *testing.B) {
 }
 
 func buildCapRec(cgroup, ts uint64, pid, capability, flags uint32, comm string) []byte {
-	b := make([]byte, 44)
+	return buildCapRecSets(cgroup, ts, pid, capability, flags, comm, 0, 0, 0)
+}
+
+// buildCapRecSets encodes the whole struct cap_event, capability sets included.
+// The layout is spelled out independently of the constants in manager.go, so a
+// change to one side fails the test rather than both moving together.
+func buildCapRecSets(cgroup, ts uint64, pid, capability, flags uint32, comm string,
+	effective, permitted, inheritable uint64,
+) []byte {
+	const (
+		offEffective   = 16
+		offPermitted   = 24
+		offInheritable = 32
+		offPID         = 40
+		offComm        = 56
+		total          = offComm + 16 // 72
+	)
+	b := make([]byte, total)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
 	binary.LittleEndian.PutUint64(b[8:], ts)
-	binary.LittleEndian.PutUint32(b[16:], pid)
-	binary.LittleEndian.PutUint32(b[20:], capability)
-	binary.LittleEndian.PutUint32(b[24:], flags)
-	copy(b[28:44], comm)
+	binary.LittleEndian.PutUint64(b[offEffective:], effective)
+	binary.LittleEndian.PutUint64(b[offPermitted:], permitted)
+	binary.LittleEndian.PutUint64(b[offInheritable:], inheritable)
+	binary.LittleEndian.PutUint32(b[offPID:], pid)
+	binary.LittleEndian.PutUint32(b[offPID+4:], capability)
+	binary.LittleEndian.PutUint32(b[offPID+8:], flags)
+	copy(b[offComm:offComm+16], comm)
 	return b
 }
 

@@ -234,6 +234,32 @@ type CapabilityEvent struct {
 	CgroupID    uint64
 	Comm        string
 	ContainerID string
+
+	// The task's capability sets at the time of the check, as bitmasks.
+	//
+	// The capability being checked answers "what did it want". These answer
+	// "what could it have done", which is the question that decides whether a
+	// container is over-privileged: a workload holding CAP_SYS_ADMIN it never
+	// exercises is a finding even though no check was ever denied.
+	CapEffective   uint64
+	CapPermitted   uint64
+	CapInheritable uint64
+}
+
+// CapabilityNames expands a capability bitmask into names, lowest bit first.
+// Capabilities above the known table are rendered as CAP_<n> rather than
+// dropped, so a newer kernel's additions are still visible.
+func CapabilityNames(mask uint64) []string {
+	if mask == 0 {
+		return nil
+	}
+	out := make([]string, 0, 8)
+	for i := 0; i < 64; i++ {
+		if mask&(1<<uint(i)) != 0 {
+			out = append(out, CapabilityName(uint32(i)))
+		}
+	}
+	return out
 }
 
 type SyscallEvent struct {
@@ -1480,19 +1506,41 @@ func (m *Manager) SetMapSizing(s MapSizing) {
 //
 //	__u64 cgroup_id; __u64 timestamp_ns; __u32 pid; __u32 cap; __u32 flags;
 //	__u8 comm[16];   // 44 bytes
+//
+// Byte offsets of `struct cap_event` in bpf/capability_monitor.c:
+//
+//	__u64 cgroup_id;        // 0
+//	__u64 timestamp_ns;     // 8
+//	__u64 cap_effective;    // 16
+//	__u64 cap_permitted;    // 24
+//	__u64 cap_inheritable;  // 32
+//	__u32 pid, cap, flags, pad; // 40
+//	__u8  comm[16];         // 56
+//	                        // 72 total
+const (
+	capOffEffective   = 16
+	capOffPermitted   = 24
+	capOffInheritable = 32
+	capOffPID         = 40
+	capOffComm        = 56
+	capEventSize      = capOffComm + 16
+)
+
 func parseCapabilityEvent(data []byte) *CapabilityEvent {
-	const size = 8 + 8 + 4 + 4 + 4 + 16
-	if len(data) < size {
+	if len(data) < capEventSize {
 		return nil
 	}
 	ev := &CapabilityEvent{
-		CgroupID:   binary.LittleEndian.Uint64(data[0:8]),
-		Timestamp:  binary.LittleEndian.Uint64(data[8:16]),
-		PID:        binary.LittleEndian.Uint32(data[16:20]),
-		Capability: binary.LittleEndian.Uint32(data[20:24]),
-		Flags:      binary.LittleEndian.Uint32(data[24:28]),
+		CgroupID:       binary.LittleEndian.Uint64(data[0:8]),
+		Timestamp:      binary.LittleEndian.Uint64(data[8:16]),
+		CapEffective:   binary.LittleEndian.Uint64(data[capOffEffective : capOffEffective+8]),
+		CapPermitted:   binary.LittleEndian.Uint64(data[capOffPermitted : capOffPermitted+8]),
+		CapInheritable: binary.LittleEndian.Uint64(data[capOffInheritable : capOffInheritable+8]),
+		PID:            binary.LittleEndian.Uint32(data[capOffPID : capOffPID+4]),
+		Capability:     binary.LittleEndian.Uint32(data[capOffPID+4 : capOffPID+8]),
+		Flags:          binary.LittleEndian.Uint32(data[capOffPID+8 : capOffPID+12]),
 	}
-	comm := data[28:44]
+	comm := data[capOffComm : capOffComm+16]
 	if i := indexZero(comm); i >= 0 {
 		comm = comm[:i]
 	}
