@@ -1014,6 +1014,15 @@ func (c *Controller) persistProfile(st *cgState) {
 	}
 	sort.Strings(execs)
 
+	// Capability names without the CAP_ prefix, which is the spelling a pod
+	// spec uses in securityContext.capabilities, so admission can compare the
+	// two without translating.
+	caps := make([]string, 0, len(st.caps))
+	for c := range st.caps {
+		caps = append(caps, strings.TrimPrefix(ebpf.CapabilityName(c), "CAP_"))
+	}
+	sort.Strings(caps)
+
 	now := metav1.Now()
 	cp := &policyv1alpha1.ContainerProfile{
 		TypeMeta: metav1.TypeMeta{
@@ -1041,6 +1050,7 @@ func (c *Controller) persistProfile(st *cgState) {
 			LearnedFiles:               files,
 			LearnedNetworkDestinations: dests,
 			LearnedExecutables:         execs,
+			LearnedCapabilities:        caps,
 			SyscallCount:               int32(len(syscalls)),
 			FileCount:                  int32(len(files)),
 			NetworkCount:               int32(len(dests)),

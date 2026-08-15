@@ -17,6 +17,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"time"
 
 	"github.com/obsernetics/pahlevan/internal/admission"
 	"github.com/obsernetics/pahlevan/pkg/observability"
@@ -36,6 +37,11 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("operator-setup")
+
+	// derivedAdmissionInterval is how often admission rules are re-derived from
+	// the learned baselines. Slow, because a baseline only changes when a
+	// container finishes learning or a policy is deleted.
+	derivedAdmissionInterval = 2 * time.Minute
 )
 
 func init() {
@@ -107,6 +113,42 @@ func main() {
 		return nil
 	})); err != nil {
 		fatalf(err, "unable to add admission runnable")
+	}
+
+	// Derived admission: rules generated from what each workload was observed
+	// doing, rather than a baseline written by hand.
+	//
+	// Re-derived on a timer because a baseline changes when a container
+	// finishes learning, and rolled back to nothing when a policy loses its
+	// baseline: a rule outliving the evidence for it looks deliberate and is
+	// the worst kind of stale.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(derivedAdmissionInterval)
+		defer ticker.Stop()
+		reconcile := func() {
+			n, err := admission.EnsureDerived(ctx, mgr.GetClient())
+			if errors.Is(err, admission.ErrUnsupported) {
+				return
+			}
+			if err != nil {
+				setupLog.V(1).Info("derived admission reconcile failed", "error", err.Error())
+				return
+			}
+			if n > 0 {
+				setupLog.Info("derived admission policies reconciled", "policies", n)
+			}
+		}
+		reconcile()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				reconcile()
+			}
+		}
+	})); err != nil {
+		fatalf(err, "unable to add derived admission runnable")
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
