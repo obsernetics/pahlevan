@@ -265,7 +265,7 @@ func streamLogsSequentially(
 	return nil
 }
 
-// streamLogsConcurrently follows every selected pod at once, funnelling the
+// streamLogsConcurrently follows every selected pod at once, funneling the
 // lines through a single writer so they never interleave mid-line.
 func streamLogsConcurrently(
 	ctx context.Context,

@@ -38,7 +38,7 @@ import (
 //	# TYPE <name> <counter|gauge|histogram|summary|untyped>
 //	<name>[{<label>="<value>",...}] <float> [<timestamp>]
 //
-// Label values honour the format's three escapes (\\, \", \n). Values may be
+// Label values honor the format's three escapes (\\, \", \n). Values may be
 // Nan/Inf spellings. Anything unparseable is reported with its line number
 // rather than silently dropped.
 
@@ -172,7 +172,7 @@ func parsePrometheusText(r io.Reader) ([]promFamily, error) {
 	return out, nil
 }
 
-// parseComment recognises the two meaningful comment forms. Any other comment
+// parseComment recognizes the two meaningful comment forms. Any other comment
 // yields ok=false and is ignored.
 func parseComment(line string) (name, kind, text string, ok bool) {
 	rest := strings.TrimSpace(strings.TrimPrefix(line, "#"))

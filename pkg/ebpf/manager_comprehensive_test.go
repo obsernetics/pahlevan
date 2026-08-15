@@ -595,7 +595,7 @@ func (pue *PolicyUpdateEvent) Serialize() ([]byte, error) {
 	}
 
 	// In real implementation, would use actual JSON marshaling
-	serialized := fmt.Sprintf(`{"container_id":"%s","event_type":"%s","timestamp":"%s"}`,
+	serialized := fmt.Sprintf(`{"container_id":%q,"event_type":%q,"timestamp":%q}`,
 		pue.ContainerID, pue.EventType, pue.Timestamp.Format(time.RFC3339))
 
 	return []byte(serialized), nil
@@ -628,21 +628,6 @@ func DeserializePolicyUpdateEvent(data []byte) (*PolicyUpdateEvent, error) {
 	}
 
 	return event, nil
-}
-
-func generateLongString(length int) string {
-	result := make([]byte, length)
-	for i := 0; i < length; i++ {
-		result[i] = 'a'
-	}
-	return string(result)
-}
-
-func isValidContainerIDChar(char rune) bool {
-	return (char >= 'a' && char <= 'z') ||
-		(char >= 'A' && char <= 'Z') ||
-		(char >= '0' && char <= '9') ||
-		char == '-' || char == '_' || char == '.'
 }
 
 // Additional comprehensive tests for actual Manager functionality
@@ -1084,21 +1069,21 @@ func (se *SyscallEvent) Validate() error {
 	return nil
 }
 
-func (ne *NetworkEvent) Validate() error {
-	if ne.ContainerID == "" {
+func (e *NetworkEvent) Validate() error {
+	if e.ContainerID == "" {
 		return fmt.Errorf("container ID cannot be empty")
 	}
-	if ne.SrcPort == 0 || ne.DstPort == 0 {
+	if e.SrcPort == 0 || e.DstPort == 0 {
 		return fmt.Errorf("ports cannot be zero")
 	}
 	return nil
 }
 
-func (fe *FileEvent) Validate() error {
-	if fe.ContainerID == "" {
+func (e *FileEvent) Validate() error {
+	if e.ContainerID == "" {
 		return fmt.Errorf("container ID cannot be empty")
 	}
-	if fe.Path == "" {
+	if e.Path == "" {
 		return fmt.Errorf("file path cannot be empty")
 	}
 	return nil

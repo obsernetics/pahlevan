@@ -481,7 +481,7 @@ func TestRunLogs_FollowStopsOnCancelledContext(t *testing.T) {
 		fetch:     staticLogFetcher(map[string]string{"pahlevan-agent-aaa": "x\n", "pahlevan-operator-1": "y\n"}),
 	}
 	if err := runLogs(ctx, kube, opts, io.Discard); err != nil {
-		t.Fatalf("a cancelled follow should exit cleanly: %v", err)
+		t.Fatalf("a canceled follow should exit cleanly: %v", err)
 	}
 }
 

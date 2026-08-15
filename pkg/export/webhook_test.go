@@ -224,7 +224,7 @@ func TestWebhookExporterHonoursContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := e.Export(ctx, []*Event{testEvent(EventTypeFile)}); err == nil {
-		t.Fatal("expected an error once the context is cancelled")
+		t.Fatal("expected an error once the context is canceled")
 	}
 }
 

@@ -4,7 +4,7 @@
 // It consumes the eBPF event stream, attributes each event to a Kubernetes pod
 // via the cgroup id, and drives each matched container through a learning window
 // and then into in-kernel enforcement - with no hand-written rules. This is the
-// behaviour that distinguishes Pahlevan from Falco (alert-only, manual rules) and
+// behavior that distinguishes Pahlevan from Falco (alert-only, manual rules) and
 // Tetragon (manual TracingPolicy).
 package adaptive
 
@@ -1074,7 +1074,7 @@ func profileName(ref attribution.ContainerRef) string {
 	return name
 }
 
-// Run drives Reconcile on an interval until ctx is cancelled.
+// Run drives Reconcile on an interval until ctx is canceled.
 func (c *Controller) Run(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()

@@ -43,7 +43,7 @@ import (
 func NewProfileCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "profile",
-		Short: "Inspect the seccomp profiles generated from learned behaviour",
+		Short: "Inspect the seccomp profiles generated from learned behavior",
 		Long: `Inspect the seccomp profiles Pahlevan generates from each container's
 learned syscall set.
 

@@ -4,10 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/internal/adaptive"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/obsernetics/pahlevan/internal/adaptive"
+	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 )
 
 func TestSelfHealingTranslation(t *testing.T) {

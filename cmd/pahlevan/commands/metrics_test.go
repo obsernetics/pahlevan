@@ -255,7 +255,7 @@ func TestRunMetrics_RawOutput(t *testing.T) {
 		t.Errorf("raw exposition missing:\n%s", out)
 	}
 	if strings.Contains(out, "go_goroutines") {
-		t.Errorf("raw output should honour the filter:\n%s", out)
+		t.Errorf("raw output should honor the filter:\n%s", out)
 	}
 	// The filtered raw output must still be parseable.
 	if _, err := parsePrometheusText(strings.NewReader(strings.ReplaceAll(out, "# source:", "#source:"))); err != nil {
@@ -448,7 +448,7 @@ func TestFilterRawExposition(t *testing.T) {
 			t.Errorf("unmatched metric leaked: %q", out)
 		}
 	})
-	t.Run("unrecognised lines are dropped", func(t *testing.T) {
+	t.Run("unrecognized lines are dropped", func(t *testing.T) {
 		out := string(filterRawExposition([]byte("# a bare comment\ngarbage\n\npahlevan_x 1\n"), "pahlevan_"))
 		if out != "pahlevan_x 1\n" {
 			t.Errorf("out = %q", out)

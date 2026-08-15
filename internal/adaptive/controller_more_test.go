@@ -89,7 +89,10 @@ func TestHandleNetworkEvent_Learning(t *testing.T) {
 	if netKey(1, 80) == netKey(1, 81) {
 		t.Error("netKey should differ by port")
 	}
-	if netKey(1, 80) != netKey(1, 80) {
+	// Compare separately-computed keys rather than one expression against
+	// itself, which the compiler folds into a tautology.
+	first, second := netKey(1, 80), netKey(1, 80)
+	if first != second {
 		t.Error("netKey should be deterministic")
 	}
 }
@@ -119,7 +122,7 @@ func TestPersistProfile_CreatesContainerProfile(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	c.now = func() time.Time { return base }
 
-	// Attach a resolvable pod to cgroup 77 and learn some behaviour.
+	// Attach a resolvable pod to cgroup 77 and learn some behavior.
 	c.mu.Lock()
 	st := c.track(77)
 	st.ref.PodUID = "pod-uid-xyz"

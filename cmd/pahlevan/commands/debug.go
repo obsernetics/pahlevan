@@ -366,10 +366,11 @@ func detectBPFLSM(ctx context.Context, pods []componentPod, fetch podLogFetcher)
 // classifyLSMLog turns an agent log window into a BPF LSM verdict.
 func classifyLSMLog(logText string, agentReady bool) lsmFinding {
 	for _, line := range strings.Split(logText, "\n") {
-		if !strings.Contains(line, "lsm/") || !strings.Contains(line, lsmFailureMarker) {
+		at := strings.Index(line, "lsm/")
+		if at < 0 || !strings.Contains(line, lsmFailureMarker) {
 			continue
 		}
-		hook := line[strings.Index(line, "lsm/"):]
+		hook := line[at:]
 		if idx := strings.IndexAny(hook, " \t"); idx > 0 {
 			hook = hook[:idx]
 		}
@@ -438,7 +439,7 @@ func resolveLSMState(node nodeReport, lsmByNode map[string]lsmFinding, skipLogs 
 
 // kernelAtLeast compares a uname-style kernel release against a minimum. The
 // second return reports whether the version could be parsed at all.
-func kernelAtLeast(version string, min [2]int) (bool, bool) {
+func kernelAtLeast(version string, minimum [2]int) (bool, bool) {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		return false, false
@@ -455,10 +456,10 @@ func kernelAtLeast(version string, min [2]int) (bool, bool) {
 	if err != nil {
 		return false, false
 	}
-	if major != min[0] {
-		return major > min[0], true
+	if major != minimum[0] {
+		return major > minimum[0], true
 	}
-	return minor >= min[1], true
+	return minor >= minimum[1], true
 }
 
 func nodeIsReady(n corev1.Node) bool {
@@ -525,7 +526,7 @@ func collectPahlevanEvents(ctx context.Context, kube kubernetes.Interface, names
 		podNames[p.Pod.Name] = struct{}{}
 	}
 
-	// Keep the real timestamp alongside the rendered row: sorting the humanised
+	// Keep the real timestamp alongside the rendered row: sorting the humanized
 	// "2.0h ago" string would order events alphabetically, not chronologically.
 	type timedEvent struct {
 		report eventReport

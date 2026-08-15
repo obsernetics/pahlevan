@@ -341,7 +341,7 @@ func TestEventsFollow(t *testing.T) {
 			t.Fatalf("follow returned %v", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("follow did not stop when the context was cancelled")
+		t.Fatal("follow did not stop when the context was canceled")
 	}
 
 	got := decodeOutput(t, out.String())

@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/internal/learner"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/obsernetics/pahlevan/internal/learner"
+	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 // --- helpers ---

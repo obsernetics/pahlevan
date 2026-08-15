@@ -81,7 +81,7 @@ func TestProfileListExplainsAnEmptyResult(t *testing.T) {
 }
 
 // A profile outside the kubelet's seccomp root cannot be referenced. Printing
-// a blank column would read as "no profile"; it is labelled instead.
+// a blank column would read as "no profile"; it is labeled instead.
 func TestProfileListLabelsAnUnreferenceableProfile(t *testing.T) {
 	ref := fullSeccompRef()
 	ref.LocalhostProfile = ""

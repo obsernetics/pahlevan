@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 var ancestryNow = time.Unix(1700000000, 0).UTC()

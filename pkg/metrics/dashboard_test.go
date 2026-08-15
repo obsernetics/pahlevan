@@ -11,11 +11,12 @@ import (
 
 	// Imported for its init(), which registers the data-plane counters on the
 	// controller-runtime registry. The dashboard graphs those too.
-	_ "github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/yaml"
+
+	_ "github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 const (

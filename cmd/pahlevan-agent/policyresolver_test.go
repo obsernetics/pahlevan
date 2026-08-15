@@ -247,7 +247,7 @@ func TestRequirementMatches(t *testing.T) {
 	assert.True(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpNotIn, "backend"), labels))
 	assert.True(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpExists), labels))
 	assert.False(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpDoesNotExist), labels))
-	// An unrecognised operator must not match, rather than matching everything.
+	// An unrecognized operator must not match, rather than matching everything.
 	assert.False(t, requirementMatches(req("Sideways", "frontend"), labels))
 
 	// An absent key.

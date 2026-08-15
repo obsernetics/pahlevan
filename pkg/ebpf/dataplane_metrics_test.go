@@ -135,7 +135,7 @@ func TestDataPlaneCountersCountDecodeErrors(t *testing.T) {
 	}
 }
 
-// An unrecognised kind must be inert rather than panic on the nil map entry.
+// An unrecognized kind must be inert rather than panic on the nil map entry.
 func TestDataPlaneCountersUnknownKindIsInert(t *testing.T) {
 	m := managerForCounters()
 	assert.NotPanics(t, func() {

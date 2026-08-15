@@ -19,6 +19,9 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
+// cgroupV2Root is the unified cgroup hierarchy mount point.
+const cgroupV2Root = "/sys/fs/cgroup"
+
 // TestVMLoadSyscallMonitor loads and attaches the CO-RE syscall monitor, then
 // verifies real events flow through the ring buffer with plausible attribution.
 //
@@ -431,7 +434,10 @@ func TestVMMapMemoryFootprint(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create %s collection: %v", name, err)
 		}
-		defer c.Close()
+		// Closed together after the measurement rather than deferred inside the
+		// loop: every collection has to stay loaded while bpftool reads the
+		// totals below.
+		t.Cleanup(func() { c.Close() })
 	}
 
 	out, err := exec.Command("bpftool", "-j", "map", "show").Output()
@@ -950,7 +956,7 @@ func TestVMNetworkProtocolIsGoverned(t *testing.T) {
 		t.Skipf("unexpected cgroup line %q", line)
 	}
 	var st syscall.Stat_t
-	if err := syscall.Stat(filepath.Join("/sys/fs/cgroup", line[idx+1:]), &st); err != nil {
+	if err := syscall.Stat(filepath.Join(cgroupV2Root, line[idx+1:]), &st); err != nil {
 		t.Skipf("cannot stat own cgroup: %v", err)
 	}
 	cgID := st.Ino

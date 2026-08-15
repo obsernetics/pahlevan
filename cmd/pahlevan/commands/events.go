@@ -172,7 +172,7 @@ func runEvents(ctx context.Context, opts *eventsOptions, out io.Writer) error {
 	}
 }
 
-// eventPrinter writes matching events, honouring --tail by buffering until the
+// eventPrinter writes matching events, honoring --tail by buffering until the
 // first end of file is reached.
 type eventPrinter struct {
 	out      io.Writer

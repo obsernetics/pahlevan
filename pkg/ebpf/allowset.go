@@ -25,7 +25,7 @@ import (
 // into the kernel allow-set before the cgroup flips to enforcing, using the same
 // key derivation the BPF side computes. The two halves must agree exactly, so
 // every derivation below is paired with the C line it mirrors and covered by a
-// VM test that asserts the kernel honours a userspace-written entry.
+// VM test that asserts the kernel honors a userspace-written entry.
 
 const (
 	// afInet and afInet6 are the address-family values the kernel folds into the
@@ -161,7 +161,7 @@ func setAllowEntry(mp *ebpf.Map, key uint64, allowed bool) error {
 // returns, which follows symlinks to the real dentry, so seeding
 // "/etc/os-release" grants nothing on a distro where it links to
 // /usr/lib/os-release - the entry is written and simply never matches.
-// TestVMSeededSymlinkPathDoesNotMatch pins both halves of that behaviour.
+// TestVMSeededSymlinkPathDoesNotMatch pins both halves of that behavior.
 func (m *Manager) AllowFilePath(cgroupID uint64, path string, allowed bool) error {
 	return m.AllowFilePathMode(cgroupID, path, false, allowed)
 }

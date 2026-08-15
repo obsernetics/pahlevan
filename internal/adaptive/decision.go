@@ -31,7 +31,7 @@ type Destination struct {
 
 // Overrides are the operator-authored additions and subtractions applied to a
 // learned baseline. Allowed entries are written into the kernel allow-sets
-// before the container flips to enforcing, so behaviour that never occurred
+// before the container flips to enforcing, so behavior that never occurred
 // during the learning window is still permitted. Denied entries are removed
 // from the allow-set, so they are refused even if they were learned.
 //

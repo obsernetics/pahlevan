@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 type capturingSink struct{ events []*Event }

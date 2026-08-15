@@ -71,6 +71,15 @@ func main() {
 	}
 	defer observabilityManager.Shutdown()
 
+	// os.Exit skips deferred calls, so a fatal startup error would drop every
+	// buffered span and metric - precisely the evidence needed to work out why
+	// startup failed. Fatal errors after this point go through fatalf instead.
+	fatalf := func(err error, msg string) {
+		setupLog.Error(err, msg)
+		_ = observabilityManager.Shutdown()
+		os.Exit(1)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                        scheme,
 		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
@@ -80,8 +89,7 @@ func main() {
 		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
+		fatalf(err, "unable to start manager")
 	}
 
 	// Control plane: ensure the CEL ValidatingAdmissionPolicy hardening baseline
@@ -98,22 +106,18 @@ func main() {
 		setupLog.Info("CEL ValidatingAdmissionPolicy ensured (pahlevan-pod-hardening)")
 		return nil
 	})); err != nil {
-		setupLog.Error(err, "unable to add admission runnable")
-		os.Exit(1)
+		fatalf(err, "unable to add admission runnable")
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+		fatalf(err, "unable to set up health check")
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+		fatalf(err, "unable to set up ready check")
 	}
 
 	setupLog.Info("starting pahlevan-operator")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running operator")
-		os.Exit(1)
+		fatalf(err, "problem running operator")
 	}
 }

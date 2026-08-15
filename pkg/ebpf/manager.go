@@ -291,7 +291,7 @@ type FilePolicy struct {
 func NewManager() (*Manager, error) {
 	// Remove memory limit for eBPF
 	if err := rlimit.RemoveMemlock(); err != nil {
-		return nil, fmt.Errorf("failed to remove memory limit: %v", err)
+		return nil, fmt.Errorf("failed to remove memory limit: %w", err)
 	}
 
 	counters := make(map[string]dataPlaneCounters, len(eventKinds))
@@ -303,7 +303,7 @@ func NewManager() (*Manager, error) {
 	capabilityChecker := NewCapabilityChecker()
 	capabilities, err := capabilityChecker.CheckSystemCapabilities()
 	if err != nil {
-		return nil, fmt.Errorf("failed to check system capabilities: %v", err)
+		return nil, fmt.Errorf("failed to check system capabilities: %w", err)
 	}
 
 	return &Manager{
@@ -320,7 +320,7 @@ func (m *Manager) LoadPrograms() error {
 
 	// Check required capabilities
 	if err := m.capabilities.RequireFeature("ebpf"); err != nil {
-		return fmt.Errorf("eBPF support check failed: %v", err)
+		return fmt.Errorf("eBPF support check failed: %w", err)
 	}
 
 	// The syscall monitor is REQUIRED - it is the core observation program.
@@ -329,7 +329,7 @@ func (m *Manager) LoadPrograms() error {
 	}
 	syscallSpecs, err := LoadSyscallMonitor()
 	if err != nil {
-		return fmt.Errorf("failed to load syscall monitor specs: %v", err)
+		return fmt.Errorf("failed to load syscall monitor specs: %w", err)
 	}
 	applyMapSizing(syscallSpecs, map[string]uint32{
 		"syscall_seen": m.mapSizing.SyscallSeen,
@@ -338,7 +338,7 @@ func (m *Manager) LoadPrograms() error {
 	m.syscallSpecs = syscallSpecs
 	syscallColl, err := ebpf.NewCollection(syscallSpecs)
 	if err != nil {
-		return fmt.Errorf("failed to create syscall collection: %v", err)
+		return fmt.Errorf("failed to create syscall collection: %w", err)
 	}
 	m.syscallCollection = syscallColl
 
@@ -427,7 +427,7 @@ func (m *Manager) AttachPrograms() error {
 			Program: prog,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to attach raw_tracepoint sys_enter: %v", err)
+			return fmt.Errorf("failed to attach raw_tracepoint sys_enter: %w", err)
 		}
 		m.syscallLinks = append(m.syscallLinks, l)
 	}
@@ -489,7 +489,7 @@ func (m *Manager) AttachPrograms() error {
 
 	// Setup event readers
 	if err := m.setupEventReaders(); err != nil {
-		return fmt.Errorf("failed to setup event readers: %v", err)
+		return fmt.Errorf("failed to setup event readers: %w", err)
 	}
 
 	return nil
@@ -501,7 +501,7 @@ func (m *Manager) setupEventReaders() error {
 	if eventsMap != nil {
 		reader, err := ringbuf.NewReader(eventsMap)
 		if err != nil {
-			return fmt.Errorf("failed to create syscall event reader: %v", err)
+			return fmt.Errorf("failed to create syscall event reader: %w", err)
 		}
 		m.eventReader = reader
 	}
@@ -523,7 +523,7 @@ func (m *Manager) setupEventReaders() error {
 		if fileEventsMap := m.fileCollection.Maps["file_events"]; fileEventsMap != nil {
 			reader, err := ringbuf.NewReader(fileEventsMap)
 			if err != nil {
-				return fmt.Errorf("failed to create file event reader: %v", err)
+				return fmt.Errorf("failed to create file event reader: %w", err)
 			}
 			m.fileEventReader = reader
 		}
@@ -567,7 +567,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// Attach programs
 	if err := m.AttachPrograms(); err != nil {
-		return fmt.Errorf("failed to attach programs: %v", err)
+		return fmt.Errorf("failed to attach programs: %w", err)
 	}
 
 	// Start event processing goroutines

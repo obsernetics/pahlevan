@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 func learnOne(t *testing.T, c *Controller, id uint64, at time.Time) {
@@ -108,7 +109,7 @@ func TestOverridesAreSeededBeforeEnforcementIsEnabled(t *testing.T) {
 // exception must not stop the rest of the transition.
 func TestSeedingErrorsDoNotBlockEnforcement(t *testing.T) {
 	enf := &fakeEnforcer{}
-	enf.err = assertAnError
+	enf.err = errAllowSetWrite
 	c := NewController(logr.Discard(), enf, nil, fakePolicies{
 		window: time.Minute, blocking: true, ok: true,
 		overrides: Overrides{AllowedFiles: []string{"/etc/resolv.conf", "/etc/hosts"}},

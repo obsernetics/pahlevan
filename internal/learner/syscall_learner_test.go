@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func newTestLearner() *SyscallLearner {
@@ -68,7 +69,7 @@ func TestStartLearning_NilAndPolicy(t *testing.T) {
 		t.Fatalf("expected ContainerStarted lifecycle event, got %+v", state.LifecycleEvents)
 	}
 
-	// Policy with a window override should be honoured.
+	// Policy with a window override should be honored.
 	win := metav1.Duration{Duration: 5 * time.Minute}
 	policy := &policyv1alpha1.PahlevanPolicy{
 		Spec: policyv1alpha1.PahlevanPolicySpec{

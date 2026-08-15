@@ -50,7 +50,7 @@ func Generate(allowed []uint64) (Profile, int) {
 // including the safety baseline: an operator who explicitly denies a syscall
 // meant it, and silently keeping it would make the profile a lie.
 //
-// Names are matched as written; an unrecognised name is reported through the
+// Names are matched as written; an unrecognized name is reported through the
 // returned unknown list rather than dropped, so a typo surfaces instead of
 // quietly widening or narrowing the profile.
 func GenerateWithOverrides(allowed []uint64, allowNames, denyNames []string) (Profile, int) {

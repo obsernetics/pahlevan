@@ -123,12 +123,12 @@ func BenchmarkFnvPathHash(b *testing.B) {
 	}
 }
 
-func buildCapRec(cgroup, ts uint64, pid, cap, flags uint32, comm string) []byte {
+func buildCapRec(cgroup, ts uint64, pid, capability, flags uint32, comm string) []byte {
 	b := make([]byte, 44)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
 	binary.LittleEndian.PutUint64(b[8:], ts)
 	binary.LittleEndian.PutUint32(b[16:], pid)
-	binary.LittleEndian.PutUint32(b[20:], cap)
+	binary.LittleEndian.PutUint32(b[20:], capability)
 	binary.LittleEndian.PutUint32(b[24:], flags)
 	copy(b[28:44], comm)
 	return b

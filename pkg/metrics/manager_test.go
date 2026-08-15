@@ -17,6 +17,7 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -272,7 +273,7 @@ func TestManager_SetMeterProviderEnablesOTelPath(t *testing.T) {
 	m.UpdateAttackSurfaceRiskScore(1.0)
 
 	provider := sdkmetric.NewMeterProvider()
-	t.Cleanup(func() { _ = provider.Shutdown(nil) })
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	m.SetMeterProvider(provider)
 
 	if m.meter == nil {

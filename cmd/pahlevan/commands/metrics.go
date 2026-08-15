@@ -273,7 +273,7 @@ func clientsetMetricsScraper(kube kubernetes.Interface) metricsScraper {
 }
 
 // filterRawExposition keeps the exposition lines belonging to metrics that pass
-// the filter, so -o raw honours --filter and still parses as valid input to
+// the filter, so -o raw honors --filter and still parses as valid input to
 // downstream Prometheus tooling.
 func filterRawExposition(body []byte, filter string) []byte {
 	if filter == "" {

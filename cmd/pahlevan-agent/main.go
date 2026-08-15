@@ -2,7 +2,7 @@
 //
 // It is meant to run as a privileged DaemonSet (one pod per node). It owns the
 // eBPF data plane: loading and attaching programs, consuming the kernel event
-// stream, learning per-container behavioural baselines, and applying enforcement
+// stream, learning per-container behavioral baselines, and applying enforcement
 // locally on the node it runs on. Unlike the operator it does NOT participate in
 // leader election - every node's agent is independently active for its own node.
 //
@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	"github.com/obsernetics/pahlevan/internal/controller"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
@@ -99,7 +100,7 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	if nodeName == "" {
-		setupLog.Info("warning: node name is empty; set --node-name or PAHLEVAN_NODE_NAME for correct node-scoped behaviour")
+		setupLog.Info("warning: node name is empty; set --node-name or PAHLEVAN_NODE_NAME for correct node-scoped behavior")
 	}
 
 	// Observability + metrics.
@@ -109,6 +110,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer observabilityManager.Shutdown()
+
+	// os.Exit skips deferred calls, so a fatal startup error would drop every
+	// buffered span and metric - precisely the evidence needed to work out why
+	// startup failed. Fatal errors after this point go through fatalf instead.
+	fatalf := func(err error, msg string) {
+		setupLog.Error(err, msg)
+		_ = observabilityManager.Shutdown()
+		os.Exit(1)
+	}
 
 	// Register metrics with the controller-runtime registry, which is the one
 	// actually served on the metrics endpoint. A private registry would mean the
@@ -123,14 +133,12 @@ func main() {
 	// the data plane at all, so we exit.
 	ebpfManager, err := ebpf.NewManager()
 	if err != nil {
-		setupLog.Error(err, "unable to initialize eBPF manager")
-		os.Exit(1)
+		fatalf(err, "unable to initialize eBPF manager")
 	}
 	defer ebpfManager.Close()
 
 	if err := ebpfManager.LoadPrograms(); err != nil {
-		setupLog.Error(err, "unable to load eBPF programs")
-		os.Exit(1)
+		fatalf(err, "unable to load eBPF programs")
 	}
 	// Note: Start() attaches the programs; do NOT call AttachPrograms() here or
 	// the links attach twice (EEXIST). Event handlers are registered below,
@@ -147,15 +155,13 @@ func main() {
 		LeaderElection:         false,
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
+		fatalf(err, "unable to start manager")
 	}
 
 	// Index pods by node so the policy resolver can list only this node's pods.
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName",
 		func(o client.Object) []string { return []string{o.(*corev1.Pod).Spec.NodeName} }); err != nil {
-		setupLog.Error(err, "unable to index pods by node")
-		os.Exit(1)
+		fatalf(err, "unable to index pods by node")
 	}
 
 	// The adaptive controller is the core learn->enforce loop: it consumes the
@@ -198,8 +204,7 @@ func main() {
 		OnError: func(err error) { setupLog.Error(err, "event export failed") },
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to configure event export")
-		os.Exit(1)
+		fatalf(err, "unable to configure event export")
 	}
 	if exportPipeline != nil {
 		defer exportPipeline.Close()
@@ -211,12 +216,11 @@ func main() {
 	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})
 	ebpfManager.AddEventHandler(adaptiveCtl)
 
-	// dataCtx drives the eBPF ring-buffer readers; cancelled on shutdown signal.
+	// dataCtx drives the eBPF ring-buffer readers; canceled on shutdown signal.
 	dataCtx, cancelData := context.WithCancel(context.Background())
 	defer cancelData()
 	if err := ebpfManager.Start(dataCtx); err != nil {
-		setupLog.Error(err, "unable to start eBPF event readers")
-		os.Exit(1)
+		fatalf(err, "unable to start eBPF event readers")
 	}
 	setupLog.Info("eBPF data plane attached and running")
 
@@ -244,8 +248,7 @@ func main() {
 			}
 		}
 	})); err != nil {
-		setupLog.Error(err, "unable to add adaptive controller runnable")
-		os.Exit(1)
+		fatalf(err, "unable to add adaptive controller runnable")
 	}
 
 	if err = (&controller.PahlevanPolicyReconciler{
@@ -284,18 +287,15 @@ func main() {
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+		fatalf(err, "unable to set up health check")
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+		fatalf(err, "unable to set up ready check")
 	}
 
 	setupLog.Info("starting pahlevan-agent", "node", nodeName)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running agent")
-		os.Exit(1)
+		fatalf(err, "problem running agent")
 	}
 }
 
