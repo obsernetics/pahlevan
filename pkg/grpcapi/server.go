@@ -244,13 +244,17 @@ func (s *Server) GetStatus(_ context.Context, _ *apiv1alpha1.StatusRequest) (*ap
 }
 
 // Serve registers the service on a new gRPC server and serves it on addr until
-// the context is cancelled.
+// the context is canceled.
 //
 // Health and reflection are registered too: reflection is what lets grpcurl and
 // generic collectors discover the service without the .proto, which is most of
 // what makes an API integrable in practice.
 func (s *Server) Serve(ctx context.Context, addr string) error {
-	lis, err := net.Listen("tcp", addr)
+	// ListenConfig rather than net.Listen: a caller that cancels the context
+	// while the socket is still being bound gets a canceled listen instead of a
+	// server that comes up and is immediately torn down.
+	var lc net.ListenConfig
+	lis, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
