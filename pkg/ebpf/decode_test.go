@@ -146,13 +146,26 @@ func buildExecRec(cgroup, ts uint64, pid, ppid, uid, flags uint32, comm, pcomm, 
 // It mirrors the C layout independently of the constants in manager.go, so a
 // change to one side fails the test instead of both moving together silently.
 func buildExecRecAncestry(cgroup, ts uint64, pid, uid, flags uint32, comm, filename string, chain []Ancestor) []byte {
+	return buildExecRecFull(cgroup, ts, pid, uid, flags, comm, filename, chain, nil, false)
+}
+
+// buildExecRecFull encodes the whole struct exec_event, argv included. The
+// layout is spelled out here independently of the constants in manager.go, so
+// a change to one side fails the test rather than both moving together.
+func buildExecRecFull(cgroup, ts uint64, pid, uid, flags uint32, comm, filename string,
+	chain []Ancestor, args []string, truncated bool,
+) []byte {
 	const (
-		offComm     = 32
-		offParent   = 48
-		offAncestry = 64
-		ancSize     = 20
-		offFilename = offAncestry + 4*ancSize // 144
-		total       = offFilename + 128       // 272
+		offComm      = 32
+		offParent    = 48
+		offAncestry  = 64
+		ancSize      = 20
+		offFilename  = offAncestry + 4*ancSize // 144
+		offArgsCount = offFilename + 128       // 272
+		offArgsLen   = offArgsCount + 4        // 276
+		offArgsTrunc = offArgsLen + 4          // 280
+		offArgs      = offArgsTrunc + 1        // 281
+		total        = offArgs + 256           // 544
 	)
 	b := make([]byte, total)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
@@ -173,7 +186,25 @@ func buildExecRecAncestry(cgroup, ts uint64, pid, uid, flags uint32, comm, filen
 		binary.LittleEndian.PutUint32(b[off:], a.PID)
 		copy(b[off+4:off+20], a.Comm)
 	}
-	copy(b[offFilename:total], filename)
+	copy(b[offFilename:offFilename+128], filename)
+
+	// argv is NUL separated, exactly as /proc/<pid>/cmdline presents it.
+	if len(args) > 0 {
+		var blob []byte
+		for _, a := range args {
+			blob = append(blob, []byte(a)...)
+			blob = append(blob, 0)
+		}
+		if len(blob) > 256 {
+			blob = blob[:256]
+		}
+		binary.LittleEndian.PutUint32(b[offArgsCount:], uint32(len(args)))
+		binary.LittleEndian.PutUint32(b[offArgsLen:], uint32(len(blob)))
+		copy(b[offArgs:offArgs+256], blob)
+	}
+	if truncated {
+		b[offArgsTrunc] = 1
+	}
 	return b
 }
 
