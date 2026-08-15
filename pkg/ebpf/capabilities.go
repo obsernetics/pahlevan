@@ -17,17 +17,24 @@ limitations under the License.
 package ebpf
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// probeTimeout bounds every external command this checker shells out to. A
+// capability probe that blocks would block agent startup, which is a worse
+// outcome than reporting the capability as unavailable.
+const probeTimeout = 5 * time.Second
 
 // SystemCapabilities represents the eBPF capabilities of the system
 type SystemCapabilities struct {
@@ -142,7 +149,7 @@ func (c *CapabilityChecker) checkEBPFSupport() bool {
 		c.logger.V(1).Info("eBPF not supported", "error", err)
 		return false
 	}
-	defer prog.Close()
+	_ = prog.Close()
 
 	return true
 }
@@ -156,8 +163,10 @@ func (c *CapabilityChecker) checkTCSupport() bool {
 	}
 
 	// Check if we can list TC rules (requires root privileges)
-	cmd := exec.Command("tc", "qdisc", "show")
-	err := cmd.Run()
+	// A bounded context: a probe that hangs must not hang startup.
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	err := exec.CommandContext(ctx, "tc", "qdisc", "show").Run()
 	if err != nil {
 		c.logger.V(1).Info("tc not functional", "error", err)
 		return false
@@ -178,7 +187,7 @@ func (c *CapabilityChecker) checkTCSupport() bool {
 		c.logger.V(1).Info("TC eBPF programs not supported", "error", err)
 		return false
 	}
-	defer prog.Close()
+	_ = prog.Close()
 
 	return true
 }
@@ -206,7 +215,7 @@ func (c *CapabilityChecker) checkTracepointSupport() bool {
 		c.logger.V(1).Info("Tracepoint programs not supported", "error", err)
 		return false
 	}
-	defer prog.Close()
+	_ = prog.Close()
 
 	return true
 }
@@ -234,7 +243,7 @@ func (c *CapabilityChecker) checkKProbeSupport() bool {
 		c.logger.V(1).Info("KProbe programs not supported", "error", err)
 		return false
 	}
-	defer prog.Close()
+	_ = prog.Close()
 
 	return true
 }
@@ -262,7 +271,7 @@ func (c *CapabilityChecker) checkUProbeSupport() bool {
 		c.logger.V(1).Info("UProbe programs not supported", "error", err)
 		return false
 	}
-	defer prog.Close()
+	_ = prog.Close()
 
 	return true
 }
@@ -290,7 +299,7 @@ func (c *CapabilityChecker) checkCGroupSupport() bool {
 		c.logger.V(1).Info("CGroup eBPF programs not supported", "error", err)
 		return false
 	}
-	defer prog.Close()
+	_ = prog.Close()
 
 	return true
 }
@@ -303,7 +312,7 @@ func (c *CapabilityChecker) checkNetlinkSupport() bool {
 		c.logger.V(1).Info("Netlink socket creation failed", "error", err)
 		return false
 	}
-	defer syscall.Close(fd)
+	_ = syscall.Close(fd)
 
 	return true
 }
@@ -316,8 +325,9 @@ func (c *CapabilityChecker) commandExists(cmd string) bool {
 
 // getKernelVersion gets the kernel version string
 func (c *CapabilityChecker) getKernelVersion() (string, error) {
-	cmd := exec.Command("uname", "-r")
-	output, err := cmd.Output()
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "uname", "-r").Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get kernel version: %w", err)
 	}
