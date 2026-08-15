@@ -48,7 +48,7 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("agent-setup")
 
-	// profileSyncInterval is how often every learned profile is re-materialised
+	// profileSyncInterval is how often every learned profile is re-materialized
 	// on this node. Slower than the adaptive reconcile because a profile only
 	// changes when a container finishes learning, and the cost is a list plus a
 	// content comparison per profile.
@@ -126,7 +126,7 @@ func main() {
 		setupLog.Error(err, "unable to setup observability")
 		os.Exit(1)
 	}
-	defer observabilityManager.Shutdown()
+	defer func() { _ = observabilityManager.Shutdown() }()
 
 	// os.Exit skips deferred calls, so a fatal startup error would drop every
 	// buffered span and metric - precisely the evidence needed to work out why
@@ -177,7 +177,16 @@ func main() {
 
 	// Index pods by node so the policy resolver can list only this node's pods.
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName",
-		func(o client.Object) []string { return []string{o.(*corev1.Pod).Spec.NodeName} }); err != nil {
+		func(o client.Object) []string {
+			// The indexer is registered for Pods, but a panic in this callback
+			// would take the whole cache down; an object of the wrong type is
+			// simply not indexed.
+			pod, ok := o.(*corev1.Pod)
+			if !ok {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}); err != nil {
 		fatalf(err, "unable to index pods by node")
 	}
 
@@ -307,7 +316,7 @@ func main() {
 		fatalf(err, "unable to add adaptive controller runnable")
 	}
 
-	// Materialise every learned profile onto this node.
+	// Materialize every learned profile onto this node.
 	//
 	// A profile generated here is useless to a pod scheduled elsewhere, and a
 	// rollout can land anywhere, so referencing one that exists on a single
@@ -359,8 +368,7 @@ func main() {
 		LearningWindow:       learningWindowDur,
 		EnforcementDelay:     enforcementDelay,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PahlevanPolicy")
-		os.Exit(1)
+		fatalf(err, "unable to create controller PahlevanPolicy")
 	}
 
 	if err = (&controller.ContainerLearnerReconciler{
@@ -370,8 +378,7 @@ func main() {
 		MetricsManager:       metricsManager,
 		ObservabilityManager: observabilityManager,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ContainerLearner")
-		os.Exit(1)
+		fatalf(err, "unable to create controller ContainerLearner")
 	}
 
 	if err = (&controller.AttackSurfaceAnalyzerReconciler{
@@ -381,8 +388,7 @@ func main() {
 		MetricsManager:       metricsManager,
 		ObservabilityManager: observabilityManager,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "AttackSurfaceAnalyzer")
-		os.Exit(1)
+		fatalf(err, "unable to create controller AttackSurfaceAnalyzer")
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
