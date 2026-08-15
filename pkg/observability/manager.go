@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
+
 	// "go.opentelemetry.io/otel/sdk/instrumentation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -506,7 +507,7 @@ func NewManager(exportsList string) (*Manager, error) {
 	}
 
 	if err := manager.initializeProviders(); err != nil {
-		return nil, fmt.Errorf("failed to initialize providers: %v", err)
+		return nil, fmt.Errorf("failed to initialize providers: %w", err)
 	}
 
 	return manager, nil
@@ -522,20 +523,20 @@ func (m *Manager) initializeProviders() error {
 		),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create resource: %v", err)
+		return fmt.Errorf("failed to create resource: %w", err)
 	}
 
 	// Initialize metrics provider
 	if m.config.MetricsEnabled {
 		if err := m.initializeMetrics(res); err != nil {
-			return fmt.Errorf("failed to initialize metrics: %v", err)
+			return fmt.Errorf("failed to initialize metrics: %w", err)
 		}
 	}
 
 	// Initialize tracing provider
 	if m.config.TracingEnabled {
 		if err := m.initializeTracing(res); err != nil {
-			return fmt.Errorf("failed to initialize tracing: %v", err)
+			return fmt.Errorf("failed to initialize tracing: %w", err)
 		}
 	}
 
@@ -664,18 +665,18 @@ func (m *Manager) Start(ctx context.Context) error {
 	// Start custom exporters
 	for _, exporter := range m.exporters {
 		if err := exporter.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start exporter %s: %v", exporter.GetType(), err)
+			return fmt.Errorf("failed to start exporter %s: %w", exporter.GetType(), err)
 		}
 	}
 
 	// Initialize default dashboards
 	if err := m.createDefaultDashboards(); err != nil {
-		return fmt.Errorf("failed to create default dashboards: %v", err)
+		return fmt.Errorf("failed to create default dashboards: %w", err)
 	}
 
 	// Initialize default alert rules
 	if err := m.createDefaultAlertRules(); err != nil {
-		return fmt.Errorf("failed to create default alert rules: %v", err)
+		return fmt.Errorf("failed to create default alert rules: %w", err)
 	}
 
 	return nil
@@ -687,13 +688,13 @@ func (m *Manager) Shutdown() error {
 	// Shutdown providers
 	if m.meterProvider != nil {
 		if err := m.meterProvider.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("failed to shutdown meter provider: %v", err)
+			return fmt.Errorf("failed to shutdown meter provider: %w", err)
 		}
 	}
 
 	if m.tracerProvider != nil {
 		if err := m.tracerProvider.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("failed to shutdown tracer provider: %v", err)
+			return fmt.Errorf("failed to shutdown tracer provider: %w", err)
 		}
 	}
 
@@ -722,7 +723,7 @@ func (m *Manager) CreateCounter(name, description, unit string) (metric.Int64Cou
 		metric.WithUnit(unit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create counter: %v", err)
+		return nil, fmt.Errorf("failed to create counter: %w", err)
 	}
 
 	m.mu.Lock()
@@ -739,7 +740,7 @@ func (m *Manager) CreateGauge(name, description, unit string) (metric.Float64His
 		metric.WithUnit(unit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create gauge: %v", err)
+		return nil, fmt.Errorf("failed to create gauge: %w", err)
 	}
 
 	m.mu.Lock()
@@ -756,7 +757,7 @@ func (m *Manager) CreateHistogram(name, description, unit string) (metric.Float6
 		metric.WithUnit(unit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create histogram: %v", err)
+		return nil, fmt.Errorf("failed to create histogram: %w", err)
 	}
 
 	m.mu.Lock()

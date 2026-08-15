@@ -49,7 +49,7 @@ func installFakeClients(t *testing.T, objs ...crclient.Object) (crclient.Client,
 		WithObjects(objs...).
 		WithStatusSubresource(&policyv1alpha1.PahlevanPolicy{}).
 		Build()
-	kc := k8sfake.NewSimpleClientset()
+	kc := k8sfake.NewClientset()
 
 	prevK8s, prevKube, prevNs, prevReady := k8sClient, kubeClient, globalNamespace, clientsReady
 	k8sClient = fc
@@ -657,11 +657,11 @@ func TestIsNoKindMatch(t *testing.T) {
 		t.Error("nil error is not a no-kind-match")
 	}
 	for _, msg := range []string{"no matches for kind", "no kind is registered", "the server could not find the requested resource"} {
-		if !isNoKindMatch(errString(msg)) {
+		if !isNoKindMatch(stringError(msg)) {
 			t.Errorf("expected isNoKindMatch true for %q", msg)
 		}
 	}
-	if isNoKindMatch(errString("some other error")) {
+	if isNoKindMatch(stringError("some other error")) {
 		t.Error("unrelated error should not match")
 	}
 }
@@ -677,9 +677,9 @@ func TestCheckPahlevanPolicyCRD(t *testing.T) {
 	}
 }
 
-type errString string
+type stringError string
 
-func (e errString) Error() string { return string(e) }
+func (e stringError) Error() string { return string(e) }
 
 // --- version / completion / stub commands ---------------------------------
 
@@ -720,7 +720,7 @@ func TestCompletionCommand(t *testing.T) {
 // TestNoStubCommandsRemain guards the regression this package was built to fix:
 // every command that once printed "to be implemented" now either does real work
 // or fails loudly because it cannot reach a cluster. Silently succeeding while
-// doing nothing is the behaviour under test.
+// doing nothing is the behavior under test.
 func TestNoStubCommandsRemain(t *testing.T) {
 	clearClients(t)
 
@@ -746,7 +746,7 @@ func TestNoStubCommandsRemain(t *testing.T) {
 		})
 	}
 
-	// The help text must not advertise unimplemented behaviour either.
+	// The help text must not advertise unimplemented behavior either.
 	all := []*cobra.Command{
 		NewAttackSurfaceCommand(), NewAttackSurfaceAnalyzeCommand(), NewAttackSurfaceReportCommand(),
 		NewLogsCommand(), NewMetricsCommand(), NewDebugCommand(),

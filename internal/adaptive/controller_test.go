@@ -202,7 +202,7 @@ func TestController_LearnThenEnforce(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	c.now = func() time.Time { return base }
 
-	// Observe some behaviour for cgroup 42.
+	// Observe some behavior for cgroup 42.
 	_ = c.HandleSyscallEvent(&ebpf.SyscallEvent{CgroupID: 42, SyscallNr: 257})
 	_ = c.HandleFileEvent(&ebpf.FileEvent{CgroupID: 42, Path: "/etc/hostname"})
 
@@ -339,7 +339,7 @@ func indexOf(ss []string, want string) int {
 	return -1
 }
 
-var assertAnError = errors.New("allow-set write failed")
+var errAllowSetWrite = errors.New("allow-set write failed")
 
 // readOnlyProfile returns the single generated seccomp profile in dir.
 func readOnlyProfile(t *testing.T, dir string) string {

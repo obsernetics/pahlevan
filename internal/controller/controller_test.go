@@ -498,10 +498,10 @@ func TestPahlevanPolicy_ShouldTransitionToEnforcement(t *testing.T) {
 		t.Fatal("expected false with nil learning status")
 	}
 
-	min := int32(100)
+	minSamples := int32(100)
 	progress := int32(90)
 	p := samplePolicy("p", "default", nil)
-	p.Spec.LearningConfig.MinSamples = &min
+	p.Spec.LearningConfig.MinSamples = &minSamples
 	p.Status.LearningStatus = &policyv1alpha1.LearningStatus{SamplesCollected: 50, Progress: &progress}
 	if r.shouldTransitionToEnforcement(p) {
 		t.Fatal("expected false when samples below min")

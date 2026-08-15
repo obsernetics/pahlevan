@@ -99,7 +99,7 @@ func warningEvents(t *testing.T, cl client.Client) []corev1.Event {
 func TestNoteDenial_OnlyCountsWhileEnforcing(t *testing.T) {
 	c := NewController(logr.Discard(), &fakeEnforcer{}, nil, fakePolicies{})
 
-	// Learning: denial flags are counted as denials, never as learned behaviour,
+	// Learning: denial flags are counted as denials, never as learned behavior,
 	// and never inflate the enforcing denial counter.
 	_ = c.HandleFileEvent(&ebpf.FileEvent{CgroupID: 1, Path: "/etc/shadow", Flags: DeniedFlag})
 	c.mu.Lock()
@@ -453,7 +453,7 @@ func TestRollback_CooldownGrowsWithEachRollback(t *testing.T) {
 		c.Reconcile() // re-enforces
 	}
 
-	if !(holds[0] < holds[1] && holds[1] < holds[2]) {
+	if holds[0] >= holds[1] || holds[1] >= holds[2] {
 		t.Errorf("cooldown must grow with each rollback, got %v", holds)
 	}
 	if holds[0] != time.Minute || holds[1] != 2*time.Minute || holds[2] != 3*time.Minute {

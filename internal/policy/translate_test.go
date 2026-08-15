@@ -6,11 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/obsernetics/pahlevan/internal/adaptive"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/obsernetics/pahlevan/internal/adaptive"
+	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 )
 
 var now = time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
@@ -56,7 +57,7 @@ func TestModeResolution(t *testing.T) {
 		{"blockUnknown false downgrades: default-deny is the only enforcement there is",
 			policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking, BlockUnknown: boolPtr(false)},
 			adaptive.ModeMonitoring},
-		{"unrecognised mode is treated as monitoring, not blocking",
+		{"unrecognized mode is treated as monitoring, not blocking",
 			policyv1alpha1.EnforcementConfig{Mode: "Paranoid"}, adaptive.ModeMonitoring},
 	}
 	for _, tc := range tests {

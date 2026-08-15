@@ -30,7 +30,7 @@ type ContainerProfileSpec struct {
 	Node string `json:"node,omitempty"`
 }
 
-// ContainerProfileStatus is the learned behavioural baseline reported by the
+// ContainerProfileStatus is the learned behavioral baseline reported by the
 // node agent. It is what the kernel enforces once the container is enforcing -
 // a first-class, inspectable, git-backupable record (no equivalent in Falco or
 // Tetragon).
@@ -140,7 +140,7 @@ type SeccompProfileRef struct {
 // +kubebuilder:printcolumn:name="Node",type=string,JSONPath=`.spec.node`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ContainerProfile is the learned behavioural baseline for a single container.
+// ContainerProfile is the learned behavioral baseline for a single container.
 type ContainerProfile struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

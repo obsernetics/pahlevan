@@ -219,7 +219,7 @@ func noComponentPodsError(namespace, component, node string) error {
 	}
 	return fmt.Errorf("%s.\n"+
 		"Pahlevan installs the agent as the %q DaemonSet and the operator as the %q Deployment, "+
-		"labelled %s=<name>, in the %q namespace by default. "+
+		"labeled %s=<name>, in the %q namespace by default. "+
 		"Pass --namespace if you installed elsewhere",
 		msg, agentAppName, operatorAppName, componentLabelKey, defaultComponentNamespace)
 }

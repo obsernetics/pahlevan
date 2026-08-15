@@ -446,8 +446,9 @@ func TestNormalizeCapability(t *testing.T) {
 	tests := map[string]string{
 		"sys_admin":     "CAP_SYS_ADMIN",
 		"CAP_SYS_ADMIN": "CAP_SYS_ADMIN",
-		" net_raw ":     "CAP_NET_RAW",
-		"":              "",
+		//nolint:gocritic // the surrounding whitespace is the case under test
+		" net_raw ": "CAP_NET_RAW",
+		"":          "",
 	}
 	for in, want := range tests {
 		if got := normalizeCapability(in); got != want {
@@ -993,13 +994,6 @@ func BenchmarkRenderAttackSurfaceReportMarkdown(b *testing.B) {
 // Ensure the analyze aggregation path itself is exercised under load.
 func BenchmarkBuildAttackSurfaceAnalysis(b *testing.B) {
 	surfaces, profiles, _ := benchReportFixture(200)
-	objs := make([]crclient.Object, 0, len(surfaces)+len(profiles))
-	for i := range surfaces {
-		objs = append(objs, &surfaces[i])
-	}
-	for i := range profiles {
-		objs = append(objs, &profiles[i])
-	}
 	baselines := indexBaselines(profiles)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -1010,13 +1004,6 @@ func BenchmarkBuildAttackSurfaceAnalysis(b *testing.B) {
 		}
 		sortExposures(exposures)
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // --- missing CRD paths ----------------------------------------------------

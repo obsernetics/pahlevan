@@ -105,7 +105,7 @@ func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Tim
 // An empty mode means Monitoring, not Blocking: a policy that forgot to say
 // must not start denying traffic. AlertOnly downgrades Blocking, which is what
 // the field is for. BlockUnknown being explicitly false under Blocking is a
-// contradiction - default-deny of unlearned behaviour is the only enforcement
+// contradiction - default-deny of unlearned behavior is the only enforcement
 // this kernel data plane performs - so it downgrades too, rather than
 // enforcing something the author asked not to.
 func resolveMode(c policyv1alpha1.EnforcementConfig) adaptive.Mode {
@@ -345,7 +345,7 @@ func applyExceptions(o *adaptive.Overrides, exceptions []policyv1alpha1.Enforcem
 	for i, ex := range exceptions {
 		if ex.Temporary && ex.ExpiresAt != nil && !now.Before(ex.ExpiresAt.Time) {
 			warnings = append(warnings, fmt.Sprintf(
-				"exceptions[%d] expired at %s and is not applied", i, ex.ExpiresAt.Time.Format(time.RFC3339)))
+				"exceptions[%d] expired at %s and is not applied", i, ex.ExpiresAt.Format(time.RFC3339)))
 			continue
 		}
 		if ex.Temporary && ex.ExpiresAt == nil {

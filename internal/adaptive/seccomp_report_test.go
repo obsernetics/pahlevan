@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
-	"github.com/obsernetics/pahlevan/pkg/seccomp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/seccomp"
 )
 
 // seccompController drives a container to enforcing with profile emission on,

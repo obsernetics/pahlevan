@@ -5,9 +5,10 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 // enforceThen drives a container to enforcing and returns the controller,

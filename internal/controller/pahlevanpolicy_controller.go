@@ -145,7 +145,7 @@ func (r *PahlevanPolicyReconciler) handleInitialization(ctx context.Context, pol
 	// Discover target workloads
 	workloads, err := r.discoverTargetWorkloads(ctx, policy)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to discover target workloads: %v", err)
+		return ctrl.Result{}, fmt.Errorf("failed to discover target workloads: %w", err)
 	}
 
 	if len(workloads) == 0 {
@@ -279,7 +279,7 @@ func (r *PahlevanPolicyReconciler) handleTransition(ctx context.Context, policy 
 	//
 	// This used to time.Sleep(r.EnforcementDelay) here, which blocks one of the
 	// controller's worker goroutines for the whole delay and stalls every other
-	// policy behind it. The delay is honoured by requeueing instead; the node
+	// policy behind it. The delay is honored by requeueing instead; the node
 	// agent is the component that actually gates the transition on its own
 	// learning window and grace period.
 	policy.Status.Phase = policyv1alpha1.PolicyPhaseEnforcing

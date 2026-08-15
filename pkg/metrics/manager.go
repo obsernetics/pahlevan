@@ -132,7 +132,7 @@ const (
 )
 
 // ParseDetailLevel maps a flag value to a DetailLevel, defaulting to basic for
-// anything unrecognised so a typo cannot silently enable the expensive path.
+// anything unrecognized so a typo cannot silently enable the expensive path.
 func ParseDetailLevel(s string) DetailLevel {
 	if DetailLevel(s) == DetailHigh {
 		return DetailHigh

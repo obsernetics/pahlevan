@@ -5,13 +5,14 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/obsernetics/pahlevan/pkg/ebpf"
-	"github.com/obsernetics/pahlevan/pkg/metrics"
-	"github.com/obsernetics/pahlevan/pkg/seccomp"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/metrics"
+	"github.com/obsernetics/pahlevan/pkg/seccomp"
 )
 
 // familyValue reads the single value of a scalar counter or gauge family from a
