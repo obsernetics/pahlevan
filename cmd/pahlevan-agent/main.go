@@ -13,7 +13,10 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +24,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	"github.com/obsernetics/pahlevan/internal/controller"
+	"github.com/obsernetics/pahlevan/internal/netmap"
 	"github.com/obsernetics/pahlevan/internal/profilesync"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
@@ -48,7 +52,7 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("agent-setup")
 
-	// profileSyncInterval is how often every learned profile is re-materialised
+	// profileSyncInterval is how often every learned profile is re-materialized
 	// on this node. Slower than the adaptive reconcile because a profile only
 	// changes when a container finishes learning, and the cost is a list plus a
 	// content comparison per profile.
@@ -80,6 +84,10 @@ func main() {
 		metricsDetail        string
 		seccompRoot          string
 		grpcAddr             string
+		otlpEndpoint         string
+		otlpInsecure         bool
+		podNamespace         string
+		podName              string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -109,6 +117,18 @@ func main() {
 			"per-syscall and per-path series - expensive across a fleet).")
 	flag.BoolVar(&exportDenialsOnly, "export-denials-only", true,
 		"Export only in-kernel denials rather than every observation.")
+	flag.StringVar(&otlpEndpoint, "otlp-endpoint", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		"OpenTelemetry collector address for security events as OTLP logs, for example "+
+			"otel-collector:4317. This is how events reach Loki in an LGTM stack. Empty disables it.")
+	flag.BoolVar(&otlpInsecure, "otlp-insecure", true,
+		"Disable TLS to the OTLP collector. The default suits an in-cluster collector "+
+			"reached over the pod network.")
+	flag.StringVar(&podNamespace, "pod-namespace", os.Getenv("PAHLEVAN_POD_NAMESPACE"),
+		"This agent pod's namespace, from the downward API. Used as an OpenTelemetry "+
+			"resource attribute so metrics, traces and logs correlate in Grafana.")
+	flag.StringVar(&podName, "pod-name", os.Getenv("PAHLEVAN_POD_NAME"),
+		"This agent pod's name, from the downward API. Becomes service.instance.id, "+
+			"without which every agent in the DaemonSet collapses into one series.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -120,13 +140,19 @@ func main() {
 		setupLog.Info("warning: node name is empty; set --node-name or PAHLEVAN_NODE_NAME for correct node-scoped behavior")
 	}
 
+	// One resource for every signal this agent emits. Grafana joins Loki, Tempo
+	// and Mimir on shared labels; if the metrics say node=X and the logs say
+	// host=X the join silently produces nothing, so the three agree by
+	// construction rather than by convention.
+	otelResource := export.AgentResource("pahlevan-agent", version, podNamespace, podName, nodeName)
+
 	// Observability + metrics.
-	observabilityManager, err := observability.NewManager(observabilityExports)
+	observabilityManager, err := observability.NewManagerWithResource(observabilityExports, otelResource)
 	if err != nil {
 		setupLog.Error(err, "unable to setup observability")
 		os.Exit(1)
 	}
-	defer observabilityManager.Shutdown()
+	defer func() { _ = observabilityManager.Shutdown() }()
 
 	// os.Exit skips deferred calls, so a fatal startup error would drop every
 	// buffered span and metric - precisely the evidence needed to work out why
@@ -177,7 +203,16 @@ func main() {
 
 	// Index pods by node so the policy resolver can list only this node's pods.
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName",
-		func(o client.Object) []string { return []string{o.(*corev1.Pod).Spec.NodeName} }); err != nil {
+		func(o client.Object) []string {
+			// The indexer is registered for Pods, but a panic in this callback
+			// would take the whole cache down; an object of the wrong type is
+			// simply not indexed.
+			pod, ok := o.(*corev1.Pod)
+			if !ok {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}); err != nil {
 		fatalf(err, "unable to index pods by node")
 	}
 
@@ -185,6 +220,11 @@ func main() {
 	// eBPF event stream, attributes events to pods, and flips each matched
 	// container to in-kernel enforcement when its learning window closes.
 	attrResolver := attribution.NewResolver(attribution.DefaultCgroupRoot)
+	// Turns the address the kernel reported into what the cluster says it is.
+	// Built from Services, pods and nodes the manager already caches, so a
+	// lookup on the denial path is a map read rather than a DNS query - a burst
+	// of denials must not become a burst of DNS traffic.
+	netResolver := netmap.New()
 	polResolver := newPolicyResolver(mgr.GetClient(), nodeName)
 	adaptiveCtl := adaptive.NewController(ctrl.Log.WithName("adaptive"), ebpfManager, attrResolver, polResolver)
 	adaptiveCtl.SeccompDir = seccompDir
@@ -217,12 +257,19 @@ func main() {
 		grpcTee = append(grpcTee, grpcServer)
 	}
 
-	// Event export: JSON-lines file and/or webhook, so events leave the process
-	// for `pahlevan events`, log shippers, and SIEMs.
+	// Event export: JSON-lines file, webhook and/or OTLP logs, so events leave
+	// the process for `pahlevan events`, log shippers, SIEMs and Loki.
 	exportPipeline, err := export.New(export.Config{
-		Tee:           grpcTee,
-		FilePath:      exportFile,
-		WebhookURL:    exportWebhook,
+		Tee:          grpcTee,
+		FilePath:     exportFile,
+		WebhookURL:   exportWebhook,
+		OTLPEndpoint: otlpEndpoint,
+		Destination: func(ip net.IP, port uint16) (string, string, string) {
+			d, _ := netResolver.Lookup(ip, port)
+			return d.String(), string(d.Kind), d.PortName
+		},
+		OTLPInsecure:  otlpInsecure,
+		OTLPResource:  otelResource,
 		QueueCapacity: 8192,
 		BatchSize:     256,
 		FlushInterval: time.Second,
@@ -254,7 +301,9 @@ func main() {
 	if exportPipeline != nil {
 		defer exportPipeline.Close()
 		ebpfManager.AddEventHandler(exportPipeline.Handler)
-		setupLog.Info("event export enabled", "file", exportFile, "webhook", exportWebhook != "", "denialsOnly", exportDenialsOnly)
+		setupLog.Info("event export enabled", "file", exportFile,
+			"webhook", exportWebhook != "", "otlp", otlpEndpoint,
+			"denialsOnly", exportDenialsOnly)
 	}
 
 	// Register event handlers BEFORE starting readers so no events are missed.
@@ -292,6 +341,9 @@ func main() {
 			if err := attrResolver.Refresh(); err != nil {
 				setupLog.V(1).Info("cgroup refresh failed", "error", err.Error())
 			}
+			if err := refreshNetmap(ctx, mgr.GetClient(), netResolver); err != nil {
+				setupLog.V(1).Info("destination map refresh failed", "error", err.Error())
+			}
 		}
 		refresh()
 		for {
@@ -307,7 +359,7 @@ func main() {
 		fatalf(err, "unable to add adaptive controller runnable")
 	}
 
-	// Materialise every learned profile onto this node.
+	// Materialize every learned profile onto this node.
 	//
 	// A profile generated here is useless to a pod scheduled elsewhere, and a
 	// rollout can land anywhere, so referencing one that exists on a single
@@ -359,8 +411,7 @@ func main() {
 		LearningWindow:       learningWindowDur,
 		EnforcementDelay:     enforcementDelay,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PahlevanPolicy")
-		os.Exit(1)
+		fatalf(err, "unable to create controller PahlevanPolicy")
 	}
 
 	if err = (&controller.ContainerLearnerReconciler{
@@ -370,8 +421,7 @@ func main() {
 		MetricsManager:       metricsManager,
 		ObservabilityManager: observabilityManager,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ContainerLearner")
-		os.Exit(1)
+		fatalf(err, "unable to create controller ContainerLearner")
 	}
 
 	if err = (&controller.AttackSurfaceAnalyzerReconciler{
@@ -381,8 +431,7 @@ func main() {
 		MetricsManager:       metricsManager,
 		ObservabilityManager: observabilityManager,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "AttackSurfaceAnalyzer")
-		os.Exit(1)
+		fatalf(err, "unable to create controller AttackSurfaceAnalyzer")
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -396,6 +445,38 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		fatalf(err, "problem running agent")
 	}
+}
+
+// refreshNetmap rebuilds the address map from the manager's cache.
+//
+// Listing through the cached client rather than the API server is what makes
+// this cheap enough to run on the same ten-second tick as everything else: the
+// informers are already watching pods and services for the policy resolver, so
+// this is a walk over memory rather than three cluster-wide LISTs.
+func refreshNetmap(ctx context.Context, c client.Client, r *netmap.Resolver) error {
+	var (
+		svcs  corev1.ServiceList
+		pods  corev1.PodList
+		nodes corev1.NodeList
+	)
+	// Errors are collected rather than returned on the first failure: a
+	// resolver built from two of the three sources is much better than one
+	// built from none, and the missing kind simply resolves as external.
+	var errs []string
+	if err := c.List(ctx, &svcs); err != nil {
+		errs = append(errs, "services: "+err.Error())
+	}
+	if err := c.List(ctx, &pods); err != nil {
+		errs = append(errs, "pods: "+err.Error())
+	}
+	if err := c.List(ctx, &nodes); err != nil {
+		errs = append(errs, "nodes: "+err.Error())
+	}
+	r.Refresh(netmap.Snapshot{Services: svcs.Items, Pods: pods.Items, Nodes: nodes.Items})
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // agentObserver is the default sink for the eBPF event pipeline. It counts events

@@ -47,7 +47,7 @@ func installFakeClientsWithCore(t *testing.T, namespace string, coreObjs []runti
 		WithObjects(crObjs...).
 		WithStatusSubresource(&policyv1alpha1.PahlevanPolicy{}).
 		Build()
-	kc := k8sfake.NewSimpleClientset(coreObjs...)
+	kc := k8sfake.NewClientset(coreObjs...)
 
 	prevK8s, prevKube, prevNs, prevReady := k8sClient, kubeClient, globalNamespace, clientsReady
 	k8sClient = fc

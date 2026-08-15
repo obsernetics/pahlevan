@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.opentelemetry.io/otel/sdk/resource"
 )
 
 // Config describes a complete export pipeline: which sinks to build, how to
@@ -37,6 +39,21 @@ type Config struct {
 	// Source identifies this agent in the webhook payload (use the node name).
 	Source string
 
+	// OTLPEndpoint enables the OTLP log sink when non-empty, shipping events to
+	// an OpenTelemetry collector - which is how they reach Loki in an LGTM
+	// stack without a second pipeline, a second parser and a second set of
+	// labels that will not match anybody else's.
+	OTLPEndpoint string
+	// OTLPInsecure disables TLS to the collector. Usual in-cluster.
+	OTLPInsecure bool
+	// OTLPHeaders are sent with every export, for a collector behind an auth
+	// proxy.
+	OTLPHeaders map[string]string
+	// OTLPResource identifies this agent. It must be the same resource the
+	// metrics and traces carry: Grafana joins Loki, Tempo and Mimir on shared
+	// labels, and a resource that disagrees makes the join silently empty.
+	OTLPResource *resource.Resource
+
 	// Tee are live consumers fed alongside the batching sinks, such as the
 	// gRPC event server. They receive the same event, with the same filter and
 	// the same attribution applied, rather than tapping the eBPF stream
@@ -61,13 +78,18 @@ type Config struct {
 
 	// Attribution fills in pod metadata from a cgroup id. Optional.
 	Attribution AttributionFunc
+
+	// Destination names the far end of a network event from what the cluster
+	// knows. Optional; without it a denial reports an address and nothing else.
+	Destination DestinationFunc
 	// OnError, when set, receives every sink failure. It must not block.
 	OnError func(err error)
 }
 
 // Enabled reports whether any sink is configured.
 func (c Config) Enabled() bool {
-	return c.Stdout || c.FilePath != "" || c.WebhookURL != "" || len(c.Tee) > 0
+	return c.Stdout || c.FilePath != "" || c.WebhookURL != "" ||
+		c.OTLPEndpoint != "" || len(c.Tee) > 0
 }
 
 // Tee is a Sink that fans one event out to several Enqueuers.
@@ -148,6 +170,25 @@ func New(cfg Config) (*Pipeline, error) {
 		sinks = append(sinks, s)
 		built = append(built, s)
 	}
+	if cfg.OTLPEndpoint != "" {
+		s, err := NewOTLPExporter(context.Background(), OTLPOptions{
+			Endpoint: cfg.OTLPEndpoint,
+			Insecure: cfg.OTLPInsecure,
+			Headers:  cfg.OTLPHeaders,
+			Resource: cfg.OTLPResource,
+			Timeout:  cfg.ExportTimeout,
+		})
+		if err != nil {
+			closeBuilt()
+			return nil, err
+		}
+		// Published globally so any other component emitting OTel logs shares
+		// this pipeline and resource rather than opening a second connection to
+		// the same collector.
+		s.SetGlobalLoggerProvider()
+		sinks = append(sinks, s)
+		built = append(built, s)
+	}
 	if cfg.WebhookURL != "" {
 		s, err := NewWebhookExporter(WebhookOptions{
 			URL:        cfg.WebhookURL,
@@ -181,6 +222,7 @@ func New(cfg Config) (*Pipeline, error) {
 	handler := NewHandler(sink, HandlerOptions{
 		Filter:      filter,
 		Attribution: cfg.Attribution,
+		Destination: cfg.Destination,
 	})
 
 	return &Pipeline{Handler: handler, Queue: queue, Exporter: exporter}, nil

@@ -2,6 +2,7 @@ package ebpf
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var errHandlerTest = errors.New("sink unavailable")
 
 // counterValue reads a single child of a CounterVec. The Vecs are package-level
 // and registered in init(), so tests read deltas rather than absolute values -
@@ -43,6 +46,45 @@ func (h *countingHandler) HandleNetworkEvent(*NetworkEvent) error       { h.netw
 func (h *countingHandler) HandleFileEvent(*FileEvent) error             { h.files++; return nil }
 func (h *countingHandler) HandleProcessEvent(*ProcessEvent) error       { h.processes++; return nil }
 func (h *countingHandler) HandleCapabilityEvent(*CapabilityEvent) error { h.caps++; return nil }
+
+// failingHandler stands in for a sink that has broken - an export webhook that
+// is refusing connections, a full disk.
+type failingHandler struct{ err error }
+
+func (h *failingHandler) HandleSyscallEvent(*SyscallEvent) error       { return h.err }
+func (h *failingHandler) HandleNetworkEvent(*NetworkEvent) error       { return h.err }
+func (h *failingHandler) HandleFileEvent(*FileEvent) error             { return h.err }
+func (h *failingHandler) HandleProcessEvent(*ProcessEvent) error       { return h.err }
+func (h *failingHandler) HandleCapabilityEvent(*CapabilityEvent) error { return h.err }
+
+// A handler that fails must be countable. Silently discarding the error made a
+// broken export pipeline indistinguishable from a quiet cluster: events kept
+// being decoded and counted while nothing downstream ever received them.
+func TestHandlerErrorsAreCounted(t *testing.T) {
+	m := managerForCounters()
+	ctx := context.Background()
+	m.eventHandlers = []EventHandler{&failingHandler{err: errHandlerTest}, &countingHandler{}}
+
+	before := counterValue(t, ebpfHandlerErrorsTotal, kindFile)
+	beforeEvents := counterValue(t, ebpfEventsTotal, kindFile)
+	m.handleEventRecord(ctx, kindFile, buildFileRec(1, 2, 100, 0, 0, 0, "sh", "/etc/passwd"))
+
+	assert.Equal(t, before+1, counterValue(t, ebpfHandlerErrorsTotal, kindFile),
+		"the failing handler must be counted exactly once")
+	assert.Equal(t, beforeEvents+1, counterValue(t, ebpfEventsTotal, kindFile),
+		"one handler failing must not stop the event from being counted")
+}
+
+// A healthy handler must not move the error counter, or the metric is useless
+// as an alert.
+func TestHandlerErrorsStayZeroWhenHandlersSucceed(t *testing.T) {
+	m := managerForCounters()
+	m.eventHandlers = []EventHandler{&countingHandler{}}
+
+	before := counterValue(t, ebpfHandlerErrorsTotal, kindSyscall)
+	m.handleEventRecord(context.Background(), kindSyscall, buildSyscallRec(1, 2, 59, 100, 0, 0, "sh"))
+	assert.Equal(t, before, counterValue(t, ebpfHandlerErrorsTotal, kindSyscall))
+}
 
 // Every kind must count its events, not just the denied ones. Exec and
 // capability events used to increment nothing unless they were denied, so an
@@ -204,7 +246,7 @@ func BenchmarkNotifyHandlersSync(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.notifyHandlers(func(h EventHandler) { _ = h.HandleSyscallEvent(ev) })
+		m.notifyHandlers(kindSyscall, func(h EventHandler) error { return h.HandleSyscallEvent(ev) })
 	}
 }
 

@@ -55,11 +55,20 @@ var (
 		Name: "pahlevan_ebpf_decode_errors_total",
 		Help: "Ring-buffer records that could not be decoded, by event kind",
 	}, []string{"kind"})
+	// A handler that fails is an event that reached the kernel and then did not
+	// reach whatever it was supposed to reach: an export sink, the learner, the
+	// adaptive controller. Dropping that error silently makes a broken export
+	// pipeline look exactly like a quiet cluster, so it is counted here even
+	// though the reader deliberately carries on.
+	ebpfHandlerErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pahlevan_ebpf_handler_errors_total",
+		Help: "Event handlers that returned an error, by event kind",
+	}, []string{"kind"})
 )
 
 func init() {
 	ctrlmetrics.Registry.MustRegister(
-		ebpfEventsTotal, ebpfDenialsTotal, ebpfDecodeErrorsTotal,
+		ebpfEventsTotal, ebpfDenialsTotal, ebpfDecodeErrorsTotal, ebpfHandlerErrorsTotal,
 	)
 	// Pre-create every child so a kind that has not fired yet reports 0 rather
 	// than being absent. An absent series and a genuinely idle one look the same
@@ -69,20 +78,22 @@ func init() {
 		ebpfEventsTotal.WithLabelValues(k)
 		ebpfDenialsTotal.WithLabelValues(k)
 		ebpfDecodeErrorsTotal.WithLabelValues(k)
+		ebpfHandlerErrorsTotal.WithLabelValues(k)
 	}
 }
 
 // dataPlaneCounters holds the per-kind children resolved once, so the hot path
 // does not pay for a label lookup on every event.
 type dataPlaneCounters struct {
-	events, denials, decodeErrors prometheus.Counter
+	events, denials, decodeErrors, handlerErrors prometheus.Counter
 }
 
 func newDataPlaneCounters(kind string) dataPlaneCounters {
 	return dataPlaneCounters{
-		events:       ebpfEventsTotal.WithLabelValues(kind),
-		denials:      ebpfDenialsTotal.WithLabelValues(kind),
-		decodeErrors: ebpfDecodeErrorsTotal.WithLabelValues(kind),
+		events:        ebpfEventsTotal.WithLabelValues(kind),
+		denials:       ebpfDenialsTotal.WithLabelValues(kind),
+		decodeErrors:  ebpfDecodeErrorsTotal.WithLabelValues(kind),
+		handlerErrors: ebpfHandlerErrorsTotal.WithLabelValues(kind),
 	}
 }
 
@@ -153,6 +164,13 @@ const (
 	// uses, so what userspace sees and what the kernel keyed on cannot
 	// disagree. It shares a bit position with KilledFlag, which is exec-only.
 	WriteFlag uint32 = 0x40000000
+	// FilterDeniedFlag is set alongside DeniedFlag on ProcessEvent.Flags when
+	// the exec was refused by the policy's process filter rather than by the
+	// learned allow-set. The distinction matters to whoever reads the event:
+	// "this container has never run curl" is a learning-window question, while
+	// "curl may not be launched by sh" is a deliberate policy decision that has
+	// just fired.
+	FilterDeniedFlag uint32 = 0x10000000
 )
 
 // IsWrite reports whether the open requested write access. Reads and writes are
@@ -170,6 +188,23 @@ func (e *ProcessEvent) IsExit() bool { return e.Flags&ExitedFlag != 0 }
 
 // IsDenied reports whether the exec was refused in-kernel.
 func (e *ProcessEvent) IsDenied() bool { return e.Flags&DeniedFlag != 0 }
+
+// DeniedByFilter reports whether the refusal came from the policy's process
+// filter rather than from the learned allow-set. It implies IsDenied.
+func (e *ProcessEvent) DeniedByFilter() bool { return e.Flags&FilterDeniedFlag != 0 }
+
+// DenialReason names why the exec was refused, for logs, events and the CLI.
+// It returns the empty string when the exec was not refused at all.
+func (e *ProcessEvent) DenialReason() string {
+	switch {
+	case !e.IsDenied():
+		return ""
+	case e.DeniedByFilter():
+		return "process filter"
+	default:
+		return "not in the learned allow-set"
+	}
+}
 
 // WasKilled reports whether the process was also sent SIGKILL.
 func (e *ProcessEvent) WasKilled() bool { return e.Flags&KilledFlag != 0 }
@@ -708,24 +743,24 @@ func (m *Manager) Stop() {
 
 	// Close event readers
 	if m.eventReader != nil {
-		m.eventReader.Close()
+		_ = m.eventReader.Close()
 	}
 	if m.networkEventReader != nil {
-		m.networkEventReader.Close()
+		_ = m.networkEventReader.Close()
 	}
 	if m.fileEventReader != nil {
-		m.fileEventReader.Close()
+		_ = m.fileEventReader.Close()
 	}
 
 	// Detach all links
 	for _, l := range m.syscallLinks {
-		l.Close()
+		_ = l.Close()
 	}
 	for _, l := range m.networkLinks {
-		l.Close()
+		_ = l.Close()
 	}
 	for _, l := range m.fileLinks {
-		l.Close()
+		_ = l.Close()
 	}
 
 	// Close collections
@@ -928,7 +963,7 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 		if m.otelSyscallCounter != nil {
 			m.otelSyscallCounter.Add(ctx, 1)
 		}
-		m.notifyHandlers(func(h EventHandler) { _ = h.HandleSyscallEvent(event) })
+		m.notifyHandlers(kindSyscall, func(h EventHandler) error { return h.HandleSyscallEvent(event) })
 	case kindNetwork:
 		event := parseNetworkEvent(rawSample)
 		if event == nil {
@@ -943,7 +978,7 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 		if event.Direction&DeniedDirection != 0 {
 			m.counters[kindNetwork].denials.Inc()
 		}
-		m.notifyHandlers(func(h EventHandler) { _ = h.HandleNetworkEvent(event) })
+		m.notifyHandlers(kindNetwork, func(h EventHandler) error { return h.HandleNetworkEvent(event) })
 	case kindFile:
 		event := parseFileEvent(rawSample)
 		if event == nil {
@@ -958,7 +993,7 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 		if event.Flags&DeniedFlag != 0 {
 			m.counters[kindFile].denials.Inc()
 		}
-		m.notifyHandlers(func(h EventHandler) { _ = h.HandleFileEvent(event) })
+		m.notifyHandlers(kindFile, func(h EventHandler) error { return h.HandleFileEvent(event) })
 	case kindCapability:
 		event := parseCapabilityEvent(rawSample)
 		if event == nil {
@@ -969,7 +1004,7 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 		if event.Flags&DeniedFlag != 0 {
 			m.counters[kindCapability].denials.Inc()
 		}
-		m.notifyHandlers(func(h EventHandler) { _ = h.HandleCapabilityEvent(event) })
+		m.notifyHandlers(kindCapability, func(h EventHandler) error { return h.HandleCapabilityEvent(event) })
 	case kindExec:
 		event := parseProcessEvent(rawSample)
 		if event == nil {
@@ -981,12 +1016,17 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 		if event.Flags&DeniedFlag != 0 {
 			m.counters[kindExec].denials.Inc()
 		}
-		m.notifyHandlers(func(h EventHandler) { _ = h.HandleProcessEvent(event) })
+		m.notifyHandlers(kindExec, func(h EventHandler) error { return h.HandleProcessEvent(event) })
 	}
 }
 
-// notifyHandlers safely notifies all event handlers
-func (m *Manager) notifyHandlers(notify func(EventHandler)) {
+// notifyHandlers safely notifies all event handlers.
+//
+// A handler's error is counted rather than returned: the ring-buffer reader
+// cannot usefully act on it, and stopping the loop because one sink is
+// unhealthy would take enforcement visibility down with it. Counting keeps the
+// failure findable without letting it become fatal.
+func (m *Manager) notifyHandlers(kind string, notify func(EventHandler) error) {
 	m.mu.RLock()
 	handlers := make([]EventHandler, len(m.eventHandlers))
 	copy(handlers, m.eventHandlers)
@@ -1004,7 +1044,11 @@ func (m *Manager) notifyHandlers(notify func(EventHandler)) {
 	// makes the loss explicit and countable instead of silently unbounding
 	// memory in a goroutine pile-up.
 	for _, handler := range handlers {
-		notify(handler)
+		if err := notify(handler); err != nil {
+			if c, ok := m.counters[kind]; ok {
+				c.handlerErrors.Inc()
+			}
+		}
 	}
 }
 

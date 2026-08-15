@@ -133,6 +133,17 @@ message NetworkInfo {
   uint32 protocol_number = 4;
   string direction = 5;
   string address_family = 6;
+
+  // What the cluster says the far end is: "prod/postgres", "node-3", or empty
+  // when nothing knows it. An address alone is something the reader has to go
+  // and look up before they can decide whether it matters.
+  string destination_name = 7;
+  // service, pod, node, loopback or external. This is the field to alert on:
+  // "external" is the shape exfiltration takes, and it is a different finding
+  // from a denied connect to a Service the workload simply may not use.
+  string destination_kind = 8;
+  // The Service port's name, when it had one.
+  string destination_port_name = 9;
 }
 
 message ExecInfo {

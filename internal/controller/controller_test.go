@@ -20,22 +20,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func testScheme(t testing.TB) *runtime.Scheme {
-	t.Helper()
+func testScheme(tb testing.TB) *runtime.Scheme {
+	tb.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatalf("clientgoscheme.AddToScheme: %v", err)
+		tb.Fatalf("clientgoscheme.AddToScheme: %v", err)
 	}
 	if err := policyv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("policyv1alpha1.AddToScheme: %v", err)
+		tb.Fatalf("policyv1alpha1.AddToScheme: %v", err)
 	}
 	return scheme
 }
 
-func newFakeClient(t testing.TB, objs ...client.Object) client.Client {
-	t.Helper()
+func newFakeClient(tb testing.TB, objs ...client.Object) client.Client {
+	tb.Helper()
 	return fake.NewClientBuilder().
-		WithScheme(testScheme(t)).
+		WithScheme(testScheme(tb)).
 		WithObjects(objs...).
 		WithStatusSubresource(
 			&policyv1alpha1.PahlevanPolicy{},
@@ -74,7 +74,7 @@ func TestPahlevanPolicy_Reconcile_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for missing policy, got %v", err)
 	}
-	if res.Requeue || res.RequeueAfter != 0 {
+	if res.RequeueAfter != 0 {
 		t.Fatalf("expected empty result, got %+v", res)
 	}
 }
@@ -91,7 +91,7 @@ func TestPahlevanPolicy_Reconcile_AddsFinalizerThenInitializes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile 1: %v", err)
 	}
-	if !res.Requeue {
+	if res.RequeueAfter == 0 {
 		t.Fatalf("expected requeue after adding finalizer, got %+v", res)
 	}
 	var got policyv1alpha1.PahlevanPolicy
@@ -107,7 +107,7 @@ func TestPahlevanPolicy_Reconcile_AddsFinalizerThenInitializes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile 2: %v", err)
 	}
-	if !res.Requeue {
+	if res.RequeueAfter == 0 {
 		t.Fatalf("expected requeue after init, got %+v", res)
 	}
 	if err := c.Get(context.Background(), key, &got); err != nil {
@@ -177,7 +177,7 @@ func TestPahlevanPolicy_HandleLearning_TransitionsWhenElapsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleLearning: %v", err)
 	}
-	if !res.Requeue {
+	if res.RequeueAfter == 0 {
 		t.Fatalf("expected requeue, got %+v", res)
 	}
 	if policy.Status.Phase != policyv1alpha1.PolicyPhaseTransition {
@@ -346,7 +346,7 @@ func TestPahlevanPolicy_HandleEnforcement_SelfHealing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleEnforcement: %v", err)
 	}
-	if !res.Requeue {
+	if res.RequeueAfter == 0 {
 		t.Fatalf("expected requeue, got %+v", res)
 	}
 	if policy.Status.Phase != policyv1alpha1.PolicyPhaseRollingBack {
@@ -371,7 +371,7 @@ func TestPahlevanPolicy_HandleEnforcement_HealthyIsLeftAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleEnforcement: %v", err)
 	}
-	if res.Requeue {
+	if res.RequeueAfter == requeueImmediately {
 		t.Errorf("healthy policy should not requeue immediately: %+v", res)
 	}
 	if policy.Status.Phase != policyv1alpha1.PolicyPhaseEnforcing {
@@ -646,6 +646,7 @@ func TestPahlevanPolicy_PolicyEventHandler(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func newContainerLearner(t *testing.T, objs ...client.Object) *ContainerLearnerReconciler {
+	t.Helper()
 	return &ContainerLearnerReconciler{
 		Client:            newFakeClient(t, objs...),
 		Scheme:            testScheme(t),
@@ -663,7 +664,7 @@ func TestContainerLearner_Reconcile_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.Requeue {
+	if res.RequeueAfter != 0 {
 		t.Fatalf("expected no requeue, got %+v", res)
 	}
 	if _, ok := r.TrackedContainers["c1"]; ok {
@@ -874,6 +875,7 @@ func TestContainerLearner_HandlePodDeletion(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func newAttackSurfaceReconciler(t *testing.T, objs ...client.Object) *AttackSurfaceAnalyzerReconciler {
+	t.Helper()
 	c := newFakeClient(t, objs...)
 	return &AttackSurfaceAnalyzerReconciler{
 		Client:                c,

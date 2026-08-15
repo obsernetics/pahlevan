@@ -152,7 +152,7 @@ func TestDerivedPolicyWithNoLearnedCapabilities(t *testing.T) {
 	assert.Contains(t, p.Spec.Validations[0].Expression, "cap in []")
 }
 
-// Deriving a rule from observed behaviour and applying it to a namespace that
+// Deriving a rule from observed behavior and applying it to a namespace that
 // never opted in would be a surprise whose failure mode is a pod that will not
 // start.
 func TestDerivedBindingRequiresTheOptInLabel(t *testing.T) {

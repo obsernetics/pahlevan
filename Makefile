@@ -356,9 +356,19 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	test -s $(LOCALBIN)/golangci-lint && $(LOCALBIN)/golangci-lint --version | grep -q $(GOLANGCI_LINT_VERSION) || \
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(LOCALBIN) $(GOLANGCI_LINT_VERSION)
+# VM_RUN selects which VM tests to run. The default is every TestVM*, which is
+# the point of having a VM: the enforcement, allow-set seeding and argv-capture
+# tests were written to run here and were being skipped, because this target
+# used to filter on TestVMLoad and nothing else ever widened it.
+VM_RUN ?= TestVM
+
 .PHONY: vm-test
-vm-test: ## Run the eBPF load/observe tests inside the VM (hack/vm must be up)
+vm-test: ## Run the eBPF tests inside the VM (hack/vm must be up). VM_RUN=<regex> to narrow.
 	@./hack/vm/up.sh
 	@git archive HEAD -o .vmcache/src.tar
 	@./hack/vm/cp.sh .vmcache/src.tar /home/pahlevan/src.tar
-	@./hack/vm/run.sh 'rm -rf ~/pahlevan && mkdir -p ~/pahlevan && tar -xf ~/src.tar -C ~/pahlevan && cd ~/pahlevan && sudo env PATH=$$PATH GOFLAGS=-mod=mod PAHLEVAN_EBPF_VM_TEST=1 go test ./pkg/ebpf/ -run TestVMLoad -v'
+	@./hack/vm/run.sh 'rm -rf ~/pahlevan && mkdir -p ~/pahlevan && tar -xf ~/src.tar -C ~/pahlevan && cd ~/pahlevan && sudo env PATH=$$PATH GOFLAGS=-mod=mod PAHLEVAN_EBPF_VM_TEST=1 go test ./pkg/ebpf/ -run $(VM_RUN) -timeout 20m -v'
+
+.PHONY: vm-test-load
+vm-test-load: ## Only the program load/verify tests (fast smoke test)
+	@$(MAKE) vm-test VM_RUN=TestVMLoad

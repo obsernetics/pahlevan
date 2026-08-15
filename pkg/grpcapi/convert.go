@@ -82,6 +82,12 @@ func ToProto(e *export.Event) *apiv1alpha1.Event {
 			Protocol:        e.Network.Protocol,
 			ProtocolNumber:  uint32(e.Network.ProtocolNumber),
 			Direction:       e.Network.Direction,
+			// What the cluster says the far end is. A subscriber that only got
+			// the address would have to rebuild this map itself, from data the
+			// agent already has.
+			DestinationName:     e.Network.DestinationName,
+			DestinationKind:     e.Network.DestinationKind,
+			DestinationPortName: e.Network.DestinationPortName,
 		}}
 	case e.Exec != nil:
 		exec := &apiv1alpha1.ExecInfo{

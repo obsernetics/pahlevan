@@ -31,9 +31,9 @@ var (
 
 func init() {
 	// Add client-go schemes
-	_ = clientgoscheme.AddToScheme(scheme) //nolint:errcheck // Safe to ignore during init
+	_ = clientgoscheme.AddToScheme(scheme)
 	// Add Pahlevan schemes
-	_ = policyv1alpha1.AddToScheme(scheme) //nolint:errcheck // Safe to ignore during init
+	_ = policyv1alpha1.AddToScheme(scheme)
 }
 
 // GetScheme returns the runtime scheme with all necessary types registered

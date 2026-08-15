@@ -274,7 +274,7 @@ func NewPolicyDescribeCommand() *cobra.Command {
 						cli.TruncateString(condition.Message, 50),
 					)
 				}
-				_ = table.Render(writer) //nolint:errcheck // Output error is not critical for CLI
+				_ = table.Render(writer)
 			}
 
 			// List real Kubernetes events for this policy's involved object.
@@ -601,7 +601,8 @@ func formatPorts(ports []int32) string {
 // Helper functions for policy creation
 
 func createPolicyFromFile(filename string) (*policyv1alpha1.PahlevanPolicy, error) {
-	// Read file content
+	// #nosec G304 -- reading the file the operator named on the command line
+	// is the entire point of `pahlevan policy apply -f`.
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read policy file %s: %w", filename, err)
@@ -820,7 +821,7 @@ func printPolicyEvents(writer *cli.OutputWriter, kubeClient kubernetes.Interface
 			cli.TruncateString(e.Message, 60),
 		)
 	}
-	_ = table.Render(writer) //nolint:errcheck // Output error is not critical for CLI
+	_ = table.Render(writer)
 }
 
 // eventTime returns the most relevant timestamp for an event.

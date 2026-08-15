@@ -53,6 +53,8 @@ func TestMain(m *testing.M) {
 }
 
 func setupClient(t *testing.T) (client.Client, kubernetes.Interface, *rest.Config) {
+	t.Helper()
+	t.Helper()
 	cfg, err := config.GetConfig()
 	if err != nil {
 		t.Fatalf("Failed to get config: %v", err)
@@ -77,7 +79,7 @@ func TestOperatorDeployment(t *testing.T) {
 
 	t.Run("OperatorPodIsRunning", func(t *testing.T) {
 		// Wait for operator pod to be running
-		err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+		err := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(context.Context) (bool, error) {
 			pods, err := clientset.CoreV1().Pods(operatorNamespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "app.kubernetes.io/name=pahlevan",
 			})
@@ -118,7 +120,7 @@ func TestOperatorDeployment(t *testing.T) {
 
 	t.Run("OperatorDeploymentIsReady", func(t *testing.T) {
 		deployment := &appsv1.Deployment{}
-		err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+		err := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(context.Context) (bool, error) {
 			err := k8sClient.Get(ctx, client.ObjectKey{
 				Namespace: operatorNamespace,
 				Name:      "pahlevan-operator",
@@ -150,7 +152,7 @@ func TestTestWorkloadDeployment(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("TestAppIsRunning", func(t *testing.T) {
-		err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+		err := wait.PollUntilContextTimeout(ctx, interval, timeout, true, func(context.Context) (bool, error) {
 			pods, err := clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "app=test-app",
 			})

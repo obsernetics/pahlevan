@@ -5,6 +5,7 @@
 package export
 
 import (
+	"net"
 	"sync"
 	"time"
 
@@ -17,6 +18,11 @@ type HandlerOptions struct {
 	Filter Filter
 	// Attribution, when set, fills in the Kubernetes block of each envelope.
 	Attribution AttributionFunc
+	// Destination, when set, names the far end of a network event. A denial
+	// that says "10.104.22.9:5432" is one an operator has to go and look up;
+	// one that says "prod/postgres" is one they can act on, and the two are
+	// the difference between an alert investigated and an alert muted.
+	Destination DestinationFunc
 	// AttributionCacheSize bounds the memoisation of attribution lookups.
 	// Zero uses DefaultAttributionCacheSize; a negative value disables the
 	// cache.
@@ -36,6 +42,7 @@ type Handler struct {
 	sink   Enqueuer
 	filter Filter
 	attrib AttributionFunc
+	dest   DestinationFunc
 	now    func() time.Time
 
 	cacheMax int
@@ -53,6 +60,7 @@ func NewHandler(sink Enqueuer, opts HandlerOptions) *Handler {
 		sink:     sink,
 		filter:   opts.Filter,
 		attrib:   opts.Attribution,
+		dest:     opts.Destination,
 		now:      opts.Now,
 		cacheMax: opts.AttributionCacheSize,
 	}
@@ -121,7 +129,29 @@ func (h *Handler) emit(e *Event) {
 	if ref := h.resolve(e.CgroupID); ref != nil {
 		e.Kubernetes = ref
 	}
+	h.nameDestination(e)
 	h.sink.Enqueue(e)
+}
+
+// nameDestination annotates a network event with what the cluster says its far
+// end is.
+//
+// Deliberately not cached. The attribution cache above is keyed by cgroup id,
+// of which a node has hundreds; destinations are keyed by address, of which a
+// busy node sees thousands, and the lookup is already a single map read. A
+// cache here would cost more memory than the map it is caching.
+func (h *Handler) nameDestination(e *Event) {
+	if h.dest == nil || e.Network == nil || e.Network.DestinationIP == "" {
+		return
+	}
+	ip := net.ParseIP(e.Network.DestinationIP)
+	if ip == nil {
+		return
+	}
+	name, kind, portName := h.dest(ip, e.Network.DestinationPort)
+	e.Network.DestinationName = name
+	e.Network.DestinationKind = kind
+	e.Network.DestinationPortName = portName
 }
 
 // resolve looks the cgroup id up through the attribution hook, memoising both

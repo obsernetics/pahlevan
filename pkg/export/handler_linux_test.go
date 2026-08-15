@@ -1,6 +1,8 @@
 package export
 
 import (
+	"encoding/binary"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -292,5 +294,65 @@ func TestHandlerConcurrent(t *testing.T) {
 	wg.Wait()
 	if got := len(sink.all()); got != 400 {
 		t.Fatalf("captured %d events, want 400", got)
+	}
+}
+
+// The handler must name the destination on the way through, or the field exists
+// and is always empty.
+func TestHandlerNamesTheDestination(t *testing.T) {
+	sink := &captureSink{}
+	h := NewHandler(sink, HandlerOptions{
+		Destination: func(ip net.IP, port uint16) (string, string, string) {
+			if ip.Equal(net.ParseIP("10.104.22.9")) && port == 5432 {
+				return "prod/postgres", "service", "postgres"
+			}
+			return "external", "external", ""
+		},
+	})
+
+	if err := h.HandleNetworkEvent(&ebpf.NetworkEvent{
+		DstIP:   binary.LittleEndian.Uint32(net.ParseIP("10.104.22.9").To4()),
+		DstPort: 5432, Protocol: 6, Family: 2, Comm: "api", CgroupID: 1,
+	}); err != nil {
+		t.Fatalf("HandleNetworkEvent: %v", err)
+	}
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 1 {
+		t.Fatalf("got %d events, want 1", len(sink.events))
+	}
+	n := sink.events[0].Network
+	if n == nil {
+		t.Fatal("no network detail")
+	}
+	if n.DestinationName != "prod/postgres" {
+		t.Errorf("DestinationName = %q, want prod/postgres", n.DestinationName)
+	}
+	if n.DestinationKind != "service" {
+		t.Errorf("DestinationKind = %q, want service", n.DestinationKind)
+	}
+	if n.DestinationPortName != "postgres" {
+		t.Errorf("DestinationPortName = %q, want postgres", n.DestinationPortName)
+	}
+}
+
+// Without the hook the fields stay empty rather than being invented.
+func TestHandlerWithoutADestinationHook(t *testing.T) {
+	sink := &captureSink{}
+	h := NewHandler(sink, HandlerOptions{})
+	if err := h.HandleNetworkEvent(&ebpf.NetworkEvent{
+		DstIP:   binary.LittleEndian.Uint32(net.ParseIP("10.0.0.1").To4()),
+		DstPort: 80, Protocol: 6, Family: 2, Comm: "api", CgroupID: 1,
+	}); err != nil {
+		t.Fatalf("HandleNetworkEvent: %v", err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 1 {
+		t.Fatalf("got %d events, want 1", len(sink.events))
+	}
+	if got := sink.events[0].Network.DestinationName; got != "" {
+		t.Errorf("DestinationName = %q, want empty", got)
 	}
 }

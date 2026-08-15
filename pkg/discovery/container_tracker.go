@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -61,6 +62,16 @@ type ContainerInfo struct {
 	RestartCount    int32                `json:"restartCount"`
 	LastUpdate      time.Time            `json:"lastUpdate"`
 	RuntimeInfo     *RuntimeInfo         `json:"runtimeInfo,omitempty"`
+
+	// IsMainContainer distinguishes the pod's first app container from its
+	// sidecars and init containers. The caller has always computed this and
+	// buildContainerInfo has always discarded it, which left every consumer
+	// unable to tell a one-shot init container - whose syscall profile looks
+	// nothing like the workload's steady state - from the container the
+	// workload actually is.
+	IsMainContainer bool `json:"isMainContainer"`
+	// IsInitContainer marks a container from pod.spec.initContainers.
+	IsInitContainer bool `json:"isInitContainer"`
 }
 
 // WorkloadInfo contains information about the workload that owns the container
@@ -302,10 +313,8 @@ func (ct *ContainerTracker) discoverExistingContainers(ctx context.Context) erro
 		return fmt.Errorf("failed to list pods: %w", err)
 	}
 
-	for _, pod := range podList.Items {
-		if err := ct.processPodContainers(ctx, &pod); err != nil {
-			ct.logger.Error(err, "Failed to process pod containers", "pod", pod.Name, "namespace", pod.Namespace)
-		}
+	for i := range podList.Items {
+		ct.processPodContainers(&podList.Items[i])
 	}
 
 	ct.logger.Info("Container discovery completed", "containers", len(ct.containers))
@@ -349,8 +358,8 @@ func (ct *ContainerTracker) startWatch(ctx context.Context) error {
 }
 
 // processPodContainers processes containers in a pod
-func (ct *ContainerTracker) processPodContainers(ctx context.Context, pod *corev1.Pod) error {
-	workloadInfo := ct.extractWorkloadInfo(ctx, pod)
+func (ct *ContainerTracker) processPodContainers(pod *corev1.Pod) {
+	workloadInfo := ct.extractWorkloadInfo(pod)
 
 	// Process all container specs
 	for i, containerSpec := range pod.Spec.Containers {
@@ -381,11 +390,10 @@ func (ct *ContainerTracker) processPodContainers(ctx context.Context, pod *corev
 		}
 
 		containerInfo := ct.buildContainerInfo(pod, &containerSpec, containerStatus, workloadInfo, false)
+		containerInfo.IsInitContainer = true
 		containerInfo.Name = "init-" + containerInfo.Name
 		ct.updateContainer(containerInfo)
 	}
-
-	return nil
 }
 
 // buildContainerInfo constructs ContainerInfo from pod and container data
@@ -410,6 +418,7 @@ func (ct *ContainerTracker) buildContainerInfo(
 		CreatedAt:       pod.CreationTimestamp.Time,
 		LastUpdate:      time.Now(),
 		State:           ct.determineContainerState(pod, containerStatus),
+		IsMainContainer: isMainContainer,
 	}
 
 	// Extract container ID if available
@@ -445,7 +454,7 @@ func (ct *ContainerTracker) buildContainerInfo(
 }
 
 // extractWorkloadInfo extracts workload information from pod owner references
-func (ct *ContainerTracker) extractWorkloadInfo(ctx context.Context, pod *corev1.Pod) *WorkloadInfo {
+func (ct *ContainerTracker) extractWorkloadInfo(pod *corev1.Pod) *WorkloadInfo {
 	for _, ownerRef := range pod.OwnerReferences {
 		switch ownerRef.Kind {
 		case "ReplicaSet":
@@ -609,13 +618,16 @@ func findContainerProcess(containerID string) (int32, string, bool) {
 			continue
 		}
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
+		// Linux caps pid_max well below math.MaxInt32, but the directory name
+		// is untrusted input on a 64-bit int: bound it rather than truncate.
+		if err != nil || pid <= 0 || pid > math.MaxInt32 {
 			continue
 		}
 
 		cgroupFile := filepath.Join(procRoot, entry.Name(), "cgroup")
 		cgroupPath, matched := matchCgroupFile(cgroupFile, containerID, short)
 		if matched {
+			// #nosec G109 -- pid is bounded to [1, MaxInt32] above.
 			return int32(pid), cgroupPath, true
 		}
 	}
@@ -626,6 +638,8 @@ func findContainerProcess(containerID string) (int32, string, bool) {
 // matchCgroupFile parses a /proc/<pid>/cgroup file and returns the cgroup path
 // for the entry that references the container ID (full or short form).
 func matchCgroupFile(path, fullID, shortID string) (string, bool) {
+	// #nosec G304 -- path is /proc/<pid>/cgroup, assembled here from a numeric
+	// directory entry the kernel produced.
 	f, err := os.Open(path)
 	if err != nil {
 		return "", false

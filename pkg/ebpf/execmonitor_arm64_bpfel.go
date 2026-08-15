@@ -74,11 +74,13 @@ type ExecMonitorProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ExecMonitorMapSpecs struct {
-	ExecAllowed     *ebpf.MapSpec `ebpf:"exec_allowed"`
-	ExecArgsBuild   *ebpf.MapSpec `ebpf:"exec_args_build"`
-	ExecArgsScratch *ebpf.MapSpec `ebpf:"exec_args_scratch"`
-	ExecEvents      *ebpf.MapSpec `ebpf:"exec_events"`
-	ExecMode        *ebpf.MapSpec `ebpf:"exec_mode"`
+	ExecAllowed       *ebpf.MapSpec `ebpf:"exec_allowed"`
+	ExecArgsBuild     *ebpf.MapSpec `ebpf:"exec_args_build"`
+	ExecArgsScratch   *ebpf.MapSpec `ebpf:"exec_args_scratch"`
+	ExecEvents        *ebpf.MapSpec `ebpf:"exec_events"`
+	ExecFilterAllowed *ebpf.MapSpec `ebpf:"exec_filter_allowed"`
+	ExecFilterOn      *ebpf.MapSpec `ebpf:"exec_filter_on"`
+	ExecMode          *ebpf.MapSpec `ebpf:"exec_mode"`
 }
 
 // ExecMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -107,11 +109,13 @@ func (o *ExecMonitorObjects) Close() error {
 //
 // It can be passed to LoadExecMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ExecMonitorMaps struct {
-	ExecAllowed     *ebpf.Map `ebpf:"exec_allowed"`
-	ExecArgsBuild   *ebpf.Map `ebpf:"exec_args_build"`
-	ExecArgsScratch *ebpf.Map `ebpf:"exec_args_scratch"`
-	ExecEvents      *ebpf.Map `ebpf:"exec_events"`
-	ExecMode        *ebpf.Map `ebpf:"exec_mode"`
+	ExecAllowed       *ebpf.Map `ebpf:"exec_allowed"`
+	ExecArgsBuild     *ebpf.Map `ebpf:"exec_args_build"`
+	ExecArgsScratch   *ebpf.Map `ebpf:"exec_args_scratch"`
+	ExecEvents        *ebpf.Map `ebpf:"exec_events"`
+	ExecFilterAllowed *ebpf.Map `ebpf:"exec_filter_allowed"`
+	ExecFilterOn      *ebpf.Map `ebpf:"exec_filter_on"`
+	ExecMode          *ebpf.Map `ebpf:"exec_mode"`
 }
 
 func (m *ExecMonitorMaps) Close() error {
@@ -120,6 +124,8 @@ func (m *ExecMonitorMaps) Close() error {
 		m.ExecArgsBuild,
 		m.ExecArgsScratch,
 		m.ExecEvents,
+		m.ExecFilterAllowed,
+		m.ExecFilterOn,
 		m.ExecMode,
 	)
 }
