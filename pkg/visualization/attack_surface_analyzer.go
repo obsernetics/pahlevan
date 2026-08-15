@@ -17,9 +17,12 @@ limitations under the License.
 package visualization
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -58,9 +61,6 @@ type AttackSurfaceAnalyzer struct {
 	riskThresholds     *RiskThresholds
 
 	// Export channels
-	grafanaExporter *GrafanaExporter
-	datadogExporter *DatadogExporter
-	otelExporter    *OTelExporter
 	customExporters []CustomExporter
 
 	// Metrics
@@ -554,8 +554,12 @@ func (asa *AttackSurfaceAnalyzer) Start(ctx context.Context) error {
 	// Start analysis workers
 	go asa.analysisWorker(ctx)
 	go asa.exportWorker(ctx)
-	go asa.vulnerabilityScanWorker(ctx)
-	go asa.threatModelingWorker(ctx)
+	// There were two more workers here, ticking every hour to call
+	// performVulnerabilityScans and updateThreatModel - both of which had empty
+	// bodies. Two goroutines and two timers, for nothing. Vulnerability
+	// scanning and threat modeling are listed as absent in docs/comparison.md;
+	// a goroutine that pretends otherwise makes the absence harder to see, not
+	// easier.
 
 	return nil
 }
@@ -751,38 +755,6 @@ func (asa *AttackSurfaceAnalyzer) exportWorker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			asa.performExports()
-		}
-	}
-}
-
-func (asa *AttackSurfaceAnalyzer) vulnerabilityScanWorker(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-asa.stopCh:
-			return
-		case <-ticker.C:
-			asa.performVulnerabilityScans()
-		}
-	}
-}
-
-func (asa *AttackSurfaceAnalyzer) threatModelingWorker(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-asa.stopCh:
-			return
-		case <-ticker.C:
-			asa.updateThreatModel()
 		}
 	}
 }
@@ -1549,26 +1521,16 @@ func (asa *AttackSurfaceAnalyzer) performExports() {
 		Metadata:         make(map[string]interface{}),
 	}
 
-	// Export to Grafana if configured
-	if asa.grafanaExporter != nil && asa.grafanaExporter.Enabled {
-		if err := asa.exportToGrafana(data); err != nil {
-			log.Log.Error(err, "Failed to export to Grafana")
-		}
-	}
-
-	// Export to Datadog if configured
-	if asa.datadogExporter != nil && asa.datadogExporter.Enabled {
-		if err := asa.exportToDatadog(data); err != nil {
-			log.Log.Error(err, "Failed to export to Datadog")
-		}
-	}
-
-	// Export to OpenTelemetry if configured
-	if asa.otelExporter != nil && asa.otelExporter.Enabled {
-		if err := asa.exportToOTel(data); err != nil {
-			log.Log.Error(err, "Failed to export to OpenTelemetry")
-		}
-	}
+	// Grafana, Datadog and OpenTelemetry exporters used to be dispatched here.
+	// All three had empty bodies returning nil, and all three were guarded on
+	// fields nothing ever assigned - so they were unreachable code that could
+	// not have worked if it were reached.
+	//
+	// The attack surface does leave the process, by routes that exist: the
+	// metrics in pkg/metrics (scraped by Prometheus, or exported over OTLP by
+	// the agent's own pipeline), the AttackSurface custom resource, and
+	// ExportToFormat for the graph itself. A vendor client per destination is
+	// the wrong layer when the collector already fans out to all of them.
 
 	// Export to custom exporters
 	for _, exporter := range asa.customExporters {
@@ -1579,14 +1541,6 @@ func (asa *AttackSurfaceAnalyzer) performExports() {
 			}
 		}
 	}
-}
-
-func (asa *AttackSurfaceAnalyzer) performVulnerabilityScans() {
-	// Implementation would perform vulnerability scans
-}
-
-func (asa *AttackSurfaceAnalyzer) updateThreatModel() {
-	// Implementation would update threat model
 }
 
 // The exporters below all render the same graph, differing only in what
@@ -4250,41 +4204,78 @@ type ResidualRiskAssessment struct {
 	Recommendations []SecurityRecommendation `json:"recommendations"`
 }
 
-// Export method implementations
-func (asa *AttackSurfaceAnalyzer) exportToGrafana(data *AttackSurfaceData) error {
-	// Implementation would export data to Grafana dashboard
-	// This would typically involve:
-	// - Converting attack surface data to Grafana-compatible format
-	// - Creating/updating dashboard panels
-	// - Sending metrics to Grafana's API
-	return nil
-}
-
-func (asa *AttackSurfaceAnalyzer) exportToDatadog(data *AttackSurfaceData) error {
-	// Implementation would export data to Datadog
-	// This would typically involve:
-	// - Converting attack surface data to Datadog metrics
-	// - Sending custom metrics via Datadog API
-	// - Creating/updating dashboards and alerts
-	return nil
-}
-
-func (asa *AttackSurfaceAnalyzer) exportToOTel(data *AttackSurfaceData) error {
-	// Implementation would export data to OpenTelemetry
-	// This would typically involve:
-	// - Converting attack surface data to OTEL metrics/traces
-	// - Publishing via OTEL collector
-	// - Structured logging with attack surface context
-	return nil
-}
-
+// exportToCustom POSTs the attack surface to a configured endpoint.
+//
+// This is the one exporter of the four that was worth keeping: it needs no
+// vendor client, and an endpoint the operator names is a destination the
+// project can actually support. It used to return nil without sending
+// anything, so an operator who configured one saw no error and no data.
+//
+// The body is the same JSON ExportToFormat produces, so a consumer written
+// against one is written against both.
 func (asa *AttackSurfaceAnalyzer) exportToCustom(data *AttackSurfaceData, exporter *CustomExporter) error {
-	// Implementation would export data to custom endpoint
-	// This would typically involve:
-	// - Formatting data according to exporter config
-	// - Making HTTP requests to custom endpoint
-	// - Handling authentication and retry logic
+	if exporter == nil || exporter.Endpoint == "" {
+		return fmt.Errorf("custom exporter %q has no endpoint", exporterName(exporter))
+	}
+	// The placeholder the RegisterExporter path writes when an Exporter
+	// interface is registered without a real address. Sending to it would be a
+	// DNS failure every interval.
+	if exporter.Endpoint == "configured-by-interface" {
+		return nil
+	}
+
+	body, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("encoding the attack surface: %w", err)
+	}
+
+	// Bounded, because this runs on a timer inside the analyzer: an endpoint
+	// that accepts the connection and never replies must not wedge the export
+	// worker for every subsequent interval.
+	ctx, cancel := context.WithTimeout(context.Background(), customExportTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, exporter.Endpoint,
+		bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building the request for %s: %w", exporter.Endpoint, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range exporter.Config {
+		// Config carries headers such as an authorization token. Anything that
+		// is not a valid header name is skipped rather than silently mangling
+		// the request.
+		if k != "" && v != "" {
+			req.Header.Set(k, v)
+		}
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting to %s: %w", exporter.Endpoint, err)
+	}
+	defer func() {
+		// Drained so the connection can be reused rather than torn down on
+		// every interval.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%s returned HTTP %d", exporter.Endpoint, resp.StatusCode)
+	}
 	return nil
+}
+
+// customExportTimeout bounds one POST to a custom endpoint.
+const customExportTimeout = 10 * time.Second
+
+// exporterName is for an error message about an exporter that may be nil.
+func exporterName(e *CustomExporter) string {
+	if e == nil {
+		return "<nil>"
+	}
+	return e.Name
 }
 
 // ---------------------------------------------------------------------------

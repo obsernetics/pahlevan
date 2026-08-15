@@ -33,40 +33,12 @@ spec:
 
   learningConfig:
     duration: "30m"
-    windowSize: "1m"
     minSamples: 200
     autoTransition: false
-    lifecycleAware: true
 
   enforcementConfig:
     mode: Monitoring
 
-  observabilityConfig:
-    metrics:
-      enabled: true
-      interval: "30s"
-      exporters:
-      - type: "prometheus"
-    tracing:
-      enabled: true
-      samplingRate: "0.1"
-      exporter:
-        type: "otlp"
-        endpoint: "otel-collector.pahlevan-system.svc:4317"
-    logging:
-      level: "info"
-      format: "json"
-      outputs:
-      - type: "stdout"
-    visualization:
-      enabled: true
-      # How often the cluster graph is recomputed. The analysis walks every pod
-      # and every learned profile, so this is a real cost on a large cluster -
-      # five minutes is a reasonable floor, not a starting point to tune down.
-      updateInterval: "5m"
-      exporters:
-      - type: "mermaid"
-      - type: "cytoscape"
 ---
 # Reading the results.
 #

@@ -42,12 +42,10 @@ spec:
     # pod"; it is "how long before we consider the workload's profile settled",
     # and for a job that runs hourly that is several hours.
     duration: "6h"
-    windowSize: "1m"
     minSamples: 50
     # Never automatic here. The transition happens by relabelling the workload
     # onto the second policy, after a human has read the profile.
     autoTransition: false
-    lifecycleAware: true
 
   enforcementConfig:
     mode: Monitoring
@@ -91,7 +89,6 @@ spec:
     # that do not matter.
     duration: "30s"
     autoTransition: true
-    lifecycleAware: true
 
   enforcementConfig:
     mode: Blocking
@@ -132,7 +129,6 @@ spec:
       - port: 5432
         protocol: TCP
       action: Allow
-    defaultAction: Deny
 
   syscallPolicy:
     deniedSyscalls:
@@ -147,8 +143,3 @@ spec:
     rollbackThreshold: 2
     rollbackWindow: "2m"
     recoveryStrategy: Rollback
-
-  observabilityConfig:
-    metrics:
-      enabled: true
-      interval: "15s"

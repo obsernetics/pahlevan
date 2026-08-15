@@ -88,6 +88,7 @@ func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Tim
 	if warn := warnUnknownMode(spec.EnforcementConfig.Mode); warn != "" {
 		warnings = append(warnings, warn)
 	}
+	warnings = append(warnings, warnInertFields(spec)...)
 
 	o := &d.Overrides
 	warnings = append(warnings, applyFilePolicy(o, spec.FilePolicy)...)
@@ -112,6 +113,78 @@ func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Tim
 // contradiction - default-deny of unlearned behavior is the only enforcement
 // this kernel data plane performs - so it downgrades too, rather than
 // enforcing something the author asked not to.
+// warnInertFields reports the parts of the spec that are accepted by the API
+// and acted on by nothing.
+//
+// These are not unimplementable, and several are not even unreasonable. What
+// makes them worth a warning is that they are indistinguishable, from the
+// author's side, from the fields that work: the policy applies, the status goes
+// green, and the setting does nothing. That is strictly worse than a field that
+// does not exist, because a field that does not exist produces an error.
+//
+// Each was found by asking which code reads it. The two engines that read
+// several of them - pkg/policies.EnforcementEngine and
+// internal/learner.SyscallLearner - are constructed only by the integration
+// test framework, never by the agent or the operator, so a field only they
+// consume is inert in every deployment.
+func warnInertFields(spec policyv1alpha1.PahlevanPolicySpec) []string {
+	var out []string
+
+	if spec.LearningConfig.WindowSize != nil {
+		out = append(out,
+			"learningConfig.windowSize has no effect: the adaptive controller observes "+
+				"continuously rather than in sampling windows, and the only code that reads "+
+				"this field is not built into the agent")
+	}
+	if spec.LearningConfig.LifecycleAware {
+		out = append(out,
+			"learningConfig.lifecycleAware has no effect: it is displayed and stored but "+
+				"nothing acts on it. A restarted container gets a new cgroup id and therefore "+
+				"a new baseline regardless")
+	}
+	if fp := spec.FilePolicy; fp != nil {
+		if fp.DefaultAction != "" {
+			out = append(out, defaultActionWarning("filePolicy"))
+		}
+		if fp.ExecutableFilter != nil && fp.ExecutableFilter.RequireSignature {
+			out = append(out,
+				"filePolicy.executableFilter.requireSignature has no effect: nothing verifies "+
+					"executable signatures, and the kernel hook has no way to")
+		}
+	}
+	if sp := spec.SyscallPolicy; sp != nil && sp.DefaultAction != "" {
+		out = append(out, defaultActionWarning("syscallPolicy"))
+	}
+	if np := spec.NetworkPolicy; np != nil && np.DefaultAction != "" {
+		out = append(out, defaultActionWarning("networkPolicy"))
+	}
+	if inertObservability(spec.ObservabilityConfig) {
+		out = append(out,
+			"observabilityConfig has no effect: the agent's metrics, tracing and logging are "+
+				"configured by its flags (--observability-exports, --otlp-endpoint, "+
+				"--metrics-detail) and apply to the whole node, not per policy")
+	}
+	return out
+}
+
+// defaultActionWarning explains why a default action is redundant rather than
+// merely unimplemented, which is a different thing and worth saying.
+func defaultActionWarning(field string) string {
+	return field + ".defaultAction has no effect. Default-deny of unlearned behavior is " +
+		"what enforcement is, so Deny is already the behavior under Blocking and Allow is " +
+		"what Monitoring mode means; the field cannot express a third thing"
+}
+
+// inertObservability reports whether anything was set in the block. Comparing
+// against the zero value rather than listing sub-fields keeps this correct when
+// the block grows.
+func inertObservability(c policyv1alpha1.ObservabilityConfig) bool {
+	return c.Metrics.Enabled || len(c.Metrics.Exporters) > 0 || c.Metrics.Interval != nil ||
+		c.Tracing.Enabled || c.Tracing.Exporter.Type != "" || c.Tracing.SamplingRate != nil ||
+		c.Logging.Level != "" || c.Logging.Format != "" || len(c.Logging.Outputs) > 0 ||
+		c.Visualization.Enabled || len(c.Visualization.Exporters) > 0
+}
+
 // warnUnknownMode reports a mode the controller does not recognize.
 //
 // resolveMode maps anything unknown onto Monitoring, which is the safe default

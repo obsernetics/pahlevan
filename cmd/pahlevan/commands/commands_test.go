@@ -472,9 +472,44 @@ func TestFormatHelpers(t *testing.T) {
 	if formatPorts([]int32{80, 443}) == "<none>" {
 		t.Error("formatPorts non-empty")
 	}
+	// These two used to return the literal "N/A" with a comment claiming the
+	// fields did not exist. They do, and the operator writes them, so every
+	// `pahlevan policy list` printed N/A in a column whose data was one
+	// dereference away.
 	p := samplePolicy("x", "ns")
-	if formatProgress(p) != "N/A" || formatViolations(p) != "N/A" {
-		t.Error("formatProgress/formatViolations should be N/A")
+	if got := formatProgress(p); got != "-" {
+		t.Errorf("formatProgress with no learning status = %q, want -", got)
+	}
+	if got := formatViolations(p); got != "-" {
+		t.Errorf("formatViolations with no enforcement status = %q, want -", got)
+	}
+
+	pct := int32(63)
+	p.Status.LearningStatus = &policyv1alpha1.LearningStatus{Progress: &pct}
+	if got := formatProgress(p); got != "63%" {
+		t.Errorf("formatProgress = %q, want 63%%", got)
+	}
+
+	// No percentage yet, but a sample count still answers "is anything being
+	// observed at all", which is the question a stalled window raises.
+	p.Status.LearningStatus = &policyv1alpha1.LearningStatus{SamplesCollected: 41}
+	if got := formatProgress(p); got != "41 samples" {
+		t.Errorf("formatProgress = %q, want 41 samples", got)
+	}
+
+	p.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{}
+	if got := formatViolations(p); got != "0" {
+		t.Errorf("formatViolations with nothing blocked = %q, want 0", got)
+	}
+
+	// The breakdown matters more than the total when triaging: a hundred file
+	// denials and a hundred exec denials are very different situations.
+	p.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{
+		BlockedTotal: 10, BlockedFileAccess: 4, BlockedNetworkConnections: 3,
+		BlockedExecs: 2, BlockedCapabilities: 1,
+	}
+	if got := formatViolations(p); got != "10 (file 4, net 3, exec 2, cap 1)" {
+		t.Errorf("formatViolations = %q", got)
 	}
 }
 
