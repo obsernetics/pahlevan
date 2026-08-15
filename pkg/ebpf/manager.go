@@ -164,6 +164,13 @@ const (
 	// uses, so what userspace sees and what the kernel keyed on cannot
 	// disagree. It shares a bit position with KilledFlag, which is exec-only.
 	WriteFlag uint32 = 0x40000000
+	// FilterDeniedFlag is set alongside DeniedFlag on ProcessEvent.Flags when
+	// the exec was refused by the policy's process filter rather than by the
+	// learned allow-set. The distinction matters to whoever reads the event:
+	// "this container has never run curl" is a learning-window question, while
+	// "curl may not be launched by sh" is a deliberate policy decision that has
+	// just fired.
+	FilterDeniedFlag uint32 = 0x10000000
 )
 
 // IsWrite reports whether the open requested write access. Reads and writes are
@@ -181,6 +188,23 @@ func (e *ProcessEvent) IsExit() bool { return e.Flags&ExitedFlag != 0 }
 
 // IsDenied reports whether the exec was refused in-kernel.
 func (e *ProcessEvent) IsDenied() bool { return e.Flags&DeniedFlag != 0 }
+
+// DeniedByFilter reports whether the refusal came from the policy's process
+// filter rather than from the learned allow-set. It implies IsDenied.
+func (e *ProcessEvent) DeniedByFilter() bool { return e.Flags&FilterDeniedFlag != 0 }
+
+// DenialReason names why the exec was refused, for logs, events and the CLI.
+// It returns the empty string when the exec was not refused at all.
+func (e *ProcessEvent) DenialReason() string {
+	switch {
+	case !e.IsDenied():
+		return ""
+	case e.DeniedByFilter():
+		return "process filter"
+	default:
+		return "not in the learned allow-set"
+	}
+}
 
 // WasKilled reports whether the process was also sent SIGKILL.
 func (e *ProcessEvent) WasKilled() bool { return e.Flags&KilledFlag != 0 }

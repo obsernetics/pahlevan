@@ -199,12 +199,84 @@ func TestSyscallPolicyTranslation(t *testing.T) {
 	assert.True(t, hasWarning(warnings, "unknown capability"))
 }
 
-func TestProcessFilterIsReportedUnenforced(t *testing.T) {
-	_, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+// An empty process filter must constrain nothing. Reading "no dimensions
+// specified" as "an empty allow-list for every dimension" would deny every
+// exec in the container.
+func TestEmptyProcessFilterConstrainsNothing(t *testing.T) {
+	d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
 		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
 		SyscallPolicy:     &policyv1alpha1.SyscallPolicy{ProcessFilter: &policyv1alpha1.ProcessFilter{}},
 	}, now)
-	assert.True(t, hasWarning(warnings, "processFilter is not enforced"))
+	assert.Nil(t, d.Overrides.ProcFilter)
+	assert.Empty(t, warnings)
+}
+
+// The three dimensions the kernel can enforce become the filter; commands
+// become exec allow-set entries, because that is the mechanism that already
+// governs which binary may run.
+func TestProcessFilterIsTranslatedToTheKernelFilter(t *testing.T) {
+	d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		SyscallPolicy: &policyv1alpha1.SyscallPolicy{ProcessFilter: &policyv1alpha1.ProcessFilter{
+			Commands:        []string{"/usr/bin/psql", "/bin/sh"},
+			Users:           []string{"1000", "0"},
+			Groups:          []string{"1000"},
+			ParentProcesses: []string{"supervisord", " entrypoint.sh "},
+		}},
+	}, now)
+
+	require.NotNil(t, d.Overrides.ProcFilter)
+	assert.Equal(t, []string{"supervisord", "entrypoint.sh"}, d.Overrides.ProcFilter.ParentProcesses)
+	assert.Equal(t, []uint32{1000, 0}, d.Overrides.ProcFilter.UIDs)
+	assert.Equal(t, []uint32{1000}, d.Overrides.ProcFilter.GIDs)
+	assert.Equal(t, []string{"/usr/bin/psql", "/bin/sh"}, d.Overrides.AllowedExecs)
+	assert.Empty(t, warnings)
+}
+
+// A username cannot be resolved from the node: the kernel matches uids and the
+// container has its own passwd file. Guessing would produce a filter that
+// silently matches the wrong user.
+func TestProcessFilterRejectsNonNumericUsers(t *testing.T) {
+	d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		SyscallPolicy: &policyv1alpha1.SyscallPolicy{ProcessFilter: &policyv1alpha1.ProcessFilter{
+			Users:  []string{"postgres", "1000"},
+			Groups: []string{"wheel"},
+		}},
+	}, now)
+
+	require.NotNil(t, d.Overrides.ProcFilter)
+	assert.Equal(t, []uint32{1000}, d.Overrides.ProcFilter.UIDs, "the numeric one is kept")
+	assert.Empty(t, d.Overrides.ProcFilter.GIDs)
+	assert.True(t, hasWarning(warnings, `users["postgres"]`))
+	assert.True(t, hasWarning(warnings, `groups["wheel"]`))
+}
+
+// The kernel matches the resolved binary path, so a bare name would be written
+// into the allow-set under a key nothing can ever match.
+func TestProcessFilterRejectsRelativeCommands(t *testing.T) {
+	d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		SyscallPolicy: &policyv1alpha1.SyscallPolicy{ProcessFilter: &policyv1alpha1.ProcessFilter{
+			Commands: []string{"curl", "/usr/bin/curl"},
+		}},
+	}, now)
+
+	assert.Equal(t, []string{"/usr/bin/curl"}, d.Overrides.AllowedExecs)
+	assert.True(t, hasWarning(warnings, "must be absolute"))
+}
+
+// comm is TASK_COMM_LEN, so a longer parent name matches on its truncation.
+// Saying so is the difference between a filter that works and one that appears
+// to and does not.
+func TestProcessFilterWarnsAboutLongParentNames(t *testing.T) {
+	_, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+		EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+		SyscallPolicy: &policyv1alpha1.SyscallPolicy{ProcessFilter: &policyv1alpha1.ProcessFilter{
+			ParentProcesses: []string{"a-very-long-process-name"},
+		}},
+	}, now)
+	assert.True(t, hasWarning(warnings, "first 15 characters"))
 }
 
 func egress(cidr string, ports ...int32) policyv1alpha1.NetworkRule {

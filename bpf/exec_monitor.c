@@ -156,6 +156,53 @@ struct {
 	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } exec_mode SEC(".maps");
 
+/* Process filter.
+ *
+ * The learned allow-set answers "has this container run this binary before".
+ * A policy's syscallPolicy.processFilter asks a different question: who is
+ * allowed to run it. The two are independent - a binary the container has run
+ * a thousand times is still not one that should be launched by a shell that
+ * arrived over the network, or run as root when the workload runs as uid 1000.
+ *
+ * Each dimension is opt-in per cgroup, because an unset dimension must not
+ * become an empty allow-list that denies everything. exec_filter_on carries the
+ * bitmask of dimensions the policy actually specified; a dimension that is off
+ * is not consulted at all.
+ */
+#define FILTER_PARENT 0x01
+#define FILTER_UID    0x02
+#define FILTER_GID    0x04
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64); /* cgroup_id */
+	__type(value, __u8); /* FILTER_* bitmask */
+	__uint(max_entries, 1 << 13);
+} exec_filter_on SEC(".maps");
+
+/* Allowed values for the enabled dimensions.
+ *
+ * One map rather than three: the key already carries the dimension, and three
+ * maps would triple the per-node memory floor to hold the same handful of
+ * entries. The kind is folded in multiplicatively so that a uid and a parent
+ * hash that happen to collide numerically do not alias. */
+#define KIND_PARENT 1ULL
+#define KIND_UID    2ULL
+#define KIND_GID    3ULL
+#define KIND_MIX    0x9E3779B97F4A7C15ULL
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 1 << 13);
+} exec_filter_allowed SEC(".maps");
+
+static __always_inline __u64 filter_key(__u64 cgroup_id, __u64 kind, __u64 value)
+{
+	return cgroup_id ^ (kind * KIND_MIX) ^ value;
+}
+
 static __always_inline __u64 hash_name(const __u8 *p, int n)
 {
 	__u64 h = 1469598103934665603ULL;
@@ -408,11 +455,40 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	__u8 *known = bpf_map_lookup_elem(&exec_allowed, &key);
 
 	if (mode == MODE_ENFORCE || mode == MODE_ENFORCE_KILL) {
-		if (known) {
+		/* Two independent reasons to refuse: the binary was never learned, or
+		 * the policy's process filter rejects who is running it. They are
+		 * reported with different flag bits, because "this container has never
+		 * run curl" and "curl may not be launched by sh" call for entirely
+		 * different responses from whoever reads the event. */
+		__u32 filter_deny = 0;
+		__u64 uid_gid = bpf_get_current_uid_gid();
+		__u8 *onp = bpf_map_lookup_elem(&exec_filter_on, &cgroup_id);
+		__u8 on = onp ? *onp : 0;
+
+		if (on & FILTER_PARENT) {
+			__u64 k = filter_key(cgroup_id, KIND_PARENT,
+					     hash_name(e->pcomm, sizeof(e->pcomm)));
+			if (!bpf_map_lookup_elem(&exec_filter_allowed, &k))
+				filter_deny = 1;
+		}
+		if (!filter_deny && (on & FILTER_UID)) {
+			__u64 k = filter_key(cgroup_id, KIND_UID, (__u32)uid_gid);
+			if (!bpf_map_lookup_elem(&exec_filter_allowed, &k))
+				filter_deny = 1;
+		}
+		if (!filter_deny && (on & FILTER_GID)) {
+			__u64 k = filter_key(cgroup_id, KIND_GID, uid_gid >> 32);
+			if (!bpf_map_lookup_elem(&exec_filter_allowed, &k))
+				filter_deny = 1;
+		}
+
+		if (known && !filter_deny) {
 			bpf_ringbuf_discard(e, 0);
 			return 0;
 		}
 		e->flags |= 0x80000000; /* denied */
+		if (filter_deny)
+			e->flags |= 0x10000000; /* denied by the process filter */
 		if (mode == MODE_ENFORCE_KILL) {
 			e->flags |= 0x40000000; /* killed */
 			bpf_send_signal(9);     /* SIGKILL the offending task */

@@ -3,6 +3,8 @@ package adaptive
 import (
 	"net"
 	"time"
+
+	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
 // Mode is how a policy governs a container, mirroring
@@ -61,6 +63,13 @@ type Overrides struct {
 	// syscall program is observation-only.
 	AllowedSyscalls []string
 	DeniedSyscalls  []string
+
+	// ProcFilter constrains who may exec, as opposed to what may be exec'd.
+	// It is not an allow-set correction like the fields above: the allow-set
+	// answers "has this container run this binary", and the filter answers
+	// "is this process allowed to run it". Both are enforced in
+	// bprm_check_security. A nil filter means no constraint.
+	ProcFilter *ebpf.ProcFilter
 }
 
 // Empty reports whether there is nothing to apply.
@@ -70,7 +79,8 @@ func (o Overrides) Empty() bool {
 		len(o.AllowedExecs) == 0 && len(o.DeniedExecs) == 0 &&
 		len(o.AllowedCapabilities) == 0 && len(o.DeniedCapabilities) == 0 &&
 		len(o.AllowedDestinations) == 0 && len(o.DeniedDestinations) == 0 &&
-		len(o.AllowedSyscalls) == 0 && len(o.DeniedSyscalls) == 0
+		len(o.AllowedSyscalls) == 0 && len(o.DeniedSyscalls) == 0 &&
+		o.ProcFilter.Empty()
 }
 
 // Decision is how one PahlevanPolicy governs one container. It replaces the
