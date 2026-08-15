@@ -549,9 +549,7 @@ func (asa *AttackSurfaceAnalyzer) Start(ctx context.Context) error {
 	log.Log.Info("Starting attack surface analyzer")
 
 	// Initialize components
-	if err := asa.initializeComponents(); err != nil {
-		return fmt.Errorf("failed to initialize components: %w", err)
-	}
+	asa.initializeComponents()
 
 	// Start analysis workers
 	go asa.analysisWorker(ctx)
@@ -584,24 +582,16 @@ func (asa *AttackSurfaceAnalyzer) AnalyzeClusterAttackSurface() (*ClusterAttackS
 	}
 
 	// Analyze network topology
-	if err := asa.analyzeNetworkTopology(graph); err != nil {
-		return nil, fmt.Errorf("failed to analyze network topology: %w", err)
-	}
+	asa.analyzeNetworkTopology()
 
 	// Perform risk analysis
-	if err := asa.performRiskAnalysis(graph); err != nil {
-		return nil, fmt.Errorf("failed to perform risk analysis: %w", err)
-	}
+	asa.performRiskAnalysis(graph)
 
 	// Find exposure paths
-	if err := asa.identifyExposurePaths(graph); err != nil {
-		return nil, fmt.Errorf("failed to identify exposure paths: %w", err)
-	}
+	asa.identifyExposurePaths(graph)
 
 	// Generate recommendations
-	if err := asa.generateRecommendations(graph); err != nil {
-		return nil, fmt.Errorf("failed to generate recommendations: %w", err)
-	}
+	asa.generateRecommendations(graph)
 
 	asa.clusterGraph = graph
 
@@ -652,9 +642,7 @@ func (asa *AttackSurfaceAnalyzer) AnalyzeWorkloadAttackSurface(
 	}
 
 	// Calculate risk metrics
-	if err := asa.calculateWorkloadRisk(surface); err != nil {
-		return nil, fmt.Errorf("failed to calculate risk: %w", err)
-	}
+	asa.calculateWorkloadRisk(surface)
 
 	asa.workloadProfiles[key] = surface
 
@@ -678,6 +666,13 @@ func (asa *AttackSurfaceAnalyzer) GetAttackSurfaceData() (*AttackSurfaceData, er
 	}, nil
 }
 
+// ExportToFormat renders the current analysis in one of the graph formats.
+//
+// JSON, Mermaid, Cytoscape and GraphQL are implemented. Prometheus, Grafana and
+// SIEM are declared as ExportFormat values for registered exporters to identify
+// themselves with (see RegisterExporter) and are rejected here rather than
+// silently returning an empty document: a caller asking for a format this
+// function cannot produce needs to hear about it.
 func (asa *AttackSurfaceAnalyzer) ExportToFormat(format ExportFormat) ([]byte, error) {
 	data, err := asa.GetAttackSurfaceData()
 	if err != nil {
@@ -793,7 +788,7 @@ func (asa *AttackSurfaceAnalyzer) threatModelingWorker(ctx context.Context) {
 }
 
 // Implementation methods
-func (asa *AttackSurfaceAnalyzer) initializeComponents() error {
+func (asa *AttackSurfaceAnalyzer) initializeComponents() {
 	// Initialize vulnerability scanner
 	asa.vulnerabilityScanner = &VulnerabilityScanner{
 		scanners:    make(map[string]VulnerabilityProvider),
@@ -808,8 +803,6 @@ func (asa *AttackSurfaceAnalyzer) initializeComponents() error {
 		ModelVersion: "1.0",
 		Timestamp:    time.Now(),
 	}
-
-	return nil
 }
 
 func (asa *AttackSurfaceAnalyzer) discoverWorkloads(graph *ClusterAttackSurfaceGraph) error {
@@ -908,7 +901,7 @@ func (asa *AttackSurfaceAnalyzer) discoverWorkloads(graph *ClusterAttackSurfaceG
 	return nil
 }
 
-func (asa *AttackSurfaceAnalyzer) analyzeNetworkTopology(graph *ClusterAttackSurfaceGraph) error {
+func (asa *AttackSurfaceAnalyzer) analyzeNetworkTopology() {
 	log.Log.Info("Analyzing network topology")
 
 	topology := &NetworkTopology{
@@ -924,11 +917,9 @@ func (asa *AttackSurfaceAnalyzer) analyzeNetworkTopology(graph *ClusterAttackSur
 
 	// Store topology in the graph
 	asa.networkTopology = topology
-
-	return nil
 }
 
-func (asa *AttackSurfaceAnalyzer) performRiskAnalysis(graph *ClusterAttackSurfaceGraph) error {
+func (asa *AttackSurfaceAnalyzer) performRiskAnalysis(graph *ClusterAttackSurfaceGraph) {
 	log.Log.Info("Performing risk analysis")
 
 	// Calculate risk scores for each node
@@ -1007,11 +998,9 @@ func (asa *AttackSurfaceAnalyzer) performRiskAnalysis(graph *ClusterAttackSurfac
 		"averageRisk", averageRiskScore,
 		"highRiskNodes", highRiskNodes,
 		"criticalVulns", criticalVulnerabilities)
-
-	return nil
 }
 
-func (asa *AttackSurfaceAnalyzer) identifyExposurePaths(graph *ClusterAttackSurfaceGraph) error {
+func (asa *AttackSurfaceAnalyzer) identifyExposurePaths(graph *ClusterAttackSurfaceGraph) {
 	log.Log.Info("Identifying exposure paths")
 
 	var exposurePaths []*ExposurePath
@@ -1074,11 +1063,9 @@ func (asa *AttackSurfaceAnalyzer) identifyExposurePaths(graph *ClusterAttackSurf
 	log.Log.Info("Exposure path analysis completed",
 		"exposurePaths", len(exposurePaths),
 		"criticalPaths", len(criticalPaths))
-
-	return nil
 }
 
-func (asa *AttackSurfaceAnalyzer) generateRecommendations(graph *ClusterAttackSurfaceGraph) error {
+func (asa *AttackSurfaceAnalyzer) generateRecommendations(graph *ClusterAttackSurfaceGraph) {
 	log.Log.Info("Generating security recommendations")
 
 	var recommendations []*RecommendedAction
@@ -1098,7 +1085,7 @@ func (asa *AttackSurfaceAnalyzer) generateRecommendations(graph *ClusterAttackSu
 	}
 
 	// Generate general security recommendations
-	generalRecommendations := asa.generateGeneralRecommendations(graph)
+	generalRecommendations := asa.generateGeneralRecommendations()
 	recommendations = append(recommendations, generalRecommendations...)
 
 	// Prioritize recommendations
@@ -1107,8 +1094,6 @@ func (asa *AttackSurfaceAnalyzer) generateRecommendations(graph *ClusterAttackSu
 	graph.RecommendedActions = recommendations
 
 	log.Log.Info("Generated security recommendations", "count", len(recommendations))
-
-	return nil
 }
 
 func (asa *AttackSurfaceAnalyzer) getWorkloadKey(workloadRef learner.WorkloadReference) string {
@@ -1141,7 +1126,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeWorkloadContainers(surface *WorkloadAtt
 			containerSurface.ImageAnalysis = asa.analyzeContainerImage(container.Image)
 
 			// Analyze runtime security profile
-			containerSurface.RuntimeProfile = asa.analyzeRuntimeProfile(&pod, &container)
+			containerSurface.RuntimeProfile = asa.analyzeRuntimeProfile(&container)
 
 			// Analyze syscall exposure
 			containerSurface.SyscallExposure = asa.analyzeSyscallExposure(&pod, &container)
@@ -1442,7 +1427,7 @@ func (asa *AttackSurfaceAnalyzer) roleRefIsPrivileged(ctx context.Context, names
 	return false
 }
 
-func (asa *AttackSurfaceAnalyzer) calculateWorkloadRisk(surface *WorkloadAttackSurface) error {
+func (asa *AttackSurfaceAnalyzer) calculateWorkloadRisk(surface *WorkloadAttackSurface) {
 	log.Log.Info("Calculating workload risk score", "workload", surface.WorkloadRef.Name)
 
 	var totalRisk float64
@@ -1548,8 +1533,6 @@ func (asa *AttackSurfaceAnalyzer) calculateWorkloadRisk(surface *WorkloadAttackS
 		"riskScore", totalRisk,
 		"riskFactors", len(riskFactors),
 		"recommendations", len(recommendations))
-
-	return nil
 }
 
 func (asa *AttackSurfaceAnalyzer) performExports() {
@@ -1606,19 +1589,215 @@ func (asa *AttackSurfaceAnalyzer) updateThreatModel() {
 	// Implementation would update threat model
 }
 
-func (asa *AttackSurfaceAnalyzer) exportToGraphQL(data *AttackSurfaceData) ([]byte, error) {
-	// Implementation would export to GraphQL format
-	return []byte("{}"), nil
+// The exporters below all render the same graph, differing only in what
+// consumes the result. They used to return canned strings - "graph TD", "{}" -
+// which is worse than an unsupported-format error: the caller gets a
+// syntactically valid diagram with nothing in it and has no way to tell that
+// from a cluster with no attack surface.
+
+// sortedNodes returns the graph's nodes in ID order. Map iteration order would
+// otherwise make every export differ from the last, which defeats diffing two
+// exports to see what changed - the main reason to export at all.
+func sortedNodes(g *ClusterAttackSurfaceGraph) []*AttackSurfaceNode {
+	if g == nil {
+		return nil
+	}
+	out := make([]*AttackSurfaceNode, 0, len(g.Nodes))
+	for _, n := range g.Nodes {
+		if n != nil {
+			out = append(out, n)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
+// sortedEdges is sortedNodes for edges, for the same reason.
+func sortedEdges(g *ClusterAttackSurfaceGraph) []*AttackSurfaceEdge {
+	if g == nil {
+		return nil
+	}
+	out := make([]*AttackSurfaceEdge, 0, len(g.Edges))
+	for _, e := range g.Edges {
+		if e != nil {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// mermaidID sanitizes a node ID into something Mermaid accepts as an
+// identifier. Kubernetes IDs carry slashes and dots, which Mermaid reads as
+// syntax.
+func mermaidID(id string) string {
+	var b strings.Builder
+	b.Grow(len(id))
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "n"
+	}
+	return "n_" + b.String()
+}
+
+// mermaidLabel escapes the characters that would break out of a node label.
+func mermaidLabel(s string) string {
+	s = strings.ReplaceAll(s, `"`, `'`)
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
+// exportToMermaid renders the graph as a Mermaid flowchart.
+//
+// Risk is carried in the node shape rather than a color directive so the
+// diagram stays readable in a plain-text pull request as well as rendered.
 func (asa *AttackSurfaceAnalyzer) exportToMermaid(data *AttackSurfaceData) ([]byte, error) {
-	// Implementation would export to Mermaid diagram format
-	return []byte("graph TD"), nil
+	if data == nil {
+		return nil, fmt.Errorf("no attack surface data to export")
+	}
+	var b strings.Builder
+	b.WriteString("graph TD\n")
+
+	nodes := sortedNodes(data.ClusterGraph)
+	if len(nodes) == 0 {
+		// Said explicitly rather than emitted as an empty diagram, which reads
+		// as "nothing is exposed" when it usually means "nothing was analyzed".
+		b.WriteString("    empty[\"no attack surface data\"]\n")
+		return []byte(b.String()), nil
+	}
+
+	for _, n := range nodes {
+		label := mermaidLabel(n.Name)
+		if n.Namespace != "" {
+			label = mermaidLabel(n.Namespace) + "/" + label
+		}
+		label = fmt.Sprintf("%s<br/>%s risk %.1f", label, n.Type, n.RiskScore)
+		id := mermaidID(n.ID)
+		switch n.CriticalityLevel {
+		case CriticalityCritical, CriticalityHigh:
+			// Hexagon: stands out at a glance without relying on color.
+			fmt.Fprintf(&b, "    %s{{\"%s\"}}\n", id, label)
+		default:
+			fmt.Fprintf(&b, "    %s[\"%s\"]\n", id, label)
+		}
+	}
+
+	for _, e := range sortedEdges(data.ClusterGraph) {
+		arrow := "-->"
+		if e.Direction == EdgeDirectionBidirectional {
+			arrow = "<-->"
+		}
+		if e.Protocol != "" {
+			fmt.Fprintf(&b, "    %s %s|%s| %s\n",
+				mermaidID(e.Source), arrow, mermaidLabel(e.Protocol), mermaidID(e.Target))
+			continue
+		}
+		fmt.Fprintf(&b, "    %s %s %s\n", mermaidID(e.Source), arrow, mermaidID(e.Target))
+	}
+	return []byte(b.String()), nil
 }
 
+// cytoscapeElement is one entry in the elements array Cytoscape.js consumes.
+type cytoscapeElement struct {
+	Group   string         `json:"group"`
+	Data    map[string]any `json:"data"`
+	Classes string         `json:"classes,omitempty"`
+}
+
+// exportToCytoscape renders the graph in the elements-array shape Cytoscape.js
+// loads directly, so the output can be dropped into a dashboard without a
+// translation layer.
 func (asa *AttackSurfaceAnalyzer) exportToCytoscape(data *AttackSurfaceData) ([]byte, error) {
-	// Implementation would export to Cytoscape.js format
-	return []byte("{}"), nil
+	if data == nil {
+		return nil, fmt.Errorf("no attack surface data to export")
+	}
+	elements := make([]cytoscapeElement, 0,
+		len(sortedNodes(data.ClusterGraph))+len(sortedEdges(data.ClusterGraph)))
+
+	for _, n := range sortedNodes(data.ClusterGraph) {
+		elements = append(elements, cytoscapeElement{
+			Group: "nodes",
+			Data: map[string]any{
+				"id":            n.ID,
+				"label":         n.Name,
+				"namespace":     n.Namespace,
+				"type":          string(n.Type),
+				"riskScore":     n.RiskScore,
+				"criticality":   string(n.CriticalityLevel),
+				"capabilities":  n.Capabilities,
+				"exposedPorts":  len(n.ExposedPorts),
+				"vulnerability": n.VulnerabilityCount,
+			},
+			Classes: strings.ToLower(string(n.CriticalityLevel)),
+		})
+	}
+	for _, e := range sortedEdges(data.ClusterGraph) {
+		elements = append(elements, cytoscapeElement{
+			Group: "edges",
+			Data: map[string]any{
+				"id":               e.ID,
+				"source":           e.Source,
+				"target":           e.Target,
+				"type":             string(e.Type),
+				"protocol":         e.Protocol,
+				"weight":           e.Weight,
+				"riskContribution": e.RiskContribution,
+			},
+		})
+	}
+	return json.MarshalIndent(map[string]any{
+		"elements":  elements,
+		"timestamp": data.Timestamp.UTC().Format(time.RFC3339),
+	}, "", "  ")
+}
+
+// exportToGraphQL emits the GraphQL-shaped payload a gateway can serve
+// directly: a data envelope keyed by field name, which is what a client
+// querying `attackSurface { nodes { ... } }` expects back.
+func (asa *AttackSurfaceAnalyzer) exportToGraphQL(data *AttackSurfaceData) ([]byte, error) {
+	if data == nil {
+		return nil, fmt.Errorf("no attack surface data to export")
+	}
+	nodes := make([]map[string]any, 0)
+	for _, n := range sortedNodes(data.ClusterGraph) {
+		nodes = append(nodes, map[string]any{
+			"id":                 n.ID,
+			"name":               n.Name,
+			"namespace":          n.Namespace,
+			"type":               string(n.Type),
+			"riskScore":          n.RiskScore,
+			"criticalityLevel":   string(n.CriticalityLevel),
+			"capabilities":       n.Capabilities,
+			"vulnerabilityCount": n.VulnerabilityCount,
+		})
+	}
+	edges := make([]map[string]any, 0)
+	for _, e := range sortedEdges(data.ClusterGraph) {
+		edges = append(edges, map[string]any{
+			"id":       e.ID,
+			"source":   e.Source,
+			"target":   e.Target,
+			"type":     string(e.Type),
+			"protocol": e.Protocol,
+			"weight":   e.Weight,
+		})
+	}
+	return json.MarshalIndent(map[string]any{
+		"data": map[string]any{
+			"attackSurface": map[string]any{
+				"timestamp": data.Timestamp.UTC().Format(time.RFC3339),
+				"nodes":     nodes,
+				"edges":     edges,
+			},
+		},
+	}, "", "  ")
 }
 
 // Helper methods for workload discovery
@@ -2538,7 +2717,7 @@ func (asa *AttackSurfaceAnalyzer) generatePathRecommendations(criticalPath *Crit
 	}
 }
 
-func (asa *AttackSurfaceAnalyzer) generateGeneralRecommendations(graph *ClusterAttackSurfaceGraph) []*RecommendedAction {
+func (asa *AttackSurfaceAnalyzer) generateGeneralRecommendations() []*RecommendedAction {
 	return []*RecommendedAction{
 		{
 			ID:          "rec-general-monitoring",
@@ -2666,7 +2845,7 @@ func (asa *AttackSurfaceAnalyzer) analyzeContainerImage(image string) *ImageSecu
 
 // analyzeRuntimeProfile reconstructs the container's runtime profile from its
 // real spec (entrypoint, declared capabilities, listening ports, mounts).
-func (asa *AttackSurfaceAnalyzer) analyzeRuntimeProfile(pod *v1.Pod, container *v1.Container) *RuntimeSecurityProfile {
+func (asa *AttackSurfaceAnalyzer) analyzeRuntimeProfile(container *v1.Container) *RuntimeSecurityProfile {
 	profile := &RuntimeSecurityProfile{
 		ProcessList:    []string{},
 		NetworkAccess:  []string{},
