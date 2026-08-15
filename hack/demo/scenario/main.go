@@ -110,9 +110,17 @@ func main() {
 		if time.Now().After(deadline) {
 			break
 		}
-		say("  learning: %s elapsed, %d events observed (%s remaining)",
-			time.Since(r.started).Round(time.Second), obs.total(),
-			time.Until(deadline).Round(time.Second))
+		// The distinct sets, not the raw event count. Every (cgroup, path) and
+		// (cgroup, destination) pair is deduplicated in the kernel, so once a
+		// workload has settled the event counter stops moving entirely - which
+		// is the signal you want before enforcing, and which reads like a
+		// hung process if all you print is a number that has stopped changing.
+		snap := obs.snapshot()
+		say("  learning %s elapsed, %s remaining: %d files, %d execs, %d dests, %d caps"+
+			" (%d events; a flat count means the baseline has converged)",
+			time.Since(r.started).Round(time.Second),
+			time.Until(deadline).Round(time.Second),
+			len(snap.Files), len(snap.Execs), len(snap.Dests), len(snap.Caps), snap.Events)
 	}
 
 	r.baseline = obs.snapshot()
