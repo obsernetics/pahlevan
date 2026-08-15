@@ -1,68 +1,67 @@
+# The smallest policy that does something real.
+#
+# Four fields carry the whole model:
+#
+#   selector           which workloads this governs
+#   learningConfig     how long to watch before deciding what normal is
+#   enforcementConfig  what to do about anything outside that
+#   selfHealing        what to do when the answer turns out to be wrong
+#
+# Everything else in the CRD narrows or widens the learned baseline. Nothing
+# else is required, because the baseline is observed rather than written: there
+# is no list of allowed syscalls here for the same reason there is no list of
+# allowed HTTP routes - the workload will tell you.
+#
+# Apply it, wait five minutes, then look at what it learned:
+#
+#   kubectl apply -f examples/quickstart/simple-policy.yaml
+#   kubectl get containerprofiles -w
+#   kubectl describe pahlevanpolicy simple-app-policy
 apiVersion: policy.pahlevan.io/v1alpha1
 kind: PahlevanPolicy
 metadata:
-  name: nginx-security-policy
+  name: simple-app-policy
   namespace: default
+  labels:
+    app.kubernetes.io/name: simple-app-policy
+    app.kubernetes.io/component: security-policy
+  annotations:
+    policy.pahlevan.io/description: "Minimal policy: learn for five minutes, then enforce"
 spec:
-  # Target pods with label app=nginx
+  # Only pods carrying this label are governed. A policy that selects nothing
+  # applies cleanly and does nothing, which is the most common first mistake.
   selector:
     matchLabels:
-      app: nginx
+      app: simple-app
 
-  # Learning configuration
-  learning:
-    enabled: true
-    duration: 5m
+  learningConfig:
+    # Five minutes suits a workload that reaches steady state quickly. If yours
+    # has scheduled work - a backup, an hourly job - the window must be long
+    # enough to contain it, or enforcement will block it the first time it runs.
+    duration: "5m"
+    # Flip to enforcing on its own when the window elapses. Set this false for
+    # anything where a false denial is expensive, and switch the mode by hand
+    # after reading the profile.
     autoTransition: true
-    syscalls: true
-    network: true
-    files: true
 
-  # Start in monitoring mode
-  enforcement:
-    mode: "monitor"
-    blockUnknown: false
-    gracePeriod: 30s
+  enforcementConfig:
+    # Monitoring records what would have been denied. Blocking actually denies
+    # it, in the kernel, before it happens. Start with Monitoring on a workload
+    # you do not know well: the denial counters tell you exactly what Blocking
+    # would have cost before you pay it.
+    mode: Blocking
+    blockUnknown: true
+    # The first seconds after a container starts touch paths the steady state
+    # never does. This covers that without widening the baseline permanently.
+    gracePeriod: "30s"
 
-  # Self-healing configuration
   selfHealing:
+    # The safety net, and the reason autoTransition above is not reckless. If
+    # three denials land within five minutes of enforcement starting, the
+    # baseline was wrong: the container goes back to learning rather than
+    # staying broken. The rollback is recorded as an event, so it is a signal
+    # rather than a silent retreat.
     enabled: true
     rollbackThreshold: 3
-    recoveryStrategy: "Rollback"
-
-  # Observability settings
-  observability:
-    metrics:
-      enabled: true
-    alerts:
-      enabled: true
-      webhookURL: "https://hooks.slack.com/your-webhook-url"
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: nginx-example
-  namespace: default
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-        image: nginx:1.25
-        ports:
-        - containerPort: 80
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "250m"
-          limits:
-            memory: "128Mi"
-            cpu: "500m"
+    rollbackWindow: "5m"
+    recoveryStrategy: Rollback
