@@ -115,8 +115,8 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | Direction | **Egress only.** There is no ingress hook at all | Both, as observed at the syscall layer | Both, depending on the policy |
 | Address family | IPv4 and IPv6. `socket_connect` governs both families and folds the full 16-byte v6 address into the allow-set key, so a v6 destination cannot be smuggled past a v4 entry | IPv4 and IPv6 | IPv4 and IPv6 |
 | Transport protocol | Read from `sk->sk_protocol` and folded into the allow-set key, so a destination learned over TCP is not thereby permitted over UDP on the same port. It was previously hardcoded to `IPPROTO_TCP` in the event and absent from the key | Yes | Yes |
-| Protocol | The allow-set key is destination address and destination port. **Protocol is not part of the key**, and events report TCP unconditionally | Distinguishes protocols | Distinguishes protocols |
-| DNS visibility | **No** DNS parsing or name-based policy | Available through rules and fields | Available, including a DNS-oriented policy library |
+| DNS visibility | **No** DNS parsing or name-based policy. A destination is an address, and a policy naming a hostname is reported as unrepresentable rather than resolved | Available through rules and fields | Available, including a DNS-oriented policy library |
+| Destination naming | **Yes, from the cluster rather than from DNS.** Addresses are resolved against Services, pods and nodes the agent already caches, so a denial reads `prod/postgres:5432` instead of `10.104.22.9:5432`, and `destinationKind` separates an in-cluster Service from an address the cluster has never heard of - which is the distinction between a misconfiguration and exfiltration. It costs no DNS query, which matters when a burst of denials would otherwise become a burst of DNS traffic. It does not name external addresses at all, which is exactly where DNS parsing would help and where Falco and Tetragon are ahead | Names come from DNS parsing, so external destinations are named too | Same, plus a DNS policy library |
 | L7 visibility | **No** | Limited, through plugins | Limited natively. Cilium and Hubble cover L7 alongside it |
 | Blocking | Yes, `EPERM` on `connect()` to an unlearned IPv4 destination | No | Yes, with a policy |
 | Relationship to CNI policy | Complementary, not a replacement. Pahlevan does not implement NetworkPolicy | Same | Cilium itself provides full L3 to L7 network policy |
@@ -140,13 +140,21 @@ This deserves its own row because it is the clearest capability gap.
 |---|---|---|---|
 | Immediate parent | Yes, on exec events: parent tgid and parent comm | Yes | Yes |
 | Full ancestor chain | **Yes, up to four levels.** `bprm_check` walks `real_parent` in-kernel and the chain ships with the event, structured and rendered (`nginx -> sh -> curl`). Bounded by the verifier's need for an unrolled loop; there is no process cache, so the depth is fixed rather than unlimited | Yes. `proc.aname[n]` and `proc.apid[n]` address ancestors by depth, backed by a maintained process tree | **Yes, and this is Tetragon's signature strength.** Stable execution ids, a process cache, and an unbounded ancestor chain on every event |
-| Ancestry usable in policy | **No.** The chain is reported, not matched on. Enforcement keys on the cgroup and the binary path | Yes, directly in rule conditions | Yes, in selectors |
+| Ancestry usable in policy | **Partly, and enforced.** `syscallPolicy.processFilter.parentProcesses` matches the immediate parent's comm in `bprm_check_security`, so an exec launched by the wrong parent is refused with EPERM rather than reported. It is one hop, not the whole chain: Falco can condition on `proc.aname[3]` and Tetragon on any ancestor, and Pahlevan cannot | Yes, directly in rule conditions, at any depth | Yes, in selectors, at any depth |
 | Ancestry on non-exec events | **One hop.** File, network and capability events carry the parent pid and comm, so a denial names who caused it. These events are deduplicated in-kernel, so the credentials walk costs once per new path or destination rather than per operation. Syscall events still carry no parent, and the full chain remains exec-only | Yes | Yes |
 
 Pahlevan now answers "what chain of processes led to this exec" to a depth of
-four. Tetragon still wins on unlimited depth, ancestry on every event type, and
-matching on ancestry inside a policy; if you need those, Tetragon is the tool
-Pahlevan is not close.
+four, and can *enforce* on the first hop of it. Tetragon still wins on unlimited
+depth, ancestry on every event type, and matching at any depth inside a policy.
+
+The enforcement half is worth separating from the reporting half, because it
+closes a gap that mattered. The learned allow-set answers "has this container
+ever run this binary", which stops a dropped miner but says nothing about the
+interpreter already in the image - a Python service runs `python3` constantly,
+and so does an attacker with a command-injection bug. `processFilter` constrains
+the process doing the exec rather than the binary, on parent comm, effective uid
+and effective gid, and the resulting denial carries a distinct flag so an
+operator can tell "never learned this" from "policy said no".
 
 ## Capability monitoring
 
@@ -176,8 +184,8 @@ the generated seccomp profile.
 
 What a rule cannot express, it says so rather than being dropped. A CIDR wider
 than a single host, a port range past 1024 entries, a label-selected peer, a
-DNS name, an ingress rule, a glob and `processFilter` each produce a warning
-naming the field and the reason. A path must also be fully resolved: the
+DNS name, an ingress rule and a glob each produce a warning naming the field and
+the reason. `processFilter` used to be on that list and is now enforced. A path must also be fully resolved: the
 kernel hashes what `bpf_d_path` returns, so an exception for a symlink grants
 nothing.
 
@@ -245,7 +253,7 @@ This is the largest gap, so it gets the most detail.
 | JSON event output | Yes. `pkg/export` provides a versioned envelope covering all five event types with Kubernetes attribution, wired into the agent behind `--export-file`. Size-based rotation, and a bounded queue that drops rather than blocking the ring-buffer readers, with the drops counted | Yes, mature | Yes, including JSON export to file with rotation |
 | Webhook or HTTP output | Yes, `--export-webhook`. Batched POSTs, retries on 5xx/408/429 with capped backoff, no retry on other 4xx | Yes | Via the export pipeline |
 | Syslog, file, program outputs | File and stdout sinks are wired. No syslog or program output yet | Yes, all of them | File yes |
-| Fan-out to third-party destinations | **None** | [falcosidekick](https://github.com/falcosecurity/falcosidekick) forwards to dozens of destinations: Slack, Elasticsearch, Loki, Kafka, S3, PagerDuty, and many more | Via the JSON stream into your own pipeline, plus Hubble and Cilium tooling |
+| Fan-out to third-party destinations | **Via the OpenTelemetry collector, not natively.** Events are emitted as OTLP log records with semantic-convention attributes, so anything the collector exports to - Loki, Elasticsearch, Kafka, S3, Splunk - receives them without Pahlevan writing a sink per destination. That is fewer moving parts than falcosidekick and strictly less reach: there is no Slack or PagerDuty integration, and no per-destination templating. If you want a formatted Slack message on a denial, falcosidekick does that today and Pahlevan does not | [falcosidekick](https://github.com/falcosecurity/falcosidekick) forwards to dozens of destinations: Slack, Elasticsearch, Loki, Kafka, S3, PagerDuty, and many more | Via the JSON stream into your own pipeline, plus Hubble and Cilium tooling |
 | Kubernetes audit log ingestion | **No.** Planned. Pahlevan sees kernel events only | Yes, the `k8saudit` plugin | No |
 | Plugin framework | **No, and none planned** | Yes. Source and extractor plugins, including cloudtrail, gcpaudit, github, okta | No formal plugin framework, but hooks are policy-defined |
 | Event filtering before export | Yes, by event type and a denials-only mode, applied before conversion | Yes, in rule conditions | Yes, export filters and field filters |
@@ -275,6 +283,9 @@ which is not a story.
 | Policy status counters | Real. The operator rolls the per-container `ContainerProfile` denial counts up onto the policy: `blockedFileAccess`, `blockedNetworkConnections`, `blockedExecs`, `blockedCapabilities`, `blockedTotal`, plus enforcing/total container counts. `blockedSyscalls` stays zero and says why: seccomp denials are not reported back to the agent | n/a | n/a |
 | Health probes | Yes, `:8081` | Yes | Yes |
 | OpenTelemetry tracing | Real OTLP/gRPC and console span exporters, plus a `StartSpan` API proven by tests to record spans and nest them. Instrumentation coverage of the codebase is still thin | Not a tracing tool, but the ecosystem covers it | Metrics focused |
+| OpenTelemetry metrics | Real. Prometheus (as a pull-based reader on the controller-runtime registry), OTLP/gRPC and console. Every branch previously logged "temporarily disabled" and fell through, so the provider was built with no readers and silently discarded everything recorded | Prometheus native; OTel via the collector | Prometheus native |
+| OpenTelemetry logs | Yes. Security events are emitted as OTLP log records using semantic-convention attribute names (`file.path`, `server.address`, `process.pid`, `k8s.pod.name`), so they land in Loki through the same collector as everything else | Via falcosidekick or a log shipper | Via a log shipper |
+| Signal correlation | **Yes, by construction.** Metrics, traces and events share one resource carrying `service.instance.id` and the `k8s.*` attributes from the downward API, which are the labels Grafana joins on. `examples/observability/lgtm-stack.yaml` ships the collector, its RBAC and datasources with exemplars into Tempo and tracesToLogs back into Loki | Correlation is up to your pipeline | Hubble and Cilium tooling correlate network flows; cross-signal is up to you |
 | Grafana dashboards | One published dashboard in `deploy/monitoring/`, with ServiceMonitors for the Prometheus Operator. Two tests assert every panel queries a metric the code actually records, and that none of them need `--metrics-detail=high` | Community dashboards | Published dashboards |
 
 ## Multi-architecture support
@@ -344,19 +355,23 @@ Listed plainly, worst first. Every item here is real and current.
    `v1alpha1` API, and a security process that has never been used. Falco is
    CNCF Graduated. Tetragon sits under a Graduated project. Nothing in this
    document changes that gap.
-2. **No integration ecosystem.** A gRPC streaming API now exists, alongside
-   JSON-lines file and HTTP webhook export, so a collector can subscribe
-   directly. What is still missing is anything resembling falcosidekick's
-   fan-out to Slack, S3, PagerDuty and the rest: integrating means writing the
-   consumer, even though subscribing to it is now a few lines.
+2. **No integration ecosystem.** A gRPC streaming API, JSON-lines file export,
+   an HTTP webhook and OTLP log export all exist, and the OTLP path reaches
+   anything an OpenTelemetry collector exports to, which covers Loki,
+   Elasticsearch, Kafka and S3 without a sink per destination. What is still
+   missing is the formatted, per-destination half of falcosidekick: there is no
+   Slack message, no PagerDuty incident, no templating. Getting a denial into a
+   human's chat client is still something you build.
 3. **No rule or content ecosystem.** By design there are no rules to share, but
    the consequence is real: there is no community content, no detection
    coverage you can adopt, and nothing to compare against MITRE ATT&CK coverage.
-4. **Process ancestry is bounded, and one hop outside exec.** Exec events carry
-   four levels walked in-kernel; file, network and capability events carry the
-   immediate parent only; syscall events carry none. There is no process cache,
-   so the depth is fixed rather than complete, and ancestry cannot be matched on
-   in a policy. Tetragon is still ahead here.
+4. **Process ancestry is bounded, and matchable only one hop deep.** Exec
+   events carry four levels walked in-kernel; file, network and capability
+   events carry the immediate parent only; syscall events carry none. There is
+   no process cache, so the depth is fixed rather than complete. A policy can
+   now enforce on the immediate parent through `processFilter.parentProcesses`,
+   which is new, but Falco can condition on `proc.aname[3]` and Tetragon on any
+   ancestor. Tetragon is still ahead here.
 5. **arm64 is built but unverified.** Per-arch BPF objects and a multi-arch
    image ship, and CI cross-compiles on every PR, but the VM harness is amd64
    so no arm64 kernel has ever loaded these programs. Falco and Tetragon test
@@ -372,30 +387,37 @@ Listed plainly, worst first. Every item here is real and current.
 8. **Only two enforcement actions.** `EPERM`, and `SIGKILL` on exec under
    enforcement mode 2. No audit action, no per-rule response. Tetragon offers a
    genuine action set.
-9. **Applying a seccomp profile is still a rollout you perform.** Profiles are
-   generated, honour the policy's syscall lists, are reported on
-   `ContainerProfile`, are materialised on every node so a pod starts wherever
-   it is scheduled, and are rendered as a ready-to-apply patch by
-   `pahlevan profile patch`. Nothing applies them: a pod's `seccompProfile`
-   cannot be changed after admission and the operator deliberately runs without
-   a mutating webhook.
-10. **The gRPC API is unauthenticated.** It serves plaintext on whatever
+9. **No DNS or L7 parsing.** Destinations inside the cluster are named from
+   Services, pods and nodes, which is better than an address and costs no DNS
+   query. Destinations *outside* the cluster - the ones that matter most in an
+   exfiltration - are reported as an address and nothing else, because nothing
+   parses DNS. Both comparators do.
+10. **Applying a seccomp profile is still a rollout you perform.** Profiles are
+    generated, honour the policy's syscall lists, are reported on
+    `ContainerProfile`, are materialised on every node so a pod starts wherever
+    it is scheduled, and are rendered as a ready-to-apply patch by
+    `pahlevan profile patch`. Nothing applies them: a pod's `seccompProfile`
+    cannot be changed after admission and the operator deliberately runs without
+    a mutating webhook.
+11. **The gRPC API is unauthenticated.** It serves plaintext on whatever
     address `--grpc-bind-address` names, with no TLS and no authorization, so
     it must be bound to localhost or a trusted network. Tetragon's equivalent
     has the same default, but that is not an argument for leaving it.
-11. **No syscall arguments** on events. Command-line arguments, the container
+12. **No syscall arguments** on events. Command-line arguments, the container
     image, pod labels, the owning workload and the node are all there now, but
     a syscall event still reports only the number and not what was passed to
     it. Both comparators expose syscall arguments; Tetragon can also match on
     them in a policy.
-12. **eBPF load tests and the benchmark are not automated.** The unit suite,
+13. **eBPF load tests and the benchmark are not automated.** The unit suite,
     `-race`, gofmt, coverage and an arm64 cross-build all run in CI now, but
     the kernel tests need a VM with `lsm=bpf` and the competitor benchmark
     needs three tools installed, so both are still run by hand.
-13. **OpenTelemetry instrumentation is thin.** Real OTLP and stdout exporters
-    and a working `StartSpan` exist, but very little of the codebase is
-    actually instrumented, so a trace shows almost nothing.
-14. **Learning is trust on first use.** A workload that is already compromised
+14. **OpenTelemetry tracing coverage is thin.** The pipeline is real - OTLP
+    exporters for metrics, traces and logs, one shared resource, and a
+    deployable collector - but very little of the codebase calls `StartSpan`,
+    so a trace shows the reconcile boundaries and almost nothing inside them.
+    The metrics and logs are complete; the traces are a skeleton.
+15. **Learning is trust on first use.** A workload that is already compromised
     when learning starts has its malicious behaviour baselined. Policy deny
     lists and exceptions let an operator correct the edges, but there is no
     review or approval step before a learned profile takes effect. This is the
