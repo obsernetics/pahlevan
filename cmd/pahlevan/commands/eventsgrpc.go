@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -95,11 +96,11 @@ func runEventsGRPC(ctx context.Context, opts *eventsOptions, out io.Writer) erro
 	for {
 		ev, err := stream.Recv()
 		if err != nil {
-			// A cancelled context is the user pressing Ctrl-C, not a failure.
+			// A canceled context is the user pressing Ctrl-C, not a failure.
 			if ctx.Err() != nil {
 				return nil
 			}
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return fmt.Errorf("receiving from %s after %d events: %w", opts.grpcAddr, seen, err)

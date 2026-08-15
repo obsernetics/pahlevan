@@ -172,8 +172,7 @@ func TestGenerateSyscallPolicy_ExplicitOverrides(t *testing.T) {
 
 func TestGenerateNetworkPolicy_FromFlows(t *testing.T) {
 	ee := NewEnforcementEngine(nil, nil)
-	np, err := ee.generateNetworkPolicy(fullProfile(), &policyv1alpha1.PahlevanPolicy{})
-	require.NoError(t, err)
+	np := ee.generateNetworkPolicy(fullProfile(), &policyv1alpha1.PahlevanPolicy{})
 	require.NotNil(t, np)
 	assert.NotEmpty(t, np.EgressRules)  // includes learned + common DNS
 	assert.NotEmpty(t, np.IngressRules) // learned inbound

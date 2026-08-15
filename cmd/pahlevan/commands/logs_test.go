@@ -132,6 +132,7 @@ func TestValidateLogsOptions(t *testing.T) {
 			name: "defaults",
 			opts: logsOptions{component: componentAll, prefix: "auto", tail: 200},
 			check: func(t *testing.T, o *corev1.PodLogOptions) {
+				t.Helper()
 				if o.TailLines == nil || *o.TailLines != 200 {
 					t.Errorf("tail = %v", o.TailLines)
 				}
@@ -144,6 +145,7 @@ func TestValidateLogsOptions(t *testing.T) {
 			name: "negative tail means the whole log",
 			opts: logsOptions{component: componentAll, prefix: "auto", tail: -1},
 			check: func(t *testing.T, o *corev1.PodLogOptions) {
+				t.Helper()
 				if o.TailLines != nil {
 					t.Errorf("tail should be unset, got %d", *o.TailLines)
 				}
@@ -153,6 +155,7 @@ func TestValidateLogsOptions(t *testing.T) {
 			name: "since duration",
 			opts: logsOptions{component: componentAll, prefix: "auto", tail: 10, since: "90s"},
 			check: func(t *testing.T, o *corev1.PodLogOptions) {
+				t.Helper()
 				if o.SinceSeconds == nil || *o.SinceSeconds != 90 {
 					t.Errorf("since = %v", o.SinceSeconds)
 				}
@@ -162,6 +165,7 @@ func TestValidateLogsOptions(t *testing.T) {
 			name: "sub-second since rounds up to one second",
 			opts: logsOptions{component: componentAll, prefix: "auto", since: "500ms"},
 			check: func(t *testing.T, o *corev1.PodLogOptions) {
+				t.Helper()
 				if o.SinceSeconds == nil || *o.SinceSeconds != 1 {
 					t.Errorf("since = %v", o.SinceSeconds)
 				}
@@ -171,6 +175,7 @@ func TestValidateLogsOptions(t *testing.T) {
 			name: "previous and timestamps propagate",
 			opts: logsOptions{component: componentAgent, prefix: "never", previous: true, timestamps: true},
 			check: func(t *testing.T, o *corev1.PodLogOptions) {
+				t.Helper()
 				if !o.Previous || !o.Timestamps {
 					t.Errorf("opts = %+v", o)
 				}
