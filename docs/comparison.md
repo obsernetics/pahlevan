@@ -372,10 +372,14 @@ Listed plainly, worst first. Every item here is real and current.
    now enforce on the immediate parent through `processFilter.parentProcesses`,
    which is new, but Falco can condition on `proc.aname[3]` and Tetragon on any
    ancestor. Tetragon is still ahead here.
-5. **arm64 is built but unverified.** Per-arch BPF objects and a multi-arch
-   image ship, and CI cross-compiles on every PR, but the VM harness is amd64
-   so no arm64 kernel has ever loaded these programs. Falco and Tetragon test
-   on arm64.
+5. **arm64 is built and structurally checked, but never loaded.** Per-arch BPF
+   objects and a multi-arch image ship, CI cross-compiles on every PR, and a
+   test now parses both ELFs and asserts they expose the same programs with the
+   same types and attach points and the same maps with the same key and value
+   sizes - so a change that silently drops a program or renames a map on one
+   architecture fails the build. What none of that proves is that an arm64
+   verifier accepts them, because the VM harness is amd64 and no arm64 kernel
+   has ever loaded these programs. Falco and Tetragon test on arm64.
 6. **Memory footprint is unproven since the fix.** BPF map preallocation, which
    dominated the old 327 MiB figure, is 37.7 MiB measured across all five
    programs on Linux 6.8. The end-to-end agent RSS has not been re-measured
