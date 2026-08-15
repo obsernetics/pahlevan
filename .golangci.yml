@@ -162,6 +162,13 @@ linters:
       - linters: [gosec]
         text: "G(103|115)"
 
+      # hack/ holds developer harnesses, not shipped code. The demo scenario
+      # runner exists to shell out to attacker commands and to create a cgroup
+      # the kernel must be able to traverse, so G204/G301/noctx there are
+      # describing the program's purpose rather than a defect in it.
+      - path: ^hack/
+        linters: [gosec, noctx]
+
       # A //go:generate line is allowed to be long.
       - source: "^//go:generate "
         linters: [lll]

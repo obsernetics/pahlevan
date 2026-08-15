@@ -52,11 +52,15 @@ type Manager struct {
 	tracerProvider *sdktrace.TracerProvider
 	meter          metric.Meter
 	tracer         trace.Tracer
-	exporters      []Exporter
-	customMetrics  map[string]interface{}
-	dashboards     map[string]*Dashboard
-	alertRules     map[string]*AlertRule
-	stopCh         chan struct{}
+	// resource identifies this process on every signal it emits. Supplied by
+	// the caller so the agent's metrics, traces and logs carry byte-identical
+	// attributes; derived from the config when absent.
+	resource      *resource.Resource
+	exporters     []Exporter
+	customMetrics map[string]interface{}
+	dashboards    map[string]*Dashboard
+	alertRules    map[string]*AlertRule
+	stopCh        chan struct{}
 }
 
 // Config defines observability configuration
@@ -467,7 +471,22 @@ type ExporterMetadata struct {
 	Capabilities []string
 }
 
+// NewManager builds the observability manager with a resource derived from its
+// own config. Prefer NewManagerWithResource in the agent: the resource is what
+// correlates this process's metrics, traces and logs in Grafana, and it must be
+// the same object every signal carries.
 func NewManager(exportsList string) (*Manager, error) {
+	return NewManagerWithResource(exportsList, nil)
+}
+
+// NewManagerWithResource builds the manager against a caller-supplied resource.
+//
+// A nil resource falls back to the service name/version/environment from the
+// config, which is enough for a single process but not for a fleet: without
+// k8s.node.name and service.instance.id, every agent in the DaemonSet reports
+// as the same instance and a Grafana join across Loki, Tempo and Mimir produces
+// nothing.
+func NewManagerWithResource(exportsList string, res *resource.Resource) (*Manager, error) {
 	config := &Config{
 		ServiceName:       "pahlevan-operator",
 		ServiceVersion:    "1.0.0",
@@ -505,6 +524,7 @@ func NewManager(exportsList string) (*Manager, error) {
 
 	manager := &Manager{
 		config:        config,
+		resource:      res,
 		customMetrics: make(map[string]interface{}),
 		dashboards:    make(map[string]*Dashboard),
 		alertRules:    make(map[string]*AlertRule),
@@ -519,16 +539,20 @@ func NewManager(exportsList string) (*Manager, error) {
 }
 
 func (m *Manager) initializeProviders() error {
-	// Initialize resource
-	res, err := resource.New(context.Background(),
-		resource.WithAttributes(
-			semconv.ServiceName(m.config.ServiceName),
-			semconv.ServiceVersion(m.config.ServiceVersion),
-			semconv.DeploymentEnvironment(m.config.Environment),
-		),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create resource: %w", err)
+	res := m.resource
+	if res == nil {
+		var err error
+		res, err = resource.New(context.Background(),
+			resource.WithAttributes(
+				semconv.ServiceName(m.config.ServiceName),
+				semconv.ServiceVersion(m.config.ServiceVersion),
+				semconv.DeploymentEnvironment(m.config.Environment),
+			),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create resource: %w", err)
+		}
+		m.resource = res
 	}
 
 	// Initialize metrics provider
@@ -806,6 +830,11 @@ func (m *Manager) Shutdown() error {
 	}
 	return nil
 }
+
+// Resource is the OpenTelemetry resource every signal from this process
+// carries. Exported so the event export pipeline can attach the same one to its
+// OTLP log records.
+func (m *Manager) Resource() *resource.Resource { return m.resource }
 
 func (m *Manager) GetMeter() metric.Meter {
 	return m.meter

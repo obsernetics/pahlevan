@@ -80,6 +80,10 @@ func main() {
 		metricsDetail        string
 		seccompRoot          string
 		grpcAddr             string
+		otlpEndpoint         string
+		otlpInsecure         bool
+		podNamespace         string
+		podName              string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -109,6 +113,18 @@ func main() {
 			"per-syscall and per-path series - expensive across a fleet).")
 	flag.BoolVar(&exportDenialsOnly, "export-denials-only", true,
 		"Export only in-kernel denials rather than every observation.")
+	flag.StringVar(&otlpEndpoint, "otlp-endpoint", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		"OpenTelemetry collector address for security events as OTLP logs, for example "+
+			"otel-collector:4317. This is how events reach Loki in an LGTM stack. Empty disables it.")
+	flag.BoolVar(&otlpInsecure, "otlp-insecure", true,
+		"Disable TLS to the OTLP collector. The default suits an in-cluster collector "+
+			"reached over the pod network.")
+	flag.StringVar(&podNamespace, "pod-namespace", os.Getenv("PAHLEVAN_POD_NAMESPACE"),
+		"This agent pod's namespace, from the downward API. Used as an OpenTelemetry "+
+			"resource attribute so metrics, traces and logs correlate in Grafana.")
+	flag.StringVar(&podName, "pod-name", os.Getenv("PAHLEVAN_POD_NAME"),
+		"This agent pod's name, from the downward API. Becomes service.instance.id, "+
+			"without which every agent in the DaemonSet collapses into one series.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -120,8 +136,14 @@ func main() {
 		setupLog.Info("warning: node name is empty; set --node-name or PAHLEVAN_NODE_NAME for correct node-scoped behavior")
 	}
 
+	// One resource for every signal this agent emits. Grafana joins Loki, Tempo
+	// and Mimir on shared labels; if the metrics say node=X and the logs say
+	// host=X the join silently produces nothing, so the three agree by
+	// construction rather than by convention.
+	otelResource := export.AgentResource("pahlevan-agent", version, podNamespace, podName, nodeName)
+
 	// Observability + metrics.
-	observabilityManager, err := observability.NewManager(observabilityExports)
+	observabilityManager, err := observability.NewManagerWithResource(observabilityExports, otelResource)
 	if err != nil {
 		setupLog.Error(err, "unable to setup observability")
 		os.Exit(1)
@@ -226,12 +248,15 @@ func main() {
 		grpcTee = append(grpcTee, grpcServer)
 	}
 
-	// Event export: JSON-lines file and/or webhook, so events leave the process
-	// for `pahlevan events`, log shippers, and SIEMs.
+	// Event export: JSON-lines file, webhook and/or OTLP logs, so events leave
+	// the process for `pahlevan events`, log shippers, SIEMs and Loki.
 	exportPipeline, err := export.New(export.Config{
 		Tee:           grpcTee,
 		FilePath:      exportFile,
 		WebhookURL:    exportWebhook,
+		OTLPEndpoint:  otlpEndpoint,
+		OTLPInsecure:  otlpInsecure,
+		OTLPResource:  otelResource,
 		QueueCapacity: 8192,
 		BatchSize:     256,
 		FlushInterval: time.Second,
@@ -263,7 +288,9 @@ func main() {
 	if exportPipeline != nil {
 		defer exportPipeline.Close()
 		ebpfManager.AddEventHandler(exportPipeline.Handler)
-		setupLog.Info("event export enabled", "file", exportFile, "webhook", exportWebhook != "", "denialsOnly", exportDenialsOnly)
+		setupLog.Info("event export enabled", "file", exportFile,
+			"webhook", exportWebhook != "", "otlp", otlpEndpoint,
+			"denialsOnly", exportDenialsOnly)
 	}
 
 	// Register event handlers BEFORE starting readers so no events are missed.
