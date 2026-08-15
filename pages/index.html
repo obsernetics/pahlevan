@@ -504,18 +504,25 @@ spec:
                         </tr>
                         <tr>
                             <th scope="row">Attacks blocked</th>
-                            <td class="col-highlight"><strong>4 / 4</strong></td>
-                            <td>0 / 4</td>
-                            <td>0 / 4</td>
+                            <td class="col-highlight"><strong><!--pahlevan:sync pahlevan-blocked-->25 / 26<!--/pahlevan:sync--></strong></td>
+                            <td><!--pahlevan:sync falco-blocked-->0 / 26<!--/pahlevan:sync--></td>
+                            <td><!--pahlevan:sync tetragon-blocked-->0 / 26<!--/pahlevan:sync--></td>
                         </tr>
                     </tbody>
                 </table>
             </div>
             <p class="qs-note">
-                With vendor defaults, Falco alerts on 2/4 (never blocks), Tetragon streams exec telemetry on
-                all 4 (never blocks by default), and Pahlevan blocks all 4 from an <strong>auto-learned</strong>
-                allow-list - enforced in-kernel via the LSM <code>file_open</code> hook. See the full report
-                for environment details, resource-use measurements, and honest limitations.
+                With vendor defaults over 26 ATT&amp;CK-mapped scenarios: Falco alerts on
+                <!--pahlevan:sync falco-detected-->9 / 26<!--/pahlevan:sync--> and never blocks, Tetragon
+                streams telemetry on <!--pahlevan:sync tetragon-detected-->26 / 26<!--/pahlevan:sync-->
+                and never blocks by default, and Pahlevan blocks
+                <!--pahlevan:sync pahlevan-blocked-->25 / 26<!--/pahlevan:sync--> from an
+                <strong>auto-learned</strong> allow-list, in-kernel.
+                Read the benign row first: Pahlevan also blocks
+                <!--pahlevan:sync pahlevan-benign-->3 / 3<!--/pahlevan:sync--> benign controls, because
+                <code>curl</code> and <code>cat</code> are outside a learned baseline too. That is the
+                tradeoff, not a footnote. See the full report for the environment, resource use, and
+                the limitations we do not hide.
             </p>
             <a class="btn btn-outline btn-sm" href="https://github.com/obsernetics/pahlevan/blob/main/docs/benchmarks/results.md" target="_blank" rel="noopener">Full benchmark report &#8599;</a>
         </div>
@@ -551,7 +558,7 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     <div class="code-block">
                         <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:latest
 # or pin a version
-docker pull ghcr.io/obsernetics/pahlevan:v2.0.0</code></pre>
+docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v2.0.0<!--/pahlevan:sync--></code></pre>
                     </div>
                     <p class="qs-note">
                         One distroless image contains <code>pahlevan-agent</code> (privileged DaemonSet),

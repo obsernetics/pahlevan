@@ -31,8 +31,10 @@ Pahlevan learns what a workload does, then blocks the rest in-kernel.
 - **Auto-learning, not manual rules.** Files opened, destinations dialed, binaries executed, and capabilities used during a learning window become a per-cgroup allow-set.
 - **Real in-kernel enforcement.** LSM BPF hooks deny unlearned file opens, egress (IPv4 and IPv6), execs, and capability use with `EPERM`. The syscall never succeeds.
 - **Accurate attribution.** Events tie to the container via `bpf_get_current_cgroup_id()`; paths resolve in-kernel with `bpf_d_path()`.
-- **Events leave the process.** A gRPC streaming API with server-side filtering, plus JSON-lines file and webhook export. Every event carries the node, pod, image, owning workload, labels, the process lineage, and for an exec its full command line. Stream it with `pahlevan events --grpc host:port` or `--file`.
-- **Kubernetes-native and self-healing.** Three CRDs drive the lifecycle, a seccomp profile is generated from the learned syscalls, and enforcement rolls back automatically if it disrupts the workload.
+- **Constrains who, not just what.** The allow-set stops a binary the workload has never run. It cannot tell the application running `python3` from an injected command running it, because both are the same learned binary - so `processFilter` constrains the parent process, uid and gid at exec, in the same kernel hook.
+- **Destinations have names.** A denial reads `default/postgres:5432`, resolved from Services, pods and nodes the agent already caches, and an address the cluster has never heard of is tagged `external` - which is the difference between a misconfiguration and exfiltration. No DNS query is made, so a burst of denials does not become a burst of DNS traffic.
+- **Events leave the process.** A gRPC streaming API with server-side filtering, JSON-lines file and webhook export, and OTLP log records so events reach Loki through the same collector as everything else. Metrics, traces and events share one OpenTelemetry resource, which is what lets Grafana join them. Every event carries the node, pod, image, owning workload, labels, the process lineage, and for an exec its full command line.
+- **Kubernetes-native and self-healing.** Three CRDs drive the lifecycle, a seccomp profile is generated from the learned syscalls and materialized on every node, and enforcement rolls back automatically if it disrupts the workload.
 
 | | **Pahlevan** | Falco | Tetragon | Cilium |
 | --- | --- | --- | --- | --- |
@@ -40,9 +42,16 @@ Pahlevan learns what a workload does, then blocks the rest in-kernel.
 | Blocks in-kernel | **Files, egress, exec, capabilities** | Alert only | Possible, hand-written | Network only |
 | Rules to author | **None (learned)** | Many | Per-policy | Network rules |
 | Coverage | Syscalls, files, egress, exec, capabilities | Runtime events | Kernel tracing | L3-L7 traffic |
+| Enforces on the caller | **Parent, uid, gid at exec** | Alert only | Selectors, hand-written | n/a |
 
-Falco and Tetragon are excellent observability tools. Pahlevan's claim is closing the
-loop: learn the baseline, then *prevent* the deviation.
+Falco and Tetragon are excellent observability tools with far larger ecosystems, and
+[`docs/comparison.md`](docs/comparison.md) is honest about the fifteen things they do
+better. Pahlevan's claim is narrower: close the loop. Learn the baseline, then *prevent*
+the deviation.
+
+Watch it happen on a real workload: [`docs/live-scenario.md`](docs/live-scenario.md) runs
+a web application for fifty minutes, learns it, enforces, and then attacks it. Nine
+scenarios, nothing asserted - each line is what the kernel did.
 
 ## Architecture
 
@@ -108,6 +117,12 @@ Read the third row before the first. Blocking everything outside a learned basel
 also blocks `curl`, `cat` and `getent`: nginx itself never broke (HTTP 200 throughout,
 zero restarts), but anything an operator might type into the container is refused.
 That is the tradeoff, not a footnote.
+
+The distinction that row is really drawing is between the workload and a person
+inside it. The [live run](docs/live-scenario.md) separates them: over fifty minutes
+and 1509 requests the application served every one, while eight attacks were refused -
+because Pahlevan governs what the workload does, not what is done to it. A request
+arriving from outside is not the container executing anything. `kubectl exec` is.
 
 Falco is alert-only by design and Tetragon blocks only with a hand-written
 `TracingPolicy`, so their zeros are posture, not incapability. Methodology,

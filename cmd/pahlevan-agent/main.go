@@ -86,6 +86,10 @@ func main() {
 		grpcAddr             string
 		otlpEndpoint         string
 		otlpInsecure         bool
+		grpcTLSCert          string
+		grpcTLSKey           string
+		grpcClientCA         string
+		grpcToken            string
 		podNamespace         string
 		podName              string
 	)
@@ -117,6 +121,17 @@ func main() {
 			"per-syscall and per-path series - expensive across a fleet).")
 	flag.BoolVar(&exportDenialsOnly, "export-denials-only", true,
 		"Export only in-kernel denials rather than every observation.")
+	flag.StringVar(&grpcTLSCert, "grpc-tls-cert", os.Getenv("PAHLEVAN_GRPC_TLS_CERT"),
+		"Server certificate for the gRPC event stream. Without it the stream is plaintext, "+
+			"and it carries every denial on the node.")
+	flag.StringVar(&grpcTLSKey, "grpc-tls-key", os.Getenv("PAHLEVAN_GRPC_TLS_KEY"),
+		"Private key matching --grpc-tls-cert.")
+	flag.StringVar(&grpcClientCA, "grpc-client-ca", os.Getenv("PAHLEVAN_GRPC_CLIENT_CA"),
+		"CA that subscribers' client certificates must be signed by (mTLS). Without it, "+
+			"TLS encrypts the stream but authenticates nobody.")
+	flag.StringVar(&grpcToken, "grpc-token", os.Getenv("PAHLEVAN_GRPC_TOKEN"),
+		"Bearer token required on every gRPC call. Requires TLS: on a plaintext "+
+			"connection the token is sent in cleartext and protects nothing.")
 	flag.StringVar(&otlpEndpoint, "otlp-endpoint", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		"OpenTelemetry collector address for security events as OTLP logs, for example "+
 			"otel-collector:4317. This is how events reach Loki in an LGTM stack. Empty disables it.")
@@ -239,7 +254,22 @@ func main() {
 	var grpcServer *grpcapi.Server
 	var grpcTee []export.Enqueuer
 	if grpcAddr != "" {
+		grpcAuth := grpcapi.AuthConfig{
+			TLS: grpcapi.TLSConfig{
+				CertFile:     grpcTLSCert,
+				KeyFile:      grpcTLSKey,
+				ClientCAFile: grpcClientCA,
+			},
+			Token: grpcToken,
+		}
+		// Validated here rather than at the first connection: a half-configured
+		// setup that silently falls back to plaintext is how a stream ends up
+		// unencrypted while its operator believes otherwise.
+		if err := grpcAuth.Validate(); err != nil {
+			fatalf(err, "invalid gRPC authentication configuration")
+		}
 		grpcServer = grpcapi.New(grpcapi.Options{
+			Auth: grpcAuth,
 			Status: func() grpcapi.Status {
 				st := grpcapi.Status{Node: nodeName, Version: version}
 				for _, p := range adaptiveCtl.Snapshot() {
@@ -320,7 +350,12 @@ func main() {
 
 	if grpcServer != nil {
 		go func() {
-			setupLog.Info("gRPC event stream listening", "address", grpcAddr)
+			// The security posture goes in the log line, because an operator
+			// should be able to see from the logs whether the stream is
+			// protected rather than infer it from which flags they think they
+			// set. The stream carries every denial on the node.
+			setupLog.Info("gRPC event stream listening",
+				"address", grpcAddr, "security", grpcServer.AuthDescription())
 			if err := grpcServer.Serve(dataCtx, grpcAddr); err != nil {
 				// A failed event stream must not take the data plane down with
 				// it: enforcement keeps working, subscribers do not.

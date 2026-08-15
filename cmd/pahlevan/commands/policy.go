@@ -59,6 +59,7 @@ and how violations should be handled.`,
 		NewPolicyDeleteCommand(),
 		NewPolicyUpdateCommand(),
 		NewPolicyStatusCommand(),
+		newPolicyExplainCommand(),
 	)
 
 	return cmd

@@ -64,6 +64,7 @@ type NetworkMonitorMapSpecs struct {
 	NetworkAllowed *ebpf.MapSpec `ebpf:"network_allowed"`
 	NetworkEvents  *ebpf.MapSpec `ebpf:"network_events"`
 	NetworkMode    *ebpf.MapSpec `ebpf:"network_mode"`
+	NetworkRelax   *ebpf.MapSpec `ebpf:"network_relax"`
 }
 
 // NetworkMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -95,6 +96,7 @@ type NetworkMonitorMaps struct {
 	NetworkAllowed *ebpf.Map `ebpf:"network_allowed"`
 	NetworkEvents  *ebpf.Map `ebpf:"network_events"`
 	NetworkMode    *ebpf.Map `ebpf:"network_mode"`
+	NetworkRelax   *ebpf.Map `ebpf:"network_relax"`
 }
 
 func (m *NetworkMonitorMaps) Close() error {
@@ -102,6 +104,7 @@ func (m *NetworkMonitorMaps) Close() error {
 		m.NetworkAllowed,
 		m.NetworkEvents,
 		m.NetworkMode,
+		m.NetworkRelax,
 	)
 }
 

@@ -58,6 +58,7 @@ type Server struct {
 
 	queueSize int
 	status    StatusFunc
+	auth      AuthConfig
 
 	mu     sync.RWMutex
 	nextID uint64
@@ -131,6 +132,10 @@ type Options struct {
 	QueueSize int
 	// Status reports agent state for GetStatus. Nil reports zeroes.
 	Status StatusFunc
+	// Auth secures the listener. The zero value serves plaintext to anyone who
+	// can reach the port, which is why Serve logs what it is doing: the stream
+	// carries every denial on the node, which is a reconnaissance report.
+	Auth AuthConfig
 }
 
 // New returns a Server ready to be registered on a grpc.Server and attached to
@@ -143,6 +148,7 @@ func New(opts Options) *Server {
 	return &Server{
 		queueSize: q,
 		status:    opts.Status,
+		auth:      opts.Auth,
 		subs:      make(map[uint64]*subscriber),
 	}
 }
@@ -262,7 +268,11 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 }
 
 func (s *Server) serveListener(ctx context.Context, lis net.Listener) error {
-	gs := grpc.NewServer()
+	opts, err := s.auth.ServerOptions()
+	if err != nil {
+		return fmt.Errorf("grpc authentication: %w", err)
+	}
+	gs := grpc.NewServer(opts...)
 	apiv1alpha1.RegisterEventServiceServer(gs, s)
 
 	hs := health.NewServer()
@@ -283,3 +293,8 @@ func (s *Server) serveListener(ctx context.Context, lis net.Listener) error {
 		return err
 	}
 }
+
+// AuthDescription renders the listener's security posture for the startup log.
+// An operator should be able to read from the logs whether the stream is
+// protected, rather than infer it from which flags they think they set.
+func (s *Server) AuthDescription() string { return s.auth.Describe() }

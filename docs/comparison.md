@@ -118,7 +118,8 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | DNS visibility | **No** DNS parsing or name-based policy. A destination is an address, and a policy naming a hostname is reported as unrepresentable rather than resolved | Available through rules and fields | Available, including a DNS-oriented policy library |
 | Destination naming | **Yes, from the cluster rather than from DNS.** Addresses are resolved against Services, pods and nodes the agent already caches, so a denial reads `prod/postgres:5432` instead of `10.104.22.9:5432`, and `destinationKind` separates an in-cluster Service from an address the cluster has never heard of - which is the distinction between a misconfiguration and exfiltration. It costs no DNS query, which matters when a burst of denials would otherwise become a burst of DNS traffic. It does not name external addresses at all, which is exactly where DNS parsing would help and where Falco and Tetragon are ahead | Names come from DNS parsing, so external destinations are named too | Same, plus a DNS policy library |
 | L7 visibility | **No** | Limited, through plugins | Limited natively. Cilium and Hubble cover L7 alongside it |
-| Blocking | Yes, `EPERM` on `connect()` to an unlearned IPv4 destination | No | Yes, with a policy |
+| Blocking | Yes, `EPERM` on `connect()` to an unlearned destination, IPv4 and IPv6 | No | Yes, with a policy |
+| Blanket egress rules | `allowLoopback` covers all of `127.0.0.0/8` and `::1`; `allowDNS` covers port 53 to any address, because cluster DNS moves and pinning its address means the policy breaks when CoreDNS is reinstalled. Both are checked ahead of the allow-set and deliberately do not add to it, so the permission can be withdrawn | Expressed in rule conditions | Expressed in selectors |
 | Relationship to CNI policy | Complementary, not a replacement. Pahlevan does not implement NetworkPolicy | Same | Cilium itself provides full L3 to L7 network policy |
 
 ## Process and exec monitoring
@@ -183,11 +184,27 @@ the kernel allow-sets before enforcement begins, and the syscall lists reach
 the generated seccomp profile.
 
 What a rule cannot express, it says so rather than being dropped. A CIDR wider
-than a single host, a port range past 1024 entries, a label-selected peer, a
-DNS name, an ingress rule and a glob each produce a warning naming the field and
-the reason. `processFilter` used to be on that list and is now enforced. A path must also be fully resolved: the
-kernel hashes what `bpf_d_path` returns, so an exception for a symlink grants
-nothing.
+than a single host, a port range past 1024 entries, a label-selected peer, a DNS
+name, an ingress rule and a glob each produce a warning naming the field and the
+reason. A path must also be fully resolved: the kernel hashes what `bpf_d_path`
+returns, so an exception for a symlink grants nothing.
+
+Three fields have come off that list and are now enforced. `processFilter`
+constrains the parent, uid and gid at exec. `allowLoopback` and `allowDNS` are a
+per-cgroup flag checked in `socket_connect` ahead of the allow-set, because they
+name a *class* of destination rather than an address and the allow-set is a hash
+of the exact destination - seeding a guessed set of loopback addresses and ports
+would have been both incomplete and impossible to withdraw.
+
+You do not have to apply a policy to find out which parts of it survive:
+
+    pahlevan policy explain -f policy.yaml [--strict]
+
+translates it offline and prints both the result and every warning. `--strict`
+exits non-zero, so a policy that quietly does less than it says can fail a CI
+gate rather than being merged. It also rejects a field the CRD does not have,
+which the API server would otherwise prune silently - the policy applies cleanly
+and does a fraction of what it claims.
 
 ## Seccomp
 
@@ -249,7 +266,7 @@ This is the largest gap, so it gets the most detail.
 
 | | Pahlevan | Falco | Tetragon |
 |---|---|---|---|
-| gRPC streaming API | Yes, `pahlevan.v1alpha1.EventService`. Subscribe streams events with server-side filtering by type, denials-only, namespace and pod; GetStatus reports whether the agent is enforcing anything. Health and reflection are registered, so grpcurl and generic collectors discover it without the .proto. Plaintext and unauthenticated, so bind it to localhost or a trusted network | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
+| gRPC streaming API | Yes, `pahlevan.v1alpha1.EventService`. Subscribe streams events with server-side filtering by type, denials-only, namespace and pod; GetStatus reports whether the agent is enforcing anything. Health and reflection are registered, so grpcurl and generic collectors discover it without the .proto. TLS, mTLS and a bearer token are supported; the default is plaintext, and the agent says so in its startup log | Yes, the Falco gRPC Output API | Yes. It is the primary interface, and what `tetra getevents` consumes |
 | JSON event output | Yes. `pkg/export` provides a versioned envelope covering all five event types with Kubernetes attribution, wired into the agent behind `--export-file`. Size-based rotation, and a bounded queue that drops rather than blocking the ring-buffer readers, with the drops counted | Yes, mature | Yes, including JSON export to file with rotation |
 | Webhook or HTTP output | Yes, `--export-webhook`. Batched POSTs, retries on 5xx/408/429 with capped backoff, no retry on other 4xx | Yes | Via the export pipeline |
 | Syslog, file, program outputs | File and stdout sinks are wired. No syslog or program output yet | Yes, all of them | File yes |
@@ -372,10 +389,14 @@ Listed plainly, worst first. Every item here is real and current.
    now enforce on the immediate parent through `processFilter.parentProcesses`,
    which is new, but Falco can condition on `proc.aname[3]` and Tetragon on any
    ancestor. Tetragon is still ahead here.
-5. **arm64 is built but unverified.** Per-arch BPF objects and a multi-arch
-   image ship, and CI cross-compiles on every PR, but the VM harness is amd64
-   so no arm64 kernel has ever loaded these programs. Falco and Tetragon test
-   on arm64.
+5. **arm64 is built and structurally checked, but never loaded.** Per-arch BPF
+   objects and a multi-arch image ship, CI cross-compiles on every PR, and a
+   test now parses both ELFs and asserts they expose the same programs with the
+   same types and attach points and the same maps with the same key and value
+   sizes - so a change that silently drops a program or renames a map on one
+   architecture fails the build. What none of that proves is that an arm64
+   verifier accepts them, because the VM harness is amd64 and no arm64 kernel
+   has ever loaded these programs. Falco and Tetragon test on arm64.
 6. **Memory footprint is unproven since the fix.** BPF map preallocation, which
    dominated the old 327 MiB figure, is 37.7 MiB measured across all five
    programs on Linux 6.8. The end-to-end agent RSS has not been re-measured
@@ -399,10 +420,13 @@ Listed plainly, worst first. Every item here is real and current.
     `pahlevan profile patch`. Nothing applies them: a pod's `seccompProfile`
     cannot be changed after admission and the operator deliberately runs without
     a mutating webhook.
-11. **The gRPC API is unauthenticated.** It serves plaintext on whatever
-    address `--grpc-bind-address` names, with no TLS and no authorization, so
-    it must be bound to localhost or a trusted network. Tetragon's equivalent
-    has the same default, but that is not an argument for leaving it.
+11. **The gRPC API is unauthenticated by default.** TLS, mTLS and a bearer
+    token are all supported now (`--grpc-tls-cert`, `--grpc-client-ca`,
+    `--grpc-token`), and the agent logs its security posture at startup so an
+    operator can read it rather than infer it. But the default is still
+    plaintext: an agent that refused to start because nobody had issued a
+    certificate is an agent nobody runs. The stream carries every denial on the
+    node, which is a reconnaissance report, so configure one of them.
 12. **No syscall arguments** on events. Command-line arguments, the container
     image, pod labels, the owning workload and the node are all there now, but
     a syscall event still reports only the number and not what was passed to
