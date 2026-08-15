@@ -52,9 +52,6 @@ ingress rule, a CIDR wider than a host, a glob, a DNS name, a port range past
 author sees them only after applying to a cluster and knowing to look.
 
 This shows them against a file, before anything is applied.`,
-		// Reads a file and computes an answer. Needing a cluster to explain a
-		// policy would make it useless in CI and useless while writing one.
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error { return nil },
 		Example: `  # What will this policy actually enforce?
   pahlevan policy explain -f examples/policies/web-application.yaml
 
@@ -69,7 +66,9 @@ This shows them against a file, before anything is applied.`,
 	cmd.Flags().BoolVar(&strict, "strict", false,
 		"exit non-zero if any part of the policy cannot be enforced")
 	_ = cmd.MarkFlagRequired("filename")
-	return cmd
+	// Reads a file and computes an answer. Needing a cluster to explain a
+	// policy would make it useless in CI and useless while writing one.
+	return Offline(cmd)
 }
 
 func runPolicyExplain(out io.Writer, filename string, strict bool) error {

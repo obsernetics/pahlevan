@@ -30,13 +30,13 @@ ARG TARGETARCH
 # cilium/ebpf is pure Go (no cgo needed to load eBPF), so build static binaries.
 # Three binaries ship in one image; the DaemonSet/Deployment pick which to run.
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
-    -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -ldflags="-w -s -X main.version=${VERSION} -X main.gitCommit=${COMMIT} -X main.buildDate=${DATE}" \
     -o pahlevan-agent ./cmd/pahlevan-agent && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
-    -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -ldflags="-w -s -X main.version=${VERSION} -X main.gitCommit=${COMMIT} -X main.buildDate=${DATE}" \
     -o pahlevan-operator ./cmd/pahlevan-operator && \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
-    -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -ldflags="-w -s -X main.version=${VERSION} -X main.gitCommit=${COMMIT} -X main.buildDate=${DATE}" \
     -o pahlevan ./cmd/pahlevan
 
 ##################################################
