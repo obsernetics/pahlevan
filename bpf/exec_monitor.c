@@ -89,7 +89,8 @@ struct exec_event {
 		     * do not have to understand the ancestry array. Equal to
 		     * ancestry[0].pid. */
 	__u32 uid;
-	__u32 flags; /* bit 0x80000000 => denied, 0x40000000 => killed */
+	__u32 flags; /* bit 0x80000000 => denied, 0x40000000 => killed,
+		      * 0x20000000 => this is an exit, not an exec */
 	__u8  comm[16];
 	__u8  pcomm[16]; /* parent comm; equal to ancestry[0].comm */
 	/* Full lineage, nearest ancestor first. A denial is far more actionable
@@ -162,6 +163,68 @@ static __always_inline __u64 hash_name(const __u8 *p, int n)
 		h *= 1099511628211ULL;
 	}
 	return h;
+}
+
+/* EV_EXITED marks a record as a process exit rather than an exec. Exits ride
+ * the same ring buffer and the same struct: a separate buffer would need its
+ * own reader, its own decode path and its own metrics for no benefit, and the
+ * fields that matter on an exit (pid, comm, cgroup, timestamp) are the ones an
+ * exec already carries. */
+#define EV_EXITED 0x20000000u
+
+static __always_inline void fill_exit_parent(struct exec_event *e)
+{
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	if (!task)
+		return;
+	struct task_struct *parent = BPF_CORE_READ(task, real_parent);
+	if (!parent)
+		return;
+	e->ppid = BPF_CORE_READ(parent, tgid);
+	bpf_probe_read_kernel_str(e->pcomm, sizeof(e->pcomm), BPF_CORE_READ(parent, comm));
+}
+
+/* Report process exit, which is what lets a lifetime be computed and a pid be
+ * retired rather than assumed still live. Attached to the scheduler tracepoint
+ * because it fires for every task teardown, including one killed by the exec
+ * enforcement above. */
+struct sched_exit_ctx {
+	__u64 __pad_common;
+	__u8  comm[16];
+	__u32 pid;
+	__s32 prio;
+};
+
+SEC("tracepoint/sched/sched_process_exit")
+int handle_sched_exit(struct sched_exit_ctx *ctx)
+{
+	__u64 pid_tgid = bpf_get_current_pid_tgid();
+	__u32 tgid = pid_tgid >> 32;
+	if (tgid == 0)
+		return 0;
+	/* Only the thread group leader's exit is the process exiting; reporting
+	 * every thread would flood the buffer with events nothing acts on. */
+	if ((__u32)pid_tgid != tgid)
+		return 0;
+
+	/* An exit outside a container is not this agent's business, and the
+	 * unattributed volume would dwarf everything else on a node. */
+	__u64 cgroup_id = bpf_get_current_cgroup_id();
+
+	struct exec_event *e = bpf_ringbuf_reserve(&exec_events, sizeof(*e), 0);
+	if (!e)
+		return 0;
+
+	__builtin_memset(e, 0, sizeof(*e));
+	e->cgroup_id = cgroup_id;
+	e->timestamp_ns = bpf_ktime_get_ns();
+	e->pid = tgid;
+	e->uid = (__u32)bpf_get_current_uid_gid();
+	e->flags = EV_EXITED;
+	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	fill_exit_parent(e);
+	bpf_ringbuf_submit(e, 0);
+	return 0;
 }
 
 /* Capture argv on entry to execve/execveat.

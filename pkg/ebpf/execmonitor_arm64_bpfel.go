@@ -67,6 +67,7 @@ type ExecMonitorProgramSpecs struct {
 	BprmCheck          *ebpf.ProgramSpec `ebpf:"bprm_check"`
 	HandleExecveArgs   *ebpf.ProgramSpec `ebpf:"handle_execve_args"`
 	HandleExecveatArgs *ebpf.ProgramSpec `ebpf:"handle_execveat_args"`
+	HandleSchedExit    *ebpf.ProgramSpec `ebpf:"handle_sched_exit"`
 }
 
 // ExecMonitorMapSpecs contains maps before they are loaded into the kernel.
@@ -136,6 +137,7 @@ type ExecMonitorPrograms struct {
 	BprmCheck          *ebpf.Program `ebpf:"bprm_check"`
 	HandleExecveArgs   *ebpf.Program `ebpf:"handle_execve_args"`
 	HandleExecveatArgs *ebpf.Program `ebpf:"handle_execveat_args"`
+	HandleSchedExit    *ebpf.Program `ebpf:"handle_sched_exit"`
 }
 
 func (p *ExecMonitorPrograms) Close() error {
@@ -143,6 +145,7 @@ func (p *ExecMonitorPrograms) Close() error {
 		p.BprmCheck,
 		p.HandleExecveArgs,
 		p.HandleExecveatArgs,
+		p.HandleSchedExit,
 	)
 }
 

@@ -130,7 +130,7 @@ path fidelity from the LSM file hook instead, not from the syscall stream.
 | Command-line arguments | **Yes.** Captured at the execve and execveat syscall tracepoints, where argv is still readable in the caller's address space, and joined onto the exec event within the same syscall. Capped at 20 arguments and 256 bytes with a truncation flag, so a prefix is never read as the whole invocation | Yes | Yes |
 | Working directory, environment | **No** | Yes for cwd | Yes for cwd |
 | Blocking | Yes, `EPERM` on exec of a binary not in the learned set. There is also an in-kernel `SIGKILL` mode in the C program that the control plane does not currently expose | No | Yes: `Sigkill`, `Override`, and other actions |
-| Exit tracking | **No** | Yes | Yes |
+| Exit tracking | **Yes**, `sched/sched_process_exit`, thread-group leaders only so a threaded process reports one exit rather than one per thread. Exits share the exec record with a marker flag, since the fields that matter on an exit are ones an exec already carries | Yes | Yes |
 
 ### Process ancestry
 
