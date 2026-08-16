@@ -7,10 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-16
+
+Ninety-eight commits since 2.0.0. The theme, unintentionally, is honesty: a
+large share of this release is the discovery and removal of things that looked
+like they worked and did not. Where a feature could be implemented it was;
+where it could not, it now says so.
+
+### Added
+
+- **Kernel-enforced `processFilter`.** Constrains the parent process comm, the
+  effective uid and the effective gid at `bprm_check_security`. The learned
+  allow-set asks whether a container has ever run a binary; this asks whether
+  the process running it is allowed to. That distinction is what covers the
+  interpreter already in the image, which the allow-set cannot.
+- **Container-breakout detection.** An exec whose working directory belongs to
+  a different mount namespace from the process is the invariant the runC
+  breakout class violates (CVE-2024-21626 and its successors). Detected during
+  learning as well as under enforcement, never added to the allow-set, and
+  reported with its own flag, counter, alert and OTLP severity.
+- **Destination naming.** A denial reads `prod/postgres:5432`, resolved from
+  Services, pods and nodes the agent already caches. An address the cluster
+  does not know is tagged `external`, which separates a misconfiguration from
+  exfiltration. No DNS query is made.
+- **OTLP export for security events**, using OpenTelemetry semantic-convention
+  attribute names, plus one shared resource across metrics, traces and events
+  so Grafana can join them. `examples/observability/lgtm-stack.yaml` deploys
+  the collector and datasources.
+- **`pahlevan policy explain -f`**, which translates a policy offline and names
+  every part the data plane will not enforce. `--strict` fails a CI gate.
+- **gRPC TLS, mTLS and bearer-token authentication** for the event stream, with
+  the security posture printed at startup. The default is still plaintext.
+- **`allowDNS` and `allowLoopback` are enforced**, as a per-cgroup flag checked
+  ahead of the allow-set.
+
+### Fixed
+
+- **Export formats returned canned strings.** `exportToMermaid` returned the
+  literal `"graph TD"` for every cluster; GraphQL and Cytoscape returned `{}`.
+- **The metrics provider was built with no readers**, so every recorded metric
+  was silently discarded while `--observability-exports` reported the exporter
+  as configured.
+- **Nine metric recorders discarded their labels**, so per-policy questions had
+  no answer and the gauges were last-writer-wins across containers.
+- **Event-handler errors were discarded**, making a broken export pipeline
+  indistinguishable from a quiet cluster.
+- **An unbounded no-op event handler** was registered on the ring-buffer hot
+  path on every reconcile, racing on a stale pointer.
+- **Observability shutdown was unbounded**, hanging the agent on every rollout
+  while a collector was down.
+- **Four `GaugeVec`s were named `_total`**, so `rate()` over them was nonsense.
+- **`mode: Off` did the opposite of what it says** - unquoted `Off` is a YAML
+  1.1 boolean, and there was no enum, so it silently became Monitoring. The
+  field is now validated at admission.
+- **`pahlevan version` required a Kubernetes cluster**, and the Dockerfile
+  injected build metadata into variables that do not exist, so every shipped
+  binary reported an unknown commit and date.
+- **Seccomp profiles were written world-readable** into a world-readable
+  directory.
+- Two goroutines ticking hourly to call empty functions; three unreachable
+  vendor exporters guarded on fields nothing assigned; a test double compiled
+  into every binary; and the two CLI columns that printed `N/A` over data one
+  dereference away.
+
 ### Changed
-- Refreshed benchmark run to cover the `lsm/socket_connect` egress and
-  `lsm/bprm_check_security` exec enforcement paths, which landed after the
-  2026-08-14 measurement.
+
+- **Every policy example was invalid against the CRD** and has been rewritten.
+  About twenty-five invented keys were being silently pruned by the API server,
+  so the examples applied cleanly and did a fraction of what they said. A
+  strict-decode test now fails the build.
+- **`docs/api-reference.md` is generated from the Go types.** The hand-written
+  version described an API that had never existed.
+- **`install.yaml`, the Pages site and the demo GIF are all kept in step
+  automatically** - each had drifted, and each now has a check that fails when
+  it does.
+- **Seven CRD fields are documented as inert** rather than left to look
+  functional.
+- `make vm-test` runs every VM test. It filtered on `TestVMLoad`, so nineteen
+  tests written for the VM had never run there.
 
 ## [2.0.0] - 2026-08-14
 

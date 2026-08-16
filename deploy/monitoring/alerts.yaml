@@ -35,6 +35,29 @@ spec:
           symptom. Check that the agent image and its embedded eBPF objects
           match.
 
+    - alert: PahlevanContainerBreakout
+      # The one alert here that is not about enforcement working. A working
+      # directory outside the process's own mount namespace is the runC
+      # breakout signature - CVE-2024-21626 and the vulnerabilities that
+      # followed - and there is no legitimate way to reach that state from
+      # inside a container.
+      #
+      # It fires on the first occurrence, with no `for`, because the escape has
+      # already happened by the time a second one arrives. It also fires while a
+      # container is still learning: the behavior is never baselined.
+      expr: sum by (node) (increase(pahlevan_ebpf_breakouts_total[2m])) > 0
+      labels:
+        severity: critical
+      annotations:
+        summary: Possible container breakout on {{ $labels.node }}
+        description: >-
+          An exec was observed whose working directory belongs to a different
+          mount namespace from the process itself. That is how the runC
+          breakout class works: the runtime leaks a descriptor from the host
+          mount namespace and everything the container resolves relative to it
+          resolves on the host. Check the agent log for the lineage and the
+          binary, and treat the node as compromised until you have ruled it out.
+
     - alert: PahlevanHandlerErrors
       # An event decoded correctly and then failed to reach whatever consumes
       # it: the export sink, the learner, the adaptive controller. Nothing else

@@ -215,6 +215,64 @@ static __always_inline __u64 hash_name(const __u8 *p, int n)
 	return h;
 }
 
+/* EV_BREAKOUT marks an exec whose working directory lives in a different mount
+ * namespace from the process itself.
+ *
+ * That is the invariant the runC breakout class violates. CVE-2024-21626 and
+ * the vulnerabilities that followed work by leaving the container's working
+ * directory on a file descriptor the runtime leaked from the host mount
+ * namespace; everything the container then resolves relative to it resolves on
+ * the host, so a write to ../../../etc/cron.d escapes with no capability, no
+ * mount, and no syscall a seccomp profile would question.
+ *
+ * The first version of this check looked for a working directory matching
+ * /proc/self/fd/, which is how the exploit is usually *written*. That was
+ * wrong, and a VM test said so: the kernel stores the resolved directory, so
+ * chdir through a procfs symlink leaves fs->pwd pointing at the target, and
+ * the string never appears. The namespace comparison is the property itself
+ * rather than a spelling of it, and it holds however the descriptor was
+ * obtained.
+ *
+ * A process whose working directory is outside its own mount namespace is not
+ * a workload doing something unusual. There is no legitimate way to reach that
+ * state from inside a container.
+ */
+#define EV_BREAKOUT 0x08000000u
+
+static __always_inline int cwd_escapes_mount_ns(void)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	if (!task)
+		return 0;
+
+	/* The namespace the process belongs to. */
+	struct nsproxy *ns = BPF_CORE_READ(task, nsproxy);
+	if (!ns)
+		return 0;
+	struct mnt_namespace *task_ns = BPF_CORE_READ(ns, mnt_ns);
+	if (!task_ns)
+		return 0;
+
+	/* The namespace the working directory's mount belongs to. fs->pwd.mnt is
+	 * the vfsmount embedded in a struct mount, so the containing struct is
+	 * reached by subtracting the member offset - the kernel's own
+	 * real_mount(). */
+	struct fs_struct *fs = BPF_CORE_READ(task, fs);
+	if (!fs)
+		return 0;
+	struct vfsmount *vm = BPF_CORE_READ(fs, pwd.mnt);
+	if (!vm)
+		return 0;
+
+	struct mount *m = (struct mount *)((char *)vm - offsetof(struct mount, mnt));
+	struct mnt_namespace *pwd_ns = BPF_CORE_READ(m, mnt_ns);
+	if (!pwd_ns)
+		return 0;
+
+	/* Equal is the overwhelmingly common case and costs one comparison. */
+	return pwd_ns != task_ns;
+}
+
 /* EV_EXITED marks a record as a process exit rather than an exec. Exits ride
  * the same ring buffer and the same struct: a separate buffer would need its
  * own reader, its own decode path and its own metrics for no benefit, and the
@@ -454,6 +512,16 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	__u8 mode = modep ? *modep : MODE_LEARN;
 	__u8 *known = bpf_map_lookup_elem(&exec_allowed, &key);
 
+	/* The breakout check runs in every mode, including learning.
+	 *
+	 * Everything else here is a baseline question - has this container done
+	 * this before - and the honest answer during learning is "it has now".
+	 * This is not that: an exec from inside a leaked host file descriptor is
+	 * never legitimate, so learning it would be learning the exploit. Under
+	 * enforcement it is refused; while learning it is reported and, critically,
+	 * not added to the allow-set. */
+	int breakout = cwd_escapes_mount_ns();
+
 	if (mode == MODE_ENFORCE || mode == MODE_ENFORCE_KILL) {
 		/* Two independent reasons to refuse: the binary was never learned, or
 		 * the policy's process filter rejects who is running it. They are
@@ -482,13 +550,15 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 				filter_deny = 1;
 		}
 
-		if (known && !filter_deny) {
+		if (known && !filter_deny && !breakout) {
 			bpf_ringbuf_discard(e, 0);
 			return 0;
 		}
 		e->flags |= 0x80000000; /* denied */
 		if (filter_deny)
 			e->flags |= 0x10000000; /* denied by the process filter */
+		if (breakout)
+			e->flags |= EV_BREAKOUT;
 		if (mode == MODE_ENFORCE_KILL) {
 			e->flags |= 0x40000000; /* killed */
 			bpf_send_signal(9);     /* SIGKILL the offending task */
@@ -497,6 +567,13 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 		return -1; /* -EPERM: execve fails */
 	}
 
+	/* Learning. A breakout is reported and deliberately not learned: adding it
+	 * to the allow-set would make the exploit permanent for this cgroup. */
+	if (breakout) {
+		e->flags |= EV_BREAKOUT;
+		bpf_ringbuf_submit(e, 0);
+		return 0;
+	}
 	if (known) {
 		bpf_ringbuf_discard(e, 0);
 		return 0;

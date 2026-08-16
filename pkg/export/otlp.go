@@ -245,6 +245,9 @@ func (e *OTLPExporter) record(ev *Event) otellog.Record {
 		// a shell that ran curl", which is the difference between an alert
 		// somebody investigates and one they mute.
 		addStr("pahlevan.process.ancestry", ev.Exec.AncestryChain)
+		if ev.Exec.Breakout {
+			add("pahlevan.breakout", otellog.BoolValue(true))
+		}
 		add("pahlevan.process.exited", otellog.BoolValue(ev.Exec.Exited))
 	case ev.Capability != nil:
 		addStr("pahlevan.capability.name", ev.Capability.Name)
@@ -266,6 +269,13 @@ const writeFlagBit uint32 = 0x40000000
 // channel becomes something people turn off. Observations are DEBUG, because at
 // full volume they are a trace of normal behavior.
 func severityOf(ev *Event) otellog.Severity {
+	// A container breakout is the one thing here that is an error rather than
+	// the system working as designed. It is graded above a denial even when it
+	// was not denied - during learning, or in Monitoring mode - because the
+	// escape does not wait for enforcement to be switched on.
+	if ev.Exec != nil && ev.Exec.Breakout {
+		return otellog.SeverityError
+	}
 	if ev.Denied() {
 		return otellog.SeverityWarn
 	}

@@ -71,15 +71,80 @@ func TestNewManager_RegistersAllMetricsWithoutPanic(t *testing.T) {
 	if m.GetRegistry() == nil || m.GetGatherer() == nil {
 		t.Fatal("registry/gatherer must be non-nil")
 	}
-	families, err := m.GetGatherer().Gather()
-	if err != nil {
+	if _, err := m.GetGatherer().Gather(); err != nil {
 		t.Fatalf("Gather: %v", err)
 	}
-	// All 42 registered collectors expose at least one metric family after
-	// touching zero-value counters/gauges; verify a representative core metric
-	// is present.
-	if fam := gather(t, m, "pahlevan_policy_violations_total"); fam == nil {
-		t.Fatalf("core metric not registered; got %d families", len(families))
+
+	// The policy-plane metrics carry namespace and policy labels, so a counter
+	// with no children does not appear in Gather() at all - and unlike the
+	// per-kind data-plane counters there is no fixed label domain to pre-create
+	// from. Publishing a child for a policy that does not exist would be its own
+	// kind of lie.
+	//
+	// So registration is proven by recording once and then finding the series,
+	// which also checks that the label values arrive where they should.
+	m.RecordPolicyViolation(MetricLabels{Namespace: "prod", PolicyName: "api"})
+
+	fam := gather(t, m, "pahlevan_policy_violations_total")
+	if fam == nil {
+		t.Fatal("pahlevan_policy_violations_total is not registered")
+	}
+	if len(fam.Metric) != 1 {
+		t.Fatalf("expected one series, got %d", len(fam.Metric))
+	}
+	labels := map[string]string{}
+	for _, lp := range fam.Metric[0].Label {
+		labels[lp.GetName()] = lp.GetValue()
+	}
+	if labels["namespace"] != "prod" || labels["policy"] != "api" {
+		t.Errorf("labels = %v, want namespace=prod policy=api", labels)
+	}
+}
+
+// An unset namespace or policy must become "unknown" rather than the empty
+// string: an empty label value is indistinguishable from an absent series in
+// most query languages, so a dashboard filtering on it silently shows nothing.
+func TestUnsetLabelsBecomeUnknown(t *testing.T) {
+	m := NewManager()
+	m.RecordPolicyViolation(MetricLabels{})
+
+	fam := gather(t, m, "pahlevan_policy_violations_total")
+	if fam == nil || len(fam.Metric) != 1 {
+		t.Fatal("expected one series")
+	}
+	for _, lp := range fam.Metric[0].Label {
+		if lp.GetValue() != "unknown" {
+			t.Errorf("label %s = %q, want unknown", lp.GetName(), lp.GetValue())
+		}
+	}
+}
+
+// Two policies must produce two series. Before the labels existed there was one
+// counter for the whole node, so "which policy is denying things" - the first
+// question anyone asks - had no answer.
+func TestMetricsAreSeparatedByPolicy(t *testing.T) {
+	m := NewManager()
+	m.RecordPolicyViolation(MetricLabels{Namespace: "prod", PolicyName: "api"})
+	m.RecordPolicyViolation(MetricLabels{Namespace: "prod", PolicyName: "db"})
+	m.RecordPolicyViolation(MetricLabels{Namespace: "prod", PolicyName: "db"})
+
+	fam := gather(t, m, "pahlevan_policy_violations_total")
+	if fam == nil {
+		t.Fatal("not registered")
+	}
+	if len(fam.Metric) != 2 {
+		t.Fatalf("expected two series, got %d", len(fam.Metric))
+	}
+	byPolicy := map[string]float64{}
+	for _, mm := range fam.Metric {
+		for _, lp := range mm.Label {
+			if lp.GetName() == "policy" {
+				byPolicy[lp.GetValue()] = mm.Counter.GetValue()
+			}
+		}
+	}
+	if byPolicy["api"] != 1 || byPolicy["db"] != 2 {
+		t.Errorf("per-policy counts = %v, want api=1 db=2", byPolicy)
 	}
 }
 
@@ -122,7 +187,7 @@ func TestManager_ScalarRecorders(t *testing.T) {
 		t.Errorf("rollback = %v, want 1", v)
 	}
 
-	m.UpdateLearningProgress(labels, 0.75)
+	m.UpdateLearningProgress(0.75)
 	if v := scalarValue(t, m, "pahlevan_learning_progress_ratio"); v != 0.75 {
 		t.Errorf("learning progress = %v, want 0.75", v)
 	}
@@ -285,7 +350,7 @@ func TestManager_SetMeterProviderEnablesOTelPath(t *testing.T) {
 	// Now the OTel branch is exercised as well.
 	m.RecordPolicyViolation(MetricLabels{})
 	m.RecordEnforcementAction(MetricLabels{}, "block")
-	m.UpdateLearningProgress(MetricLabels{}, 0.5)
+	m.UpdateLearningProgress(0.5)
 	m.UpdateAttackSurfaceRiskScore(7.0)
 
 	// Prometheus counter still increments independently.
