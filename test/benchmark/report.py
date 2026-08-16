@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-TOOLS = ["pahlevan", "falco", "tetragon"]
+TOOLS = ["control", "pahlevan"]
 
 
 def load_control(path):

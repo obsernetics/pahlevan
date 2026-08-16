@@ -92,6 +92,7 @@ func main() {
 		grpcToken            string
 		podNamespace         string
 		podName              string
+		traceShells          bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -141,6 +142,11 @@ func main() {
 	flag.StringVar(&podNamespace, "pod-namespace", os.Getenv("PAHLEVAN_POD_NAMESPACE"),
 		"This agent pod's namespace, from the downward API. Used as an OpenTelemetry "+
 			"resource attribute so metrics, traces and logs correlate in Grafana.")
+	flag.BoolVar(&traceShells, "trace-shell-commands", false,
+		"Capture commands typed at interactive shell prompts inside governed containers, "+
+			"via a uretprobe on readline. Off by default: recording what a person types is a "+
+			"decision an operator makes deliberately. Shells without readline (dash, busybox) "+
+			"cannot be probed and are unaffected.")
 	flag.StringVar(&podName, "pod-name", os.Getenv("PAHLEVAN_POD_NAME"),
 		"This agent pod's name, from the downward API. Becomes service.instance.id, "+
 			"without which every agent in the DaemonSet collapses into one series.")
@@ -337,7 +343,11 @@ func main() {
 	}
 
 	// Register event handlers BEFORE starting readers so no events are missed.
-	ebpfManager.AddEventHandler(&agentObserver{log: ctrl.Log.WithName("observer")})
+	ebpfManager.AddEventHandler(&agentObserver{
+		log:         ctrl.Log.WithName("observer"),
+		mgr:         ebpfManager,
+		traceShells: traceShells,
+	})
 	ebpfManager.AddEventHandler(adaptiveCtl)
 
 	// dataCtx drives the eBPF ring-buffer readers; canceled on shutdown signal.
@@ -532,7 +542,17 @@ type agentObserver struct {
 	files    atomic.Uint64
 	execs    atomic.Uint64
 	caps     atomic.Uint64
+	creds    atomic.Uint64
+	shell    atomic.Uint64
 	denials  atomic.Uint64
+
+	// mgr is used to attach a readline uprobe when an interactive shell is
+	// seen starting. Optional: the observer works without it, minus the
+	// interactive-command capture.
+	mgr *ebpf.Manager
+	// traceShells gates that behaviour, because capturing what a person types
+	// is a decision an operator makes, not a default.
+	traceShells bool
 }
 
 // denied logs one in-kernel denial. The fields are the ones an operator needs
@@ -593,6 +613,24 @@ func (o *agentObserver) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 		return nil
 	}
 	o.execs.Add(1)
+
+	// An interactive shell starting inside a container is itself the anomaly;
+	// probing its prompt is what turns "somebody has a shell in payments-api"
+	// into a record of what they did with it. Attaching here rather than at
+	// startup is what makes it work for a shell that exists only inside the
+	// container image.
+	if o.traceShells && o.mgr != nil && ebpf.IsInteractiveShell(e.Comm) {
+		if err := o.mgr.TraceShellForPID(e.PID); err != nil {
+			// Expected for a shell built without readline, and for a process
+			// that exited between the event and this call. Debug, not a
+			// warning: neither is actionable.
+			o.log.V(1).Info("could not probe shell prompt", "pid", e.PID, "comm", e.Comm, "error", err.Error())
+		} else {
+			o.log.Info("interactive shell detected; capturing prompt",
+				"comm", e.Comm, "pid", e.PID, "cgroup", e.CgroupID)
+		}
+	}
+
 	if e.IsBreakout() {
 		// Logged even when not denied - during learning, or in Monitoring mode -
 		// because a working directory outside the process's own mount namespace
@@ -629,9 +667,51 @@ func (o *agentObserver) HandleCapabilityEvent(e *ebpf.CapabilityEvent) error {
 	return nil
 }
 
+// HandleCredEvent reports a credential change that gained privilege.
+//
+// The kernel program has already discarded every change that only dropped
+// privilege, so anything arriving here gained something. What remains is to
+// separate the explained from the unexplained: a setuid binary gains privilege
+// inside execve and does so constantly, while a task whose credentials change
+// with no execve underway is either calling a setuid syscall or is a kernel
+// exploit that never called a syscall at all.
+func (o *agentObserver) HandleCredEvent(e *ebpf.CredEvent) error {
+	o.creds.Add(1)
+	if e.Unexplained() {
+		o.denied("privilege-escalation", "detail", e.Summary(),
+			"gained", e.GainedCapabilities(), "euid", e.NewEUID,
+			"killed", e.Flags&ebpf.CredKilled != 0,
+			"comm", e.Comm, "pid", e.PID, "cgroup", e.CgroupID)
+		return nil
+	}
+	o.log.V(1).Info("credential change", "detail", e.Summary(),
+		"comm", e.Comm, "cgroup", e.CgroupID)
+	return nil
+}
+
+// HandleShellEvent reports one command typed at an interactive prompt.
+//
+// Logged at INFO rather than V(1), unlike every other observation. An
+// interactive shell in a production container is not normal traffic - by the
+// time these events exist somebody is typing into a workload, and every line
+// of it is worth keeping.
+func (o *agentObserver) HandleShellEvent(e *ebpf.ShellEvent) error {
+	o.shell.Add(1)
+	o.log.Info("interactive command", "command", e.Line, "truncated", e.Truncated(),
+		"uid", e.UID, "comm", e.Comm, "pid", e.PID, "cgroup", e.CgroupID)
+	return nil
+}
+
 // Counts returns what the observer has seen, for the periodic summary and for
 // tests.
 func (o *agentObserver) Counts() (syscalls, networks, files, execs, caps, denials uint64) {
 	return o.syscalls.Load(), o.networks.Load(), o.files.Load(),
 		o.execs.Load(), o.caps.Load(), o.denials.Load()
+}
+
+// EscalationCounts returns the credential-change and interactive-command
+// totals, which are kept out of Counts so its signature stays stable for the
+// callers that format the periodic summary.
+func (o *agentObserver) EscalationCounts() (creds, shell uint64) {
+	return o.creds.Load(), o.shell.Load()
 }

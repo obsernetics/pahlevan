@@ -1186,8 +1186,7 @@ spec:
             description: |-
               ContainerProfileStatus is the learned behavioral baseline reported by the
               node agent. It is what the kernel enforces once the container is enforcing -
-              a first-class, inspectable, git-backupable record (no equivalent in Falco or
-              Tetragon).
+              a first-class, inspectable, git-backupable record.
             properties:
               denialCount:
                 description: |-
@@ -1643,7 +1642,7 @@ subjects:
 
 ---
 # The agent runs on EVERY node as a privileged DaemonSet - this is the shape a
-# node-level eBPF security tool must take (the same as Falco and Tetragon). A
+# node-level eBPF security tool must take. A
 # single-replica Deployment can only instrument the one node it lands on.
 apiVersion: apps/v1
 kind: DaemonSet

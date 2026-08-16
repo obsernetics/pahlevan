@@ -10,24 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const sampleBenchmark = `# Results
-
-### Totals
-
-| Tool | Attacks detected | Attacks blocked | Benign false positives |
-|---|--:|--:|--:|
-| Pahlevan | 25/26 | 25/26 | 3/3 |
-| Falco | 9/26 | 0/26 | 0/3 |
-| Tetragon | 26/26 | 0/26 | 0/3 |
-
-### Resource use
-
-| Tool (agent) | memory.current | anon | kernel | page cache | peak | CPU idle | CPU under load |
-|---|--:|--:|--:|--:|--:|--:|--:|
-| **Pahlevan** agent | 66.7 MiB | 39.7 MiB | 20.2 MiB | 6.8 MiB | 67.0 MiB | 0.33 % | 11.25 % |
-| **Falco** | 195.3 MiB | 45.5 MiB | 26.3 MiB | 123.5 MiB | 201.7 MiB | 0.39 % | 10.65 % |
-| **Tetragon** | 78.2 MiB | 36.7 MiB | 38.1 MiB | 3.0 MiB | 118.8 MiB | 0.11 % | 7.77 % |
-`
+// Two attack scenarios carrying three distinct technique ids between them, and
+// one benign control. Written out rather than counted from the real directory
+// so the expected numbers in these tests do not change every time somebody adds
+// a scenario.
+var sampleScenarios = map[string]string{
+	"01-sensitive-file-read.sh": "#!/usr/bin/env sh\n# Technique: OS Credential Dumping (T1003.008)\nexit 0\n",
+	"02-reverse-shell.sh":       "#!/usr/bin/env sh\n# Technique: T1059.004 and T1071\nexit 0\n",
+}
 
 // fixture builds a throwaway repository with the shape pagesync expects.
 func fixture(t *testing.T, page string) string {
@@ -37,8 +27,14 @@ func fixture(t *testing.T, page string) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs", "assets"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "pages", "assets"), 0o755))
 
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "test", "benchmark", "scenarios", "benign"), 0o755))
+	for name, body := range sampleScenarios {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(root, "test", "benchmark", "scenarios", name), []byte(body), 0o600))
+	}
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "docs", "benchmarks", "results.md"), []byte(sampleBenchmark), 0o600))
+		filepath.Join(root, "test", "benchmark", "scenarios", "benign", "01-ok.sh"),
+		[]byte("#!/usr/bin/env sh\nexit 0\n"), 0o600))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "Makefile"), []byte("VERSION?=v2.0.0\nIMG ?= x\n"), 0o600))
 	require.NoError(t, os.WriteFile(
@@ -52,45 +48,58 @@ func fixture(t *testing.T, page string) string {
 	return root
 }
 
-func TestCollectReadsTheBenchmarkTotals(t *testing.T) {
+func TestCollectCountsTheScenarioSuite(t *testing.T) {
 	facts, err := Collect(fixture(t, "<html></html>"))
 	require.NoError(t, err)
 
-	assert.Equal(t, "25 / 26", facts["pahlevan-blocked"])
-	assert.Equal(t, "25 / 26", facts["pahlevan-detected"])
-	assert.Equal(t, "3 / 3", facts["pahlevan-benign"])
-	assert.Equal(t, "0 / 26", facts["falco-blocked"])
-	assert.Equal(t, "9 / 26", facts["falco-detected"])
-	assert.Equal(t, "26 / 26", facts["tetragon-detected"])
-	assert.Equal(t, "66.7 MiB", facts["pahlevan-memory"])
-	assert.Equal(t, "195.3 MiB", facts["falco-memory"])
-	assert.Equal(t, "11.25 %", facts["pahlevan-cpu"])
+	assert.Equal(t, "2", facts["attack-scenarios"])
+	assert.Equal(t, "1", facts["benign-scenarios"])
+	// T1003.008, T1059.004, T1071 - counted once each, across both files.
+	assert.Equal(t, "3", facts["attack-techniques"])
 	assert.Equal(t, "v2.0.0", facts["version"])
+}
+
+// The count must come from the directory, not from a number somebody typed.
+// Adding a scenario is what changes the published figure.
+func TestAddingAScenarioChangesTheCount(t *testing.T) {
+	root := fixture(t, "<html></html>")
+	before, err := Collect(root)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "test", "benchmark", "scenarios", "99-new.sh"),
+		[]byte("#!/usr/bin/env sh\n# Technique: T9999\nexit 0\n"), 0o600))
+
+	after, err := Collect(root)
+	require.NoError(t, err)
+	assert.Equal(t, "2", before["attack-scenarios"])
+	assert.Equal(t, "3", after["attack-scenarios"])
+	assert.Equal(t, "4", after["attack-techniques"])
 }
 
 // The whole point: a page that has drifted from the benchmark must be reported,
 // and reported with both values so the reader can see which way it drifted.
 func TestCheckReportsDrift(t *testing.T) {
 	root := fixture(t,
-		`<p><!--pahlevan:sync pahlevan-blocked-->4 / 4<!--/pahlevan:sync--></p>`)
+		`<p><!--pahlevan:sync attack-scenarios-->4<!--/pahlevan:sync--></p>`)
 	facts, err := Collect(root)
 	require.NoError(t, err)
 
 	stale, err := Apply(root, facts, false)
 	require.NoError(t, err)
 	require.Len(t, stale, 1)
-	assert.Contains(t, stale[0], `"4 / 4"`)
-	assert.Contains(t, stale[0], `"25 / 26"`)
+	assert.Contains(t, stale[0], `"4"`)
+	assert.Contains(t, stale[0], `"2"`)
 
 	// -check must not touch the file.
 	after, err := os.ReadFile(filepath.Join(root, "pages", "index.html"))
 	require.NoError(t, err)
-	assert.Contains(t, string(after), "4 / 4")
+	assert.Contains(t, string(after), ">4<")
 }
 
 func TestWriteFixesDrift(t *testing.T) {
 	root := fixture(t,
-		`<p><!--pahlevan:sync pahlevan-blocked-->4 / 4<!--/pahlevan:sync--></p>`)
+		`<p><!--pahlevan:sync attack-scenarios-->4<!--/pahlevan:sync--></p>`)
 	facts, err := Collect(root)
 	require.NoError(t, err)
 
@@ -101,7 +110,7 @@ func TestWriteFixesDrift(t *testing.T) {
 	after, err := os.ReadFile(filepath.Join(root, "pages", "index.html"))
 	require.NoError(t, err)
 	assert.Contains(t, string(after),
-		"<!--pahlevan:sync pahlevan-blocked-->25 / 26<!--/pahlevan:sync-->")
+		"<!--pahlevan:sync attack-scenarios-->2<!--/pahlevan:sync-->")
 
 	// Idempotent: a second pass finds nothing.
 	stale, err = Apply(root, facts, true)
@@ -126,8 +135,8 @@ func TestUnknownKeyIsAnError(t *testing.T) {
 // number appears in both a table and the prose beneath it, and updating one
 // would leave the page contradicting itself.
 func TestRepeatedKeyIsUpdatedEverywhere(t *testing.T) {
-	root := fixture(t, `<td><!--pahlevan:sync pahlevan-blocked-->4 / 4<!--/pahlevan:sync--></td>`+
-		`<p><!--pahlevan:sync pahlevan-blocked-->old<!--/pahlevan:sync--></p>`)
+	root := fixture(t, `<td><!--pahlevan:sync attack-scenarios-->4<!--/pahlevan:sync--></td>`+
+		`<p><!--pahlevan:sync attack-scenarios-->old<!--/pahlevan:sync--></p>`)
 	facts, err := Collect(root)
 	require.NoError(t, err)
 
@@ -137,7 +146,7 @@ func TestRepeatedKeyIsUpdatedEverywhere(t *testing.T) {
 
 	after, err := os.ReadFile(filepath.Join(root, "pages", "index.html"))
 	require.NoError(t, err)
-	assert.NotContains(t, string(after), "4 / 4")
+	assert.NotContains(t, string(after), ">4<")
 	assert.NotContains(t, string(after), ">old<")
 }
 
@@ -163,18 +172,22 @@ func TestAssetDriftIsReported(t *testing.T) {
 	assert.Equal(t, "GIF89a-new", string(got))
 }
 
-// A benchmark table that has been reformatted must fail loudly. Silently
-// finding zero rows would leave every borrowed number frozen at whatever it was
-// when the format last worked.
-func TestReformattedBenchmarkTableIsAnError(t *testing.T) {
+// A moved or emptied scenario directory must fail loudly. Silently finding zero
+// would publish "0 attack scenarios", or worse, leave the previous number
+// frozen on the page while the suite it describes no longer exists.
+func TestAnEmptyScenarioDirectoryIsAnError(t *testing.T) {
 	root := fixture(t, "<html></html>")
-	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "docs", "benchmarks", "results.md"),
-		[]byte("# Results\n\nNo tables here any more.\n"), 0o600))
-
+	for name := range sampleScenarios {
+		require.NoError(t, os.Remove(filepath.Join(root, "test", "benchmark", "scenarios", name)))
+	}
 	_, err := Collect(root)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "totals rows")
+	assert.Contains(t, err.Error(), "no attack scenarios")
+
+	require.NoError(t, os.RemoveAll(filepath.Join(root, "test", "benchmark")))
+	_, err = Collect(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scenario directory")
 }
 
 func TestMissingVersionIsAnError(t *testing.T) {
@@ -201,10 +214,12 @@ func TestRepositorySiteIsInSync(t *testing.T) {
 		"the published site is stale; run: go run ./hack/pagesync -write")
 }
 
-func TestSpaceSlash(t *testing.T) {
-	assert.Equal(t, "25 / 26", spaceSlash("25/26"))
-	assert.Equal(t, "3 / 3", spaceSlash("3/3"))
-	assert.Equal(t, "nonsense", spaceSlash("nonsense"))
+// Sub-techniques must count as themselves, not collapse into their parent, and
+// a bare word that looks like an id must not be picked up.
+func TestTechniquePattern(t *testing.T) {
+	got := technique.FindAllString(
+		"T1003.008 and T1003 and T1059.004, but not XT1234 or T12345", -1)
+	assert.Equal(t, []string{"T1003.008", "T1003", "T1059.004"}, got)
 }
 
 func BenchmarkCollect(b *testing.B) {

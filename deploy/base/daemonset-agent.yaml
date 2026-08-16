@@ -1,5 +1,5 @@
 # The agent runs on EVERY node as a privileged DaemonSet - this is the shape a
-# node-level eBPF security tool must take (the same as Falco and Tetragon). A
+# node-level eBPF security tool must take. A
 # single-replica Deployment can only instrument the one node it lands on.
 apiVersion: apps/v1
 kind: DaemonSet

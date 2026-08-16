@@ -69,7 +69,7 @@ The more of this you can provide, the faster the fix:
 - Findings that require an attacker who already has node root or cluster-admin.
 - An incomplete learned baseline blocking legitimate traffic. That is a
   correctness and operability issue; please file a normal bug.
-- Vulnerabilities in Falco, Tetragon, Kubernetes, containerd, or the Linux
+- Vulnerabilities in Kubernetes, containerd, or the Linux
   kernel itself. Report those upstream. If Pahlevan makes such a bug materially
   easier to exploit, that part is in scope here.
 - Reports from automated scanners with no demonstrated impact.
@@ -91,7 +91,7 @@ statement is this:
 > and write access to its DaemonSet spec as node-root-equivalent.
 
 This is a property Pahlevan shares with every eBPF runtime security tool,
-including Falco and Tetragon. It is not a reason to skip a report; a bug that
+for any node-level eBPF tool. It is not a reason to skip a report; a bug that
 lets a *workload* reach the agent is squarely in scope and is exactly the class
 of issue we most want to hear about.
 

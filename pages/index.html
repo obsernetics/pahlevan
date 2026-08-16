@@ -119,8 +119,8 @@
                     <h3>Auto-learning, not manual rules</h3>
                     <p>
                         Files a container opens and destinations it dials during a learning window
-                        are added to a per-cgroup allow-set automatically. No <code>TracingPolicy</code>,
-                        no Falco rule language.
+                        are added to a per-cgroup allow-set automatically. Nothing to author, nothing
+                        to keep current, no rule language to learn.
                     </p>
                 </article>
                 <article class="why-card">
@@ -145,70 +145,62 @@
         </div>
     </section>
 
-    <!-- COMPARE -->
+    <!-- MECHANISM -->
     <section id="compare" class="section compare">
         <div class="container">
             <div class="section-header">
-                <span class="eyebrow">How it compares</span>
-                <h2>Learn and block, in one loop</h2>
+                <span class="eyebrow">How it works</span>
+                <h2>Seven kernel programs, one loop</h2>
                 <p>
-                    Falco and Tetragon are excellent observability tools. Pahlevan's distinct claim is
-                    closing the loop: learn the baseline, then <em>prevent</em> the deviation in the kernel.
+                    Every program below observes during the learning window and refuses during
+                    enforcement, scoped to a single cgroup. The allow-set is whatever the workload
+                    did while it was being watched.
                 </p>
             </div>
             <div class="table-wrap">
                 <table class="compare-table">
                     <thead>
                         <tr>
-                            <th scope="col">Capability</th>
-                            <th scope="col" class="col-highlight">Pahlevan</th>
-                            <th scope="col">Falco</th>
-                            <th scope="col">Tetragon</th>
-                            <th scope="col">Cilium</th>
+                            <th scope="col">Kernel program</th>
+                            <th scope="col">What it sees</th>
+                            <th scope="col" class="col-highlight">What it does about it</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <th scope="row">Primary model</th>
-                            <td class="col-highlight">Adaptive policy operator</td>
-                            <td>Threat detection</td>
-                            <td>Observability + tracing</td>
-                            <td>Network security</td>
+                            <th scope="row"><code>lsm/file_open</code></th>
+                            <td>Every open, with the path resolved in-kernel by <code>bpf_d_path</code></td>
+                            <td class="col-highlight"><strong>EPERM</strong> on a path outside the learned set</td>
                         </tr>
                         <tr>
-                            <th scope="row">Learns behavior</th>
-                            <td class="col-highlight"><strong>Auto (per-cgroup)</strong></td>
-                            <td>Manual rules</td>
-                            <td>Manual <code>TracingPolicy</code></td>
-                            <td>Static policy</td>
+                            <th scope="row"><code>lsm/socket_connect</code></th>
+                            <td>Every outbound connect, IPv4 and IPv6, named against cluster Services</td>
+                            <td class="col-highlight"><strong>EPERM</strong> on an unlearned destination</td>
                         </tr>
                         <tr>
-                            <th scope="row">File access enforcement</th>
-                            <td class="col-highlight"><strong>Blocks in-kernel (LSM BPF)</strong></td>
-                            <td>Alert only</td>
-                            <td>Possible, hand-written</td>
-                            <td>-</td>
+                            <th scope="row"><code>lsm/bprm_check_security</code></th>
+                            <td>Every exec: binary, argv, working directory, four levels of ancestry</td>
+                            <td class="col-highlight"><strong>EPERM</strong>, or <strong>SIGKILL</strong>, on an unlearned binary</td>
                         </tr>
                         <tr>
-                            <th scope="row">Rules to author</th>
-                            <td class="col-highlight"><strong>None (learned)</strong></td>
-                            <td>Many</td>
-                            <td>Per-policy</td>
-                            <td>Network rules</td>
+                            <th scope="row"><code>lsm/capable</code></th>
+                            <td>Every capability check, plus the task's effective, permitted and inheritable sets</td>
+                            <td class="col-highlight"><strong>EPERM</strong> on a capability never exercised</td>
                         </tr>
                         <tr>
-                            <th scope="row">Attribution</th>
-                            <td class="col-highlight">cgroup id + <code>d_path</code></td>
-                            <td>container context</td>
-                            <td>cgroup / process</td>
-                            <td>endpoint / identity</td>
+                            <th scope="row"><code>kprobe/commit_creds</code></th>
+                            <td>The moment privilege actually changes - including changes no syscall asked for</td>
+                            <td class="col-highlight"><strong>SIGKILL</strong> when privilege is gained with no execve to explain it</td>
                         </tr>
                         <tr>
-                            <th scope="row">Coverage</th>
-                            <td class="col-highlight">Syscalls, files, egress <span class="muted">(seccomp gen)</span></td>
-                            <td>Runtime events</td>
-                            <td>Kernel tracing</td>
-                            <td>L3-L7 traffic</td>
+                            <th scope="row"><code>tracepoint/sys_enter</code></th>
+                            <td>Every syscall with its six arguments; escalation primitives report every occurrence</td>
+                            <td class="col-highlight">Becomes the generated <strong>seccomp profile</strong></td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><code>uretprobe/readline</code></th>
+                            <td>Commands typed at an interactive prompt, builtins included</td>
+                            <td class="col-highlight">Records what someone with a shell actually did</td>
                         </tr>
                     </tbody>
                 </table>
@@ -223,8 +215,9 @@
                 <span class="eyebrow">Architecture</span>
                 <h2>A privileged data plane, an unprivileged control plane</h2>
                 <p>
-                    Pahlevan splits the per-node eBPF data plane from a leader-elected control plane -
-                    the same node-instrumentation model as Falco and Tetragon, but with an operator driving policy.
+                    Pahlevan splits the per-node eBPF data plane from a leader-elected control plane.
+                    The agent owns everything that touches the kernel; the operator owns everything
+                    that touches the Kubernetes API.
                 </p>
             </div>
             <div class="arch-layout">
@@ -476,71 +469,30 @@ spec:
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Measured, not marketing</span>
-                <h2>Blocks what the others only watch</h2>
+                <h2>Every number here came from a run</h2>
                 <p>
-                    Head-to-head against Falco and Tetragon on four real attack scenarios, run one tool
-                    at a time inside an eBPF-capable VM with each vendor's <strong>default</strong> ruleset.
-                    Every number here is produced by <code>test/benchmark/run.sh</code> - nothing is hand-tuned.
+                    <code>test/benchmark/run.sh</code> drives
+                    <!--pahlevan:sync attack-scenarios-->26<!--/pahlevan:sync--> attack scenarios and
+                    <!--pahlevan:sync benign-scenarios-->3<!--/pahlevan:sync--> benign controls through
+                    a real workload inside a kernel-isolated VM, twice: once with no agent installed at
+                    all, then with Pahlevan learning and enforcing.
                 </p>
             </div>
-            <div class="table-wrap">
-                <table class="compare-table">
-                    <thead>
-                        <tr>
-                            <th scope="col">Attack scenario (default config)</th>
-                            <th scope="col" class="col-highlight">Pahlevan</th>
-                            <th scope="col">Falco</th>
-                            <th scope="col">Tetragon</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <th scope="row">Read <code>/etc/shadow</code></th>
-                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
-                            <td>Alert only</td>
-                            <td>Telemetry only</td>
-                        </tr>
-                        <tr>
-                            <th scope="row">Reverse shell</th>
-                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
-                            <td>Not detected</td>
-                            <td>Telemetry only</td>
-                        </tr>
-                        <tr>
-                            <th scope="row">Crypto-miner exec from <code>/tmp</code></th>
-                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
-                            <td>Alert only</td>
-                            <td>Telemetry only</td>
-                        </tr>
-                        <tr>
-                            <th scope="row">Unexpected egress</th>
-                            <td class="col-highlight"><strong>Blocked</strong> (EPERM)</td>
-                            <td>Not detected</td>
-                            <td>Telemetry only</td>
-                        </tr>
-                        <tr>
-                            <th scope="row">Attacks blocked</th>
-                            <td class="col-highlight"><strong><!--pahlevan:sync pahlevan-blocked-->25 / 26<!--/pahlevan:sync--></strong></td>
-                            <td><!--pahlevan:sync falco-blocked-->0 / 26<!--/pahlevan:sync--></td>
-                            <td><!--pahlevan:sync tetragon-blocked-->0 / 26<!--/pahlevan:sync--></td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
             <p class="qs-note">
-                With vendor defaults over 26 ATT&amp;CK-mapped scenarios: Falco alerts on
-                <!--pahlevan:sync falco-detected-->9 / 26<!--/pahlevan:sync--> and never blocks, Tetragon
-                streams telemetry on <!--pahlevan:sync tetragon-detected-->26 / 26<!--/pahlevan:sync-->
-                and never blocks by default, and Pahlevan blocks
-                <!--pahlevan:sync pahlevan-blocked-->25 / 26<!--/pahlevan:sync--> from an
-                <strong>auto-learned</strong> allow-list, in-kernel.
-                Read the benign row first: Pahlevan also blocks
-                <!--pahlevan:sync pahlevan-benign-->3 / 3<!--/pahlevan:sync--> benign controls, because
-                <code>curl</code> and <code>cat</code> are outside a learned baseline too. That is the
-                tradeoff, not a footnote. See the full report for the environment, resource use, and
-                the limitations we do not hide.
+                The control pass is the part that makes the rest trustworthy. Without it, a scenario
+                that silently failed to execute is indistinguishable from one that was prevented, and
+                a CPU figure has no idle node to subtract. Scenarios are mapped to
+                <!--pahlevan:sync attack-techniques-->27<!--/pahlevan:sync--> MITRE ATT&amp;CK for
+                Containers techniques and committed alongside the harness, so a run is reproducible
+                rather than reported.
             </p>
-            <a class="btn btn-outline btn-sm" href="https://github.com/obsernetics/pahlevan/blob/main/docs/benchmarks/results.md" target="_blank" rel="noopener">Full benchmark report &#8599;</a>
+            <p class="qs-note">
+                Read the benign controls first. Pahlevan blocks some of them, because
+                <code>curl</code> and <code>cat</code> are outside a learned baseline too. That is the
+                trade the whole design makes, not a footnote to it: a baseline narrow enough to stop
+                an attacker is narrow enough to stop an administrator.
+            </p>
+            <a class="btn btn-outline btn-sm" href="https://github.com/obsernetics/pahlevan/tree/main/docs/benchmarks" target="_blank" rel="noopener">Methodology &amp; recorded runs &#8599;</a>
         </div>
     </section>
 
@@ -605,9 +557,9 @@ docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v2.1.0<!--/
                 <div class="req-card">
                     <h3>Benchmarks</h3>
                     <p>
-                        Pahlevan ships a reproducible competitive benchmark harness (vs. Falco and Tetragon)
-                        built from real attack scenarios. Because enforcement requires the BPF LSM, the harness
-                        runs inside an eBPF-capable VM.
+                        Pahlevan ships a reproducible harness built from real attack scenarios, with a
+                        no-agent control pass to give the numbers a denominator. Because enforcement
+                        requires the BPF LSM, it runs inside an eBPF-capable VM.
                     </p>
                     <p>
                         Results are <strong>generated by the harness, not hand-written</strong> - no numbers

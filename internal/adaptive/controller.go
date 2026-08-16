@@ -4,8 +4,7 @@
 // It consumes the eBPF event stream, attributes each event to a Kubernetes pod
 // via the cgroup id, and drives each matched container through a learning window
 // and then into in-kernel enforcement - with no hand-written rules. This is the
-// behavior that distinguishes Pahlevan from Falco (alert-only, manual rules) and
-// Tetragon (manual TracingPolicy).
+// behavior, which is what removes the need for anyone to write a rule.
 package adaptive
 
 import (

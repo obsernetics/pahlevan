@@ -115,8 +115,8 @@ observe and deny in the kernel.
 - **Container attribution**: cgroup id to Kubernetes pod/container resolver.
 - **`hack/vm/`**: reproducible QEMU/KVM harness that provisions a kernel with the
   BPF LSM enabled for eBPF load, attach, observe, and enforce tests.
-- **Competitive benchmark harness** and the first measured results against Falco
-  and Tetragon (`docs/benchmarks/`).
+- **Benchmark harness** measuring detection, prevention and overhead, with a
+  no-agent control pass (`test/benchmark/`, `docs/benchmarks/`).
 - **GitHub Pages site** (`pages/`) with a deploy workflow, published Helm chart,
   install and benchmark sections.
 - **Committed bpf2go bindings and eBPF objects** so the tree builds from a clean

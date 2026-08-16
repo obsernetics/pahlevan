@@ -25,7 +25,7 @@ import (
 // points, and the maps with their key and value sizes can all be compared
 // between the two builds. What this does NOT prove is that the arm64 verifier
 // accepts them, which needs an arm64 kernel and is listed as an open gap in
-// docs/comparison.md rather than papered over here.
+// ROADMAP.md rather than papered over here.
 
 // objects are the five programs, by the base name bpf2go derives.
 var archObjects = []string{

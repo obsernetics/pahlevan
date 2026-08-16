@@ -1,11 +1,11 @@
 // Command pagesync keeps the GitHub Pages site consistent with the repository.
 //
-// The site duplicates facts that live elsewhere: benchmark numbers from
-// docs/benchmarks/results.md, the release version, and the demo GIF. Duplicated
-// facts drift, and this set drifted badly - the published page claimed Pahlevan
-// blocked "4 / 4" attacks while the benchmark it linked to reported 25 of 26,
-// because the page was written against a superseded run and nothing re-derived
-// it.
+// The site duplicates facts that live elsewhere: the release version, the size
+// of the benchmark suite, the ATT&CK coverage it claims. Duplicated facts
+// drift, and this set drifted badly - the published page once claimed Pahlevan
+// blocked "4 / 4" attacks while the report it linked to said something else
+// entirely, because the page was written against a superseded run and nothing
+// re-derived it.
 //
 // A stale marketing number is not a cosmetic problem for a security tool. It is
 // the first thing an evaluator checks and the first thing that makes them
@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -85,11 +86,7 @@ func main() {
 func Collect(root string) (map[string]string, error) {
 	facts := map[string]string{}
 
-	bench, err := os.ReadFile(filepath.Join(root, "docs", "benchmarks", "results.md"))
-	if err != nil {
-		return nil, fmt.Errorf("reading the benchmark report: %w", err)
-	}
-	if err := collectBenchmark(string(bench), facts); err != nil {
+	if err := collectScenarios(root, facts); err != nil {
 		return nil, err
 	}
 
@@ -102,49 +99,68 @@ func Collect(root string) (map[string]string, error) {
 	return facts, nil
 }
 
-// benchRow matches a totals row: | Pahlevan | 25/26 | 25/26 | 3/3 |
-var benchRow = regexp.MustCompile(
-	`(?m)^\|\s*\**(Pahlevan|Falco|Tetragon)\**\s*\|\s*(\d+/\d+)\s*\|\s*(\d+/\d+)\s*\|\s*(\d+/\d+)\s*\|`)
+// technique matches a MITRE ATT&CK technique id in a scenario header comment,
+// including sub-techniques: T1003, T1003.008.
+var technique = regexp.MustCompile(`\bT\d{4}(?:\.\d{3})?\b`)
 
-// resourceRow matches the agent resource row, whose first cell carries bold and
-// a trailing word: | **Pahlevan** agent | 66.7 MiB | ... | 11.25 % |
-var resourceRow = regexp.MustCompile(
-	`(?m)^\|\s*\**(Pahlevan|Falco|Tetragon)\**[^|]*\|\s*([\d.]+ MiB)\s*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|\s*([\d.]+ %)\s*\|`)
-
-func collectBenchmark(md string, facts map[string]string) error {
-	totals := benchRow.FindAllStringSubmatch(md, -1)
-	if len(totals) < 3 {
-		return fmt.Errorf(
-			"the benchmark report has %d totals rows, want 3 (Pahlevan, Falco, Tetragon); "+
-				"the table format changed and pagesync cannot read it", len(totals))
-	}
-	for _, m := range totals {
-		tool := strings.ToLower(m[1])
-		facts[tool+"-detected"] = spaceSlash(m[2])
-		facts[tool+"-blocked"] = spaceSlash(m[3])
-		facts[tool+"-benign"] = spaceSlash(m[4])
+// collectScenarios counts the benchmark suite from the scenario scripts
+// themselves.
+//
+// Counted rather than copied, because the number on the page is a claim about
+// coverage and a hand-typed one goes stale the first time somebody adds a
+// scenario. Adding a file to the directory is what changes the published
+// figure.
+func collectScenarios(root string, facts map[string]string) error {
+	dir := filepath.Join(root, "test", "benchmark", "scenarios")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading the scenario directory: %w", err)
 	}
 
-	res := resourceRow.FindAllStringSubmatch(md, -1)
-	if len(res) < 3 {
-		return fmt.Errorf(
-			"the benchmark report has %d resource rows, want 3; the table format changed", len(res))
+	attacks, benign := 0, 0
+	techniques := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() {
+			// scenarios/benign/ holds the controls.
+			if e.Name() != "benign" {
+				continue
+			}
+			sub, err := os.ReadDir(filepath.Join(dir, "benign"))
+			if err != nil {
+				return fmt.Errorf("reading the benign scenario directory: %w", err)
+			}
+			for _, b := range sub {
+				if filepath.Ext(b.Name()) == ".sh" {
+					benign++
+				}
+			}
+			continue
+		}
+		if filepath.Ext(e.Name()) != ".sh" {
+			continue
+		}
+		attacks++
+
+		// The technique ids live in the header comment of each script, which
+		// is also where a reader looks for them. Parsing the same place the
+		// reader reads means the two cannot disagree.
+		data, err := os.ReadFile(filepath.Join(dir, e.Name())) // #nosec G304 -- a fixed directory in-tree
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", e.Name(), err)
+		}
+		for _, m := range technique.FindAllString(string(data), -1) {
+			techniques[m] = true
+		}
 	}
-	for _, m := range res {
-		tool := strings.ToLower(m[1])
-		facts[tool+"-memory"] = m[2]
-		facts[tool+"-cpu"] = m[3]
+
+	if attacks == 0 {
+		return fmt.Errorf("no attack scenarios found in %s; the site would publish a zero", dir)
 	}
+
+	facts["attack-scenarios"] = strconv.Itoa(attacks)
+	facts["benign-scenarios"] = strconv.Itoa(benign)
+	facts["attack-techniques"] = strconv.Itoa(len(techniques))
 	return nil
-}
-
-// spaceSlash renders 25/26 as "25 / 26", which is how the site reads.
-func spaceSlash(s string) string {
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) != 2 {
-		return s
-	}
-	return parts[0] + " / " + parts[1]
 }
 
 // releaseVersion is the version the site tells people to pull.

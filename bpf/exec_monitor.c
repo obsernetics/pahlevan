@@ -146,7 +146,7 @@ struct {
 } exec_allowed SEC(".maps");
 
 /* Per-cgroup mode: absent/0 = learning, 1 = enforcing, 2 = enforcing + kill.
- * Mode 2 also sends SIGKILL to the offending task, matching Tetragon's Sigkill
+ * Mode 2 also sends SIGKILL to the offending task, for the case where
  * action, for operators who want the process terminated and not merely refused. */
 #define MODE_ENFORCE_KILL 2
 struct {

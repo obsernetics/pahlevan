@@ -38,9 +38,11 @@ const (
 	kindFile       = "file"
 	kindExec       = "exec"
 	kindCapability = "capability"
+	kindCred       = "cred"
+	kindShell      = "shell"
 )
 
-var eventKinds = []string{kindSyscall, kindNetwork, kindFile, kindExec, kindCapability}
+var eventKinds = []string{kindSyscall, kindNetwork, kindFile, kindExec, kindCapability, kindCred, kindShell}
 
 var (
 	ebpfEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -77,12 +79,20 @@ var (
 		Name: "pahlevan_ebpf_breakouts_total",
 		Help: "Execs whose working directory was outside the process's mount namespace",
 	})
+	// Counted separately from cred events because most credential changes are
+	// a daemon dropping privilege at startup and this is the one that is not:
+	// privilege gained with no execve to explain it.
+	ebpfEscalationsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pahlevan_ebpf_escalations_total",
+		Help: "Credential changes that gained privilege with no execve underway",
+	})
 )
 
 func init() {
 	ctrlmetrics.Registry.MustRegister(
 		ebpfEventsTotal, ebpfDenialsTotal, ebpfDecodeErrorsTotal, ebpfHandlerErrorsTotal,
 		ebpfBreakoutsTotal,
+		ebpfEscalationsTotal,
 	)
 	// Pre-create every child so a kind that has not fired yet reports 0 rather
 	// than being absent. An absent series and a genuinely idle one look the same
@@ -118,27 +128,38 @@ func newDataPlaneCounters(kind string) dataPlaneCounters {
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" FileMonitor ../../bpf/file_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" ExecMonitor ../../bpf/exec_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" CapabilityMonitor ../../bpf/capability_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" CredMonitor ../../bpf/cred_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" ShellMonitor ../../bpf/shell_monitor.c
 
 type Manager struct {
-	mu                 sync.RWMutex
-	syscallSpecs       *ebpf.CollectionSpec
-	networkSpecs       *ebpf.CollectionSpec
-	fileSpecs          *ebpf.CollectionSpec
-	syscallCollection  *ebpf.Collection
-	networkCollection  *ebpf.Collection
-	fileCollection     *ebpf.Collection
-	execCollection     *ebpf.Collection
-	capCollection      *ebpf.Collection
-	syscallLinks       []link.Link
-	networkLinks       []link.Link
-	fileLinks          []link.Link
-	execLinks          []link.Link
-	capLinks           []link.Link
+	mu                sync.RWMutex
+	syscallSpecs      *ebpf.CollectionSpec
+	networkSpecs      *ebpf.CollectionSpec
+	fileSpecs         *ebpf.CollectionSpec
+	syscallCollection *ebpf.Collection
+	networkCollection *ebpf.Collection
+	fileCollection    *ebpf.Collection
+	execCollection    *ebpf.Collection
+	capCollection     *ebpf.Collection
+	credCollection    *ebpf.Collection
+	shellCollection   *ebpf.Collection
+	syscallLinks      []link.Link
+	networkLinks      []link.Link
+	fileLinks         []link.Link
+	execLinks         []link.Link
+	capLinks          []link.Link
+	credLinks         []link.Link
+	// shellLinks is keyed by the executable path a uprobe is attached to, so
+	// the same shell binary is never probed twice and each can be detached
+	// independently when its last container goes away.
+	shellLinks         map[string]link.Link
 	eventReader        *ringbuf.Reader
 	networkEventReader *ringbuf.Reader
 	fileEventReader    *ringbuf.Reader
 	execEventReader    *ringbuf.Reader
 	capEventReader     *ringbuf.Reader
+	credEventReader    *ringbuf.Reader
+	shellEventReader   *ringbuf.Reader
 	eventHandlers      []EventHandler
 	running            bool
 	stopCh             chan struct{}
@@ -378,6 +399,14 @@ type SyscallEvent struct {
 	ContainerID string
 	Phase       uint8
 	Action      uint8
+
+	// Args holds the six syscall arguments as the kernel received them.
+	//
+	// Their meaning depends entirely on the syscall: see
+	// SyscallArgs.Describe for the ones Pahlevan interprets. For the rest
+	// they are raw machine words, which is still more than the syscall
+	// number alone conveys.
+	Args [6]uint64
 }
 
 type NetworkEvent struct {
@@ -552,6 +581,35 @@ func (m *Manager) LoadPrograms() error {
 		log.Log.V(0).Info("capability monitor spec unavailable", "error", cerr2.Error())
 	}
 
+	// The credential monitor is a kprobe, not an LSM hook, so it works on
+	// kernels without the BPF LSM enabled - which is most of them. It is the
+	// only monitor that reports a privilege escalation the workload never
+	// asked the kernel for through a syscall.
+	if credSpecs, cerr2 := LoadCredMonitor(); cerr2 == nil {
+		applyMapSizing(credSpecs, map[string]uint32{"cred_events": m.mapSizing.RingBufBytes})
+		if credColl, cerr := ebpf.NewCollection(credSpecs); cerr == nil {
+			m.credCollection = credColl
+		} else {
+			log.Log.V(0).Info("credential monitor unavailable; continuing without escalation detection", "error", cerr.Error())
+		}
+	} else {
+		log.Log.V(0).Info("credential monitor spec unavailable", "error", cerr2.Error())
+	}
+
+	// The shell monitor has no attach point until a shell is found to probe;
+	// loading it here means TraceShell can attach without a load latency
+	// spike at the moment an interactive session starts.
+	if shellSpecs, serr := LoadShellMonitor(); serr == nil {
+		applyMapSizing(shellSpecs, map[string]uint32{"shell_events": m.mapSizing.RingBufBytes})
+		if shellColl, cerr := ebpf.NewCollection(shellSpecs); cerr == nil {
+			m.shellCollection = shellColl
+		} else {
+			log.Log.V(0).Info("shell monitor unavailable; continuing without interactive command capture", "error", cerr.Error())
+		}
+	} else {
+		log.Log.V(0).Info("shell monitor spec unavailable", "error", serr.Error())
+	}
+
 	if execSpecs, eerr := LoadExecMonitor(); eerr == nil {
 		applyMapSizing(execSpecs, map[string]uint32{
 			"exec_allowed": m.mapSizing.ExecAllowed,
@@ -584,18 +642,28 @@ func (m *Manager) AttachPrograms() error {
 		return nil
 	}
 
-	// Attach the single raw tracepoint on sys_enter. One program observes every
+	// Attach the single tracepoint on sys_enter. One program observes every
 	// syscall (vs a hand-picked handful of tracepoints), which is what the
 	// learner needs; per-(cgroup,syscall) dedup happens in-kernel.
+	//
+	// raw_syscalls/sys_enter rather than the raw tracepoint of the same name:
+	// the ordinary tracepoint has already extracted the syscall arguments into
+	// an array, identically on both architectures, where the raw one hands
+	// over a struct pt_regs that can only be decoded per-arch. See
+	// bpf/syscall_monitor.c.
 	if prog := m.syscallCollection.Programs["handle_sys_enter"]; prog != nil {
-		l, err := link.AttachRawTracepoint(link.RawTracepointOptions{
-			Name:    "sys_enter",
-			Program: prog,
-		})
+		l, err := link.Tracepoint("raw_syscalls", "sys_enter", prog, nil)
 		if err != nil {
-			return fmt.Errorf("failed to attach raw_tracepoint sys_enter: %w", err)
+			return fmt.Errorf("failed to attach tracepoint raw_syscalls/sys_enter: %w", err)
 		}
 		m.syscallLinks = append(m.syscallLinks, l)
+	}
+
+	// Populate the watch set: syscalls that report every occurrence instead of
+	// only their first. Best-effort - without it the program still runs, it
+	// just deduplicates the escalation primitives like everything else.
+	if err := m.installSyscallWatch(); err != nil {
+		log.Log.V(0).Info("could not install the syscall watch set; escalation primitives will be deduplicated", "error", err.Error())
 	}
 
 	// Attach the file monitor via the BPF LSM file_open hook. This sees the
@@ -677,6 +745,26 @@ func (m *Manager) AttachPrograms() error {
 		}
 	}
 
+	// Attach the credential monitor's kprobe (best-effort).
+	//
+	// Unlike the LSM hooks this needs no kernel boot parameter: kprobes are
+	// available on any kernel with CONFIG_KPROBES, which is every distribution
+	// kernel. It fails only where kprobes are disabled outright or where
+	// commit_creds has been renamed, neither of which is common.
+	if m.credCollection != nil {
+		if prog := m.credCollection.Programs["handle_commit_creds"]; prog != nil {
+			l, err := link.Kprobe("commit_creds", prog, nil)
+			if err != nil {
+				log.Log.V(0).Info("kprobe/commit_creds attach failed; privilege-escalation detection disabled", "error", err.Error())
+			} else {
+				m.credLinks = append(m.credLinks, l)
+				if err := m.setCredEnabled(true); err != nil {
+					log.Log.V(0).Info("credential monitor attached but could not be enabled", "error", err.Error())
+				}
+			}
+		}
+	}
+
 	// Setup event readers
 	if err := m.setupEventReaders(); err != nil {
 		return fmt.Errorf("failed to setup event readers: %w", err)
@@ -731,6 +819,32 @@ func (m *Manager) setupEventReaders() error {
 		}
 	}
 
+	// Credential-change events (best-effort; nil in degraded mode).
+	if m.credCollection != nil {
+		if credEventsMap := m.credCollection.Maps["cred_events"]; credEventsMap != nil {
+			reader, err := ringbuf.NewReader(credEventsMap)
+			if err != nil {
+				log.Log.V(0).Info("credential event reader unavailable", "error", err.Error())
+			} else {
+				m.credEventReader = reader
+			}
+		}
+	}
+
+	// Interactive shell events (best-effort; nil until a shell is probed, but
+	// the reader is created up front so no command is missed between the
+	// uprobe attaching and the reader starting).
+	if m.shellCollection != nil {
+		if shellEventsMap := m.shellCollection.Maps["shell_events"]; shellEventsMap != nil {
+			reader, err := ringbuf.NewReader(shellEventsMap)
+			if err != nil {
+				log.Log.V(0).Info("shell event reader unavailable", "error", err.Error())
+			} else {
+				m.shellEventReader = reader
+			}
+		}
+	}
+
 	// Exec events (best-effort; nil in degraded mode).
 	if m.execCollection != nil {
 		if execEventsMap := m.execCollection.Maps["exec_events"]; execEventsMap != nil {
@@ -766,6 +880,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	go m.processFileEvents(ctx)
 	go m.processExecEvents(ctx)
 	go m.processCapabilityEvents(ctx)
+	go m.processCredEvents(ctx)
+	go m.processShellEvents(ctx)
 
 	return nil
 }
@@ -781,37 +897,41 @@ func (m *Manager) Stop() {
 	close(m.stopCh)
 	m.running = false
 
-	// Close event readers
-	if m.eventReader != nil {
-		_ = m.eventReader.Close()
-	}
-	if m.networkEventReader != nil {
-		_ = m.networkEventReader.Close()
-	}
-	if m.fileEventReader != nil {
-		_ = m.fileEventReader.Close()
-	}
-
-	// Detach all links
-	for _, l := range m.syscallLinks {
-		_ = l.Close()
-	}
-	for _, l := range m.networkLinks {
-		_ = l.Close()
-	}
-	for _, l := range m.fileLinks {
-		_ = l.Close()
+	// Close every event reader. Enumerating them rather than naming three
+	// means a reader added later is released with the rest; the exec,
+	// capability, credential and shell readers were leaked here until this
+	// was made exhaustive.
+	for _, r := range []*ringbuf.Reader{
+		m.eventReader, m.networkEventReader, m.fileEventReader,
+		m.execEventReader, m.capEventReader, m.credEventReader, m.shellEventReader,
+	} {
+		if r != nil {
+			_ = r.Close()
+		}
 	}
 
-	// Close collections
-	if m.syscallCollection != nil {
-		m.syscallCollection.Close()
+	// Detach every link.
+	for _, links := range [][]link.Link{
+		m.syscallLinks, m.networkLinks, m.fileLinks,
+		m.execLinks, m.capLinks, m.credLinks,
+	} {
+		for _, l := range links {
+			_ = l.Close()
+		}
 	}
-	if m.networkCollection != nil {
-		m.networkCollection.Close()
+	for path, l := range m.shellLinks {
+		_ = l.Close()
+		delete(m.shellLinks, path)
 	}
-	if m.fileCollection != nil {
-		m.fileCollection.Close()
+
+	// Close every collection.
+	for _, c := range []*ebpf.Collection{
+		m.syscallCollection, m.networkCollection, m.fileCollection,
+		m.execCollection, m.capCollection, m.credCollection, m.shellCollection,
+	} {
+		if c != nil {
+			c.Close()
+		}
 	}
 }
 
@@ -962,6 +1082,26 @@ func (m *Manager) processEvents(ctx context.Context, eventType string) {
 				}
 				rawSample = record.RawSample
 				err = e
+			case kindCred:
+				if m.credEventReader == nil {
+					return
+				}
+				record, e := m.credEventReader.Read()
+				if e != nil {
+					continue
+				}
+				rawSample = record.RawSample
+				err = e
+			case kindShell:
+				if m.shellEventReader == nil {
+					return
+				}
+				record, e := m.shellEventReader.Read()
+				if e != nil {
+					continue
+				}
+				rawSample = record.RawSample
+				err = e
 			case "exec":
 				if m.execEventReader == nil {
 					return
@@ -1060,6 +1200,38 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 			ebpfBreakoutsTotal.Inc()
 		}
 		m.notifyHandlers(kindExec, func(h EventHandler) error { return h.HandleProcessEvent(event) })
+	case kindCred:
+		event := parseCredEvent(rawSample)
+		if event == nil {
+			m.counters[kindCred].decodeErrors.Inc()
+			return
+		}
+		m.counters[kindCred].events.Inc()
+		if event.Flags&CredKilled != 0 {
+			m.counters[kindCred].denials.Inc()
+		}
+		if event.Unexplained() {
+			ebpfEscalationsTotal.Inc()
+		}
+		m.notifyHandlers(kindCred, func(h EventHandler) error {
+			if ch, ok := h.(CredEventHandler); ok {
+				return ch.HandleCredEvent(event)
+			}
+			return nil
+		})
+	case kindShell:
+		event := parseShellEvent(rawSample)
+		if event == nil {
+			m.counters[kindShell].decodeErrors.Inc()
+			return
+		}
+		m.counters[kindShell].events.Inc()
+		m.notifyHandlers(kindShell, func(h EventHandler) error {
+			if sh, ok := h.(ShellEventHandler); ok {
+				return sh.HandleShellEvent(event)
+			}
+			return nil
+		})
 	}
 }
 
@@ -1113,7 +1285,15 @@ func (m *Manager) processExecEvents(ctx context.Context) {
 }
 
 func (m *Manager) processCapabilityEvents(ctx context.Context) {
-	m.processEvents(ctx, "capability")
+	m.processEvents(ctx, kindCapability)
+}
+
+func (m *Manager) processCredEvents(ctx context.Context) {
+	m.processEvents(ctx, kindCred)
+}
+
+func (m *Manager) processShellEvents(ctx context.Context) {
+	m.processEvents(ctx, kindShell)
 }
 
 // Helper functions for converting between Go and eBPF data structures
@@ -1255,9 +1435,11 @@ func convertToEBPFFilePolicy(policy *FilePolicy) *EBPFFileAccessPolicy {
 // bpf/syscall_monitor.c (see that file for the authoritative layout):
 //
 //	__u64 cgroup_id; __u64 timestamp_ns; __u64 syscall_nr;
-//	__u32 pid; __u32 tid; __u32 uid; __u32 gid; __u8 comm[16];  // 56 bytes
+//	__u32 pid; __u32 tid; __u32 uid; __u32 gid; __u8 comm[16];
+//	__u64 args[6];                                              // 104 bytes
 func parseSyscallEvent(data []byte) *SyscallEvent {
-	const size = 8 + 8 + 8 + 4 + 4 + 4 + 4 + 16 // 56
+	const argsOff = 8 + 8 + 8 + 4 + 4 + 4 + 4 + 16 // 56
+	const size = argsOff + 6*8                     // 104
 	if len(data) < size {
 		return nil
 	}
@@ -1278,6 +1460,10 @@ func parseSyscallEvent(data []byte) *SyscallEvent {
 		comm = comm[:i]
 	}
 	event.Comm = string(comm)
+
+	for i := 0; i < 6; i++ {
+		event.Args[i] = binary.LittleEndian.Uint64(data[argsOff+i*8 : argsOff+(i+1)*8])
+	}
 
 	// Until pod attribution (pkg/attribution) resolves cgroup->pod, surface the
 	// cgroup id as the container identifier.

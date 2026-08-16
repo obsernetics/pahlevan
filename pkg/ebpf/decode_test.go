@@ -7,7 +7,16 @@ import (
 
 // helpers to build the exact wire layouts the eBPF programs emit.
 func buildSyscallRec(cgroup, ts, nr uint64, pid, uid, gid uint32, comm string) []byte {
-	b := make([]byte, 56)
+	return buildSyscallRecArgs(cgroup, ts, nr, pid, uid, gid, comm, [6]uint64{})
+}
+
+// buildSyscallRecArgs encodes the whole struct syscall_event, the six syscall
+// arguments included. The layout is spelled out independently of the constants
+// in manager.go, so a change to one side fails the test rather than both
+// moving together.
+func buildSyscallRecArgs(cgroup, ts, nr uint64, pid, uid, gid uint32, comm string, args [6]uint64) []byte {
+	const argsOff = 56
+	b := make([]byte, argsOff+6*8)
 	binary.LittleEndian.PutUint64(b[0:], cgroup)
 	binary.LittleEndian.PutUint64(b[8:], ts)
 	binary.LittleEndian.PutUint64(b[16:], nr)
@@ -15,6 +24,9 @@ func buildSyscallRec(cgroup, ts, nr uint64, pid, uid, gid uint32, comm string) [
 	binary.LittleEndian.PutUint32(b[32:], uid)
 	binary.LittleEndian.PutUint32(b[36:], gid)
 	copy(b[40:56], comm)
+	for i, a := range args {
+		binary.LittleEndian.PutUint64(b[argsOff+i*8:], a)
+	}
 	return b
 }
 
@@ -97,6 +109,26 @@ func TestParseSyscallEventDecode(t *testing.T) {
 	}
 	if parseSyscallEvent([]byte{1, 2, 3}) != nil {
 		t.Error("short buffer should decode nil")
+	}
+	// A record in the pre-arguments layout must decode to nil rather than to
+	// an event with garbage arguments. The kernel and userspace halves skewing
+	// is what the decode-error counter and its alert exist for; silently
+	// accepting the old length would hide exactly that.
+	if parseSyscallEvent(make([]byte, 56)) != nil {
+		t.Error("a record in the old 56-byte layout should decode nil")
+	}
+}
+
+// The arguments are the reason a ptrace event is worth reading: the syscall
+// number alone cannot tell PTRACE_TRACEME from PTRACE_ATTACH against pid 1.
+func TestParseSyscallEventDecodesArguments(t *testing.T) {
+	args := [6]uint64{16, 1, 0xdeadbeef, 0, 0, 7}
+	ev := parseSyscallEvent(buildSyscallRecArgs(7004, 123, 101, 42, 0, 0, "python3", args))
+	if ev == nil {
+		t.Fatal("nil event")
+	}
+	if ev.Args != args {
+		t.Errorf("arguments decoded as %v, want %v", ev.Args, args)
 	}
 }
 

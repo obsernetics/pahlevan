@@ -19,12 +19,12 @@ event payload you have in mind is very helpful. -->
 
 ## Alternatives you considered
 
-<!-- Including doing it outside Pahlevan, or with Falco or Tetragon. -->
+<!-- Including doing it outside Pahlevan entirely. -->
 
 ## Scope
 
 - [ ] I checked [ROADMAP.md](../../ROADMAP.md) and this is not already planned
-- [ ] I checked [docs/comparison.md](../../docs/comparison.md) for how Pahlevan compares here
+- [ ] I checked [ROADMAP.md](../../ROADMAP.md) in case this is already planned
 - [ ] This changes enforcement behavior or the agent's privileges (needs maintainer discussion first)
 - [ ] I am willing to work on this
 

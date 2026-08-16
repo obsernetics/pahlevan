@@ -2,9 +2,8 @@
 
 Pahlevan splits a **privileged per-node data plane** from an **unprivileged,
 leader-elected control plane**. The agent owns everything that touches the
-kernel; the operator owns everything that touches the Kubernetes API. This is
-the same node-instrumentation shape as Falco and Tetragon, with an operator
-driving a `selector -> learn -> enforce` lifecycle on top.
+kernel; the operator owns everything that touches the Kubernetes API, and drives
+a `selector -> learn -> enforce` lifecycle on top of it.
 
 ![Pahlevan architecture](assets/architecture.svg)
 
@@ -159,10 +158,10 @@ tracks event volume: a chatty workload during its learning window costs more
 than the same workload once enforcement is on and the ring buffer has gone
 quiet, because in-kernel deduplication suppresses repeats.
 
-Measured resident memory from the 2026-08-14 benchmark run was roughly 327 MiB
-for the Pahlevan agent with debug logging enabled, against 106 MiB for Falco and
-67 MiB for Tetragon. That gap is a known tuning target and is reported in full in
-[`benchmarks/results.md`](benchmarks/results.md).
+BPF map preallocation, which dominated an early 327 MiB measurement, is 37.7 MiB
+across all seven programs on Linux 6.8. End-to-end agent resident memory has not
+been re-measured since that fix, so no figure is quoted here until the benchmark
+is re-run; see [`benchmarks/`](benchmarks/).
 
 ## Scalability
 
