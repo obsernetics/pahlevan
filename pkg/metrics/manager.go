@@ -37,15 +37,15 @@ type Manager struct {
 	meter         metric.Meter
 
 	// Core metrics
-	policyViolationsTotal     prometheus.Counter
-	enforcementActionsTotal   prometheus.Counter
-	selfHealingActionsTotal   prometheus.Counter
+	policyViolationsTotal     *prometheus.CounterVec
+	enforcementActionsTotal   *prometheus.CounterVec
+	selfHealingActionsTotal   *prometheus.CounterVec
 	learningProgressGauge     prometheus.Gauge
 	attackSurfaceRiskScore    prometheus.Gauge
-	containerLearningDuration prometheus.Histogram
+	containerLearningDuration *prometheus.HistogramVec
 	policyGenerationDuration  prometheus.Histogram
-	rollbackActionsTotal      prometheus.Counter
-	healthCheckScore          prometheus.Gauge
+	rollbackActionsTotal      *prometheus.CounterVec
+	healthCheckScore          *prometheus.GaugeVec
 	privilegeReductionRatio   prometheus.Gauge
 
 	// Syscall metrics
@@ -184,24 +184,38 @@ func NewManager() *Manager {
 
 func (m *Manager) initializePrometheusMetrics() {
 	// Core metrics
-	m.policyViolationsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	// These six carried no labels at all, while every recorder took a
+	// MetricLabels argument and discarded it. A single number for the whole
+	// node cannot answer "which policy is denying things", which is the first
+	// question anyone asks of it - and for the gauges it was worse than
+	// useless, because every container wrote the same series and the value was
+	// whichever reported last.
+	//
+	// namespace and policy only. Both are bounded by the number of policies in
+	// the cluster. Pod and container are deliberately absent: they are
+	// unbounded, and the per-container series already live behind
+	// --metrics-detail=high.
+	m.policyViolationsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pahlevan_policy_violations_total",
-		Help: "Total number of policy violations detected",
-	})
+		Help: "Policy violations detected, by namespace and policy",
+	}, policyLabels)
 
-	m.enforcementActionsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	m.enforcementActionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pahlevan_enforcement_actions_total",
-		Help: "Total number of enforcement actions taken",
-	})
+		Help: "Enforcement actions taken, by namespace, policy and action",
+	}, append(append([]string{}, policyLabels...), "action"))
 
-	m.selfHealingActionsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	m.selfHealingActionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pahlevan_self_healing_actions_total",
-		Help: "Total number of self-healing actions performed",
-	})
+		Help: "Self-healing actions performed, by namespace and policy",
+	}, policyLabels)
 
+	// Unlabeled on purpose: the caller computes the share of this node's
+	// containers that have reached enforcement, which is a node-wide ratio. The
+	// agent is one process per node, so the series is already per-node.
 	m.learningProgressGauge = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pahlevan_learning_progress_ratio",
-		Help: "Current learning progress as a ratio (0-1)",
+		Help: "Share of this node's tracked containers that are enforcing (0-1)",
 	})
 
 	m.attackSurfaceRiskScore = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -209,11 +223,11 @@ func (m *Manager) initializePrometheusMetrics() {
 		Help: "Current attack surface risk score (0-10)",
 	})
 
-	m.containerLearningDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+	m.containerLearningDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "pahlevan_container_learning_duration_seconds",
-		Help:    "Time taken for container learning phase",
+		Help:    "Time from learning start to enforcement, by namespace and policy",
 		Buckets: prometheus.ExponentialBuckets(1, 2, 10),
-	})
+	}, policyLabels)
 
 	m.policyGenerationDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "pahlevan_policy_generation_duration_seconds",
@@ -221,15 +235,15 @@ func (m *Manager) initializePrometheusMetrics() {
 		Buckets: prometheus.ExponentialBuckets(0.1, 2, 10),
 	})
 
-	m.rollbackActionsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+	m.rollbackActionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pahlevan_rollback_actions_total",
-		Help: "Total number of policy rollback actions",
-	})
+		Help: "Policy rollbacks performed, by namespace and policy",
+	}, policyLabels)
 
-	m.healthCheckScore = prometheus.NewGauge(prometheus.GaugeOpts{
+	m.healthCheckScore = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "pahlevan_health_check_score",
-		Help: "Current health check score (0-1)",
-	})
+		Help: "Health check score (0-1), by namespace and policy",
+	}, policyLabels)
 
 	m.privilegeReductionRatio = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "pahlevan_privilege_reduction_ratio",
@@ -566,25 +580,46 @@ func (m *Manager) initializeOTelMetrics() {
 
 // Metric recording methods
 
+// policyLabels are the dimensions every policy-plane metric carries. Bounded by
+// the number of policies, which is what makes them safe to attach.
+var policyLabels = []string{"namespace", "policy"}
+
+// values renders the bounded label set. An empty namespace or policy becomes
+// "unknown" rather than "", because an empty label value is indistinguishable
+// from an absent series in most query languages.
+func (l MetricLabels) values() []string {
+	return []string{orUnknown(l.Namespace), orUnknown(l.PolicyName)}
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
+
 func (m *Manager) RecordPolicyViolation(labels MetricLabels) {
-	m.policyViolationsTotal.Inc()
+	m.policyViolationsTotal.WithLabelValues(labels.values()...).Inc()
 	if m.otelPolicyViolationsTotal != nil {
 		m.otelPolicyViolationsTotal.Add(context.Background(), 1)
 	}
 }
 
 func (m *Manager) RecordEnforcementAction(labels MetricLabels, actionType string) {
-	m.enforcementActionsTotal.Inc()
+	m.enforcementActionsTotal.
+		WithLabelValues(append(labels.values(), orUnknown(actionType))...).Inc()
 	if m.otelEnforcementActionsTotal != nil {
 		m.otelEnforcementActionsTotal.Add(context.Background(), 1)
 	}
 }
 
 func (m *Manager) RecordSelfHealingAction(labels MetricLabels) {
-	m.selfHealingActionsTotal.Inc()
+	m.selfHealingActionsTotal.WithLabelValues(labels.values()...).Inc()
 }
 
-func (m *Manager) UpdateLearningProgress(labels MetricLabels, progress float64) {
+// UpdateLearningProgress records the share of this node's containers that are
+// enforcing. It takes no labels because the value is node-wide by construction.
+func (m *Manager) UpdateLearningProgress(progress float64) {
 	m.learningProgressGauge.Set(progress)
 	if m.otelLearningProgressGauge != nil {
 		m.otelLearningProgressGauge.Record(context.Background(), progress)
@@ -599,7 +634,7 @@ func (m *Manager) UpdateAttackSurfaceRiskScore(score float64) {
 }
 
 func (m *Manager) RecordContainerLearningDuration(labels MetricLabels, duration time.Duration) {
-	m.containerLearningDuration.Observe(duration.Seconds())
+	m.containerLearningDuration.WithLabelValues(labels.values()...).Observe(duration.Seconds())
 }
 
 func (m *Manager) RecordPolicyGenerationDuration(labels MetricLabels, duration time.Duration) {
@@ -607,11 +642,11 @@ func (m *Manager) RecordPolicyGenerationDuration(labels MetricLabels, duration t
 }
 
 func (m *Manager) RecordRollbackAction(labels MetricLabels) {
-	m.rollbackActionsTotal.Inc()
+	m.rollbackActionsTotal.WithLabelValues(labels.values()...).Inc()
 }
 
 func (m *Manager) UpdateHealthCheckScore(labels MetricLabels, score float64) {
-	m.healthCheckScore.Set(score)
+	m.healthCheckScore.WithLabelValues(labels.values()...).Set(score)
 }
 
 func (m *Manager) UpdatePrivilegeReductionRatio(labels MetricLabels, ratio float64) {

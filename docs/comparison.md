@@ -8,6 +8,12 @@ says so in the Pahlevan column rather than hiding it in a footnote.
 If you find a claim here that the code does not support, that is a bug. Please
 open an issue.
 
+This document is deliberately unflattering. Its counterpart,
+[`why-pahlevan.md`](why-pahlevan.md), makes the positive case - the seven
+capabilities neither comparator has - and each entry there names the file that
+implements it so you can check. Read that one for what Pahlevan is for, and this
+one before you deploy it.
+
 ## Scope and honesty rules
 
 - **Pahlevan** rows describe `v2.0.0` plus what is currently on `main`. Anything

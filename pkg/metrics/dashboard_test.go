@@ -204,7 +204,21 @@ func TestAlertRulesOnlyQueryRealMetrics(t *testing.T) {
 		for _, r := range g.Rules {
 			require.NotEmpty(t, r.Alert, "every rule needs a name")
 			require.NotEmpty(t, r.Expr, "alert %q has no expression", r.Alert)
-			require.NotEmpty(t, r.For, "alert %q has no for:, so it fires on a single scrape", r.Alert)
+			// A `for:` keeps a single scrape from paging somebody, which is the
+			// right default and not universal: an alert about something that
+			// has already happened should fire the first time it is seen, and
+			// waiting for it to recur means waiting for a second escape.
+			//
+			// The exception is a named list rather than a blanket relaxation,
+			// so adding one is a decision somebody makes on purpose.
+			firesImmediately := map[string]string{
+				"PahlevanContainerBreakout": "the escape has already happened; " +
+					"a second occurrence is not more information",
+			}
+			if _, ok := firesImmediately[r.Alert]; !ok {
+				require.NotEmpty(t, r.For,
+					"alert %q has no for:, so it fires on a single scrape", r.Alert)
+			}
 			seen++
 			for _, name := range pahlevanMetric.FindAllString(r.Expr, -1) {
 				base := name

@@ -4,7 +4,7 @@
 # Variables
 BINARY_NAME=pahlevan-operator
 CONTAINER_NAME=pahlevan/operator
-VERSION?=v2.0.0
+VERSION?=v2.1.0
 BUILD_DIR=bin
 BPF_DIR=bpf
 PKG_DIR=pkg/ebpf
@@ -87,6 +87,18 @@ proto: ## Regenerate the gRPC API from api/v1alpha1/events.proto (needs protoc)
 		--go-grpc_out=. --go-grpc_opt=module=github.com/obsernetics/pahlevan \
 		api/v1alpha1/events.proto
 	@echo "regenerated api/v1alpha1/*.pb.go"
+
+.PHONY: api-docs
+api-docs: ## Regenerate the CRD section of docs/api-reference.md from the Go types
+	@go run ./hack/apidocs > /tmp/pahlevan-api.md
+	@python3 - <<'PY'
+	import io
+	gen = open('/tmp/pahlevan-api.md').read()
+	cur = open('docs/api-reference.md').read()
+	i = cur.index('## Metrics, events and the CLI')
+	open('docs/api-reference.md','w').write(gen + '\n' + cur[i:])
+	PY
+	@echo "regenerated the CRD section of docs/api-reference.md"
 
 .PHONY: pages-check
 pages-check: ## Fail if the GitHub Pages site has drifted from its sources

@@ -44,10 +44,13 @@ Pahlevan learns what a workload does, then blocks the rest in-kernel.
 | Coverage | Syscalls, files, egress, exec, capabilities | Runtime events | Kernel tracing | L3-L7 traffic |
 | Enforces on the caller | **Parent, uid, gid at exec** | Alert only | Selectors, hand-written | n/a |
 
-Falco and Tetragon are excellent observability tools with far larger ecosystems, and
-[`docs/comparison.md`](docs/comparison.md) is honest about the fifteen things they do
-better. Pahlevan's claim is narrower: close the loop. Learn the baseline, then *prevent*
-the deviation.
+Falco and Tetragon are excellent observability tools with far larger ecosystems.
+Two documents, and read them in this order:
+[`docs/why-pahlevan.md`](docs/why-pahlevan.md) is the seven things Pahlevan does that
+they do not, each with the file that implements it;
+[`docs/comparison.md`](docs/comparison.md) is the fifteen things they do better.
+Pahlevan's claim is narrower than "better": close the loop. Learn the baseline, then
+*prevent* the deviation.
 
 Watch it happen on a real workload: [`docs/live-scenario.md`](docs/live-scenario.md) runs
 a web application for fifty minutes, learns it, enforces, and then attacks it. Nine

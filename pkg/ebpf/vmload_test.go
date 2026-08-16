@@ -2029,3 +2029,137 @@ func TestVMBlanketEgressPermissions(t *testing.T) {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// TestVMBreakoutAcrossMountNamespacesIsRefused reproduces the shape of the runC breakout
+// class and proves the kernel refuses it.
+//
+// CVE-2024-21626 and the vulnerabilities that followed work by leaving the
+// container's working directory pointing at /proc/self/fd/N, where N is a
+// descriptor the runtime leaked from the host mount namespace. Everything the
+// container resolves relative to that directory resolves on the host, so a
+// write to ../../../etc escapes with no capability, no mount, and no syscall a
+// seccomp profile would question.
+//
+// The exploit is not reproduced here - that would need a vulnerable runtime.
+// What is reproduced is the invariant it violates, which is what Pahlevan keys
+// on: an execve whose working directory belongs to a different mount namespace
+// from the process itself. There is no legitimate way to reach that state from
+// inside a container.
+func TestVMBreakoutAcrossMountNamespacesIsRefused(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadExecMonitor()
+	if err != nil {
+		t.Fatalf("LoadExecMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			t.Fatalf("verifier: %+v", ve)
+		}
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["bprm_check"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(bprm_check): %v", err)
+	}
+	defer l.Close()
+
+	rd, err := ringbuf.NewReader(coll.Maps["exec_events"])
+	if err != nil {
+		t.Fatalf("ringbuf reader: %v", err)
+	}
+	defer rd.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-breakout-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	// Reproducing the invariant, not the exploit: a process whose working
+	// directory belongs to a different mount namespace from the process itself.
+	//
+	// unshare -m gives the child its own mount namespace while its working
+	// directory is still the one it inherited, whose mount belongs to the
+	// parent's namespace. That is the same mismatch a leaked host descriptor
+	// produces, reached by a route that needs no vulnerable runtime.
+	//
+	// The first version of this test tried `cd /proc/self/fd/9`, on the theory
+	// that the exploit's usual spelling would show up in the path. It does not:
+	// the kernel stores the resolved directory, so chdir through a procfs
+	// symlink lands on the target and the string never appears. The test failing
+	// is what found that.
+	runFromForeignMountNS := func() error {
+		// Open a directory descriptor, then unshare the mount namespace and
+		// chdir back through that descriptor. The new namespace gets a copy of
+		// the mount tree, but the descriptor still refers to the mount in the
+		// *old* one - so the working directory ends up outside the process's
+		// own namespace, which is the state a leaked host descriptor creates.
+		script := fmt.Sprintf(
+			"echo $$ > %s/cgroup.procs && exec 9< / && "+
+				"exec unshare -m sh -c 'cd /proc/self/fd/9 && exec /bin/true'", cg)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+	runNormally := func() error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && cd / && exec /bin/true", cg)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// LEARNING. The breakout must be reported even here, and must NOT be added
+	// to the allow-set: the descriptor number differs every time, so learning
+	// it would be learning the exploit.
+	drainRing(t, rd)
+	_ = runFromForeignMountNS()
+
+	var sawBreakoutWhileLearning bool
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !sawBreakoutWhileLearning {
+		rd.SetDeadline(time.Now().Add(time.Second))
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseProcessEvent(rec.RawSample)
+		if ev != nil && ev.CgroupID == cgID && ev.IsBreakout() {
+			sawBreakoutWhileLearning = true
+			t.Logf("reported while learning: cwd=%q reason=%q", ev.Cwd, ev.DenialReason())
+		}
+	}
+	if !sawBreakoutWhileLearning {
+		t.Error("a breakout must be reported during learning, not silently baselined")
+	}
+
+	// An ordinary exec of the same binary, so it is unambiguously learned.
+	if err := runNormally(); err != nil {
+		t.Fatalf("normal run during learning failed: %v", err)
+	}
+
+	// ENFORCE.
+	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+		t.Fatalf("set enforce: %v", err)
+	}
+	if err := runNormally(); err != nil {
+		t.Fatalf("the learned binary must still run: %v", err)
+	}
+	t.Log("the same binary runs normally under enforcement")
+
+	// The same learned binary, from a procfs fd: refused. This is the assertion
+	// that matters - the allow-set says yes and the breakout check overrides it.
+	if err := runFromForeignMountNS(); err == nil {
+		t.Error("expected an exec whose cwd is outside its mount namespace to be DENIED")
+	} else {
+		t.Logf("DENIED in-kernel as expected: %v", err)
+	}
+}
