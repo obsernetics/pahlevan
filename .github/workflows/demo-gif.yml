@@ -45,6 +45,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
 
+      # vhs shells out to ttyd to get a real terminal and to ffmpeg to encode.
+      # Neither is bundled, and vhs reports the missing one and exits 1 - which
+      # is how this workflow failed on its first run.
+      - name: Install ttyd
+        run: |
+          set -euo pipefail
+          TTYD_VERSION=1.7.7
+          sudo curl -sSL -o /usr/local/bin/ttyd \
+            "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
+          sudo chmod +x /usr/local/bin/ttyd
+          ttyd --version
+
       - name: Install vhs
         run: |
           set -euo pipefail
