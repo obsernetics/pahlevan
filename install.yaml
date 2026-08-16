@@ -1697,10 +1697,25 @@ spec:
         # Writing them anywhere else produces a file nothing can reference.
         - --seccomp-root=/var/lib/kubelet/seccomp
         - --seccomp-dir=/var/lib/kubelet/seccomp/pahlevan
-        # The gRPC event stream is off by default because it is plaintext and
-        # unauthenticated: anything that can reach the port receives every
-        # security event this node sees. Uncomment, and add the port below, only
-        # behind a NetworkPolicy or on a trusted network.
+        # The gRPC event stream is off by default: the stream carries every
+        # denial on this node - which pods exist, which paths they read, which
+        # destinations they dial, the command line of every exec - so anything
+        # that can reach the port receives a reconnaissance report.
+        #
+        # Enabling it requires credentials. The agent refuses to start a
+        # plaintext, unauthenticated listener unless --grpc-insecure is passed
+        # on purpose. Uncomment the bind address, add the port below, and
+        # configure one of:
+        #
+        #   mTLS (use this in a cluster; cert-manager can issue the pair):
+        # - --grpc-tls-cert=/etc/pahlevan/tls/tls.crt
+        # - --grpc-tls-key=/etc/pahlevan/tls/tls.key
+        # - --grpc-client-ca=/etc/pahlevan/tls/ca.crt
+        #
+        #   or TLS plus a bearer token, for a collector that cannot present a
+        #   certificate (the token is refused over plaintext, because a token on
+        #   an unencrypted connection is a token you have published):
+        # - --grpc-token=$(PAHLEVAN_GRPC_TOKEN)
         # - --grpc-bind-address=:9090
         securityContext:
           # eBPF program load/attach and LSM/seccomp enforcement need real

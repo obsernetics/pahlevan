@@ -15,6 +15,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include "enforce.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -23,6 +24,10 @@ char LICENSE[] SEC("license") = "GPL";
 /* Bits userspace reads off file_event.flags, above the O_* range that
  * f_flags occupies. */
 #define EV_DENIED 0x80000000u
+/* The task was signalled as well as refused. Shares a bit with nothing else in
+ * this event; the file event has no kill flag of its own because until the
+ * action set existed a file open could not kill anything. */
+#define EV_KILLED 0x20000000u
 /* EV_WRITE marks an open that requested write access. It is derived from
  * f_mode, the same source the allow-set key uses, so what userspace sees and
  * what the kernel keyed on can never disagree. */
@@ -63,14 +68,13 @@ struct {
 	__uint(max_entries, 1 << 17);
 } file_allowed SEC(".maps");
 
-/* Per-cgroup enforcement mode: absent/0 = learning, 1 = enforcing. Userspace
- * flips a cgroup to enforcing when its learning window closes. */
-#define MODE_LEARN   0
-#define MODE_ENFORCE 1
+/* Per-cgroup enforcement action, packed: see bpf/enforce.h. Absent or zero is
+ * ACT_LEARN, so a cgroup nobody has configured observes and denies nothing.
+ * Userspace sets an action when a cgroup's learning window closes. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
-	__type(value, __u8);
+	__type(value, __u32);
 	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } file_mode SEC(".maps");
 
@@ -224,9 +228,10 @@ int BPF_PROG(file_open, struct file *file)
 	 * to have that bit set. */
 	__u64 key = cgroup_id ^ phash ^ ((__u64)write * 0x9E3779B97F4A7C15ULL);
 
-	/* Enforcement mode for this cgroup (default: learning). */
-	__u8 *modep = bpf_map_lookup_elem(&file_mode, &cgroup_id);
-	__u8 mode = modep ? *modep : MODE_LEARN;
+	/* Enforcement action for this cgroup (default: learning). */
+	__u32 *specp = bpf_map_lookup_elem(&file_mode, &cgroup_id);
+	__u32 spec = specp ? *specp : 0;
+	__u8 action = ENFORCE_ACTION(spec);
 
 	/* Let the container runtime in. See is_oom_score_adj. */
 	if (is_oom_score_adj(e->path, sizeof(e->path))) {
@@ -236,24 +241,25 @@ int BPF_PROG(file_open, struct file *file)
 
 	__u8 *known = bpf_map_lookup_elem(&file_allowed, &key);
 
-	if (mode == MODE_ENFORCE) {
-		if (known) {
-			/* In the learned allow-set: permit silently. */
-			bpf_ringbuf_discard(e, 0);
-			return 0;
-		}
-		/* Not learned -> DENY in-kernel and report the violation. */
-		e->flags |= EV_DENIED; /* denied marker for userspace */
-		bpf_ringbuf_submit(e, 0);
-		return -1; /* -EPERM: the open fails */
-	}
-
-	/* Learning mode: record the path in the allow-set; emit only the first time
-	 * each (cgroup, path) is seen so userspace learns the file set cheaply. */
 	if (known) {
+		/* In the learned allow-set: permit silently, whatever the action.
+		 * Reporting a permitted open under enforcement would produce an
+		 * event per open of every file the workload uses. */
 		bpf_ringbuf_discard(e, 0);
 		return 0;
 	}
+
+	if (!action_learns(action)) {
+		/* Outside the learned set. What happens now is the action's
+		 * decision: refuse, refuse and kill, refuse and signal, or - for
+		 * ACT_AUDIT - report and allow. */
+		int ret = enforce_apply(spec, &e->flags, EV_DENIED, EV_KILLED);
+		bpf_ringbuf_submit(e, 0);
+		return ret;
+	}
+
+	/* Learning: record the path in the allow-set; emit only the first time
+	 * each (cgroup, path) is seen so userspace learns the file set cheaply. */
 	__u8 one = 1;
 	bpf_map_update_elem(&file_allowed, &key, &one, BPF_ANY);
 	bpf_ringbuf_submit(e, 0);

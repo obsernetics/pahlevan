@@ -93,6 +93,7 @@ func main() {
 		podNamespace         string
 		podName              string
 		traceShells          bool
+		grpcInsecure         bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -130,6 +131,10 @@ func main() {
 	flag.StringVar(&grpcClientCA, "grpc-client-ca", os.Getenv("PAHLEVAN_GRPC_CLIENT_CA"),
 		"CA that subscribers' client certificates must be signed by (mTLS). Without it, "+
 			"TLS encrypts the stream but authenticates nobody.")
+	flag.BoolVar(&grpcInsecure, "grpc-insecure", false,
+		"Permit a plaintext, unauthenticated gRPC listener. Without this the listener refuses "+
+			"to start unless TLS or a bearer token is configured, because the stream carries "+
+			"every denial on the node. Set it only when the listener is genuinely unreachable.")
 	flag.StringVar(&grpcToken, "grpc-token", os.Getenv("PAHLEVAN_GRPC_TOKEN"),
 		"Bearer token required on every gRPC call. Requires TLS: on a plaintext "+
 			"connection the token is sent in cleartext and protects nothing.")
@@ -266,7 +271,8 @@ func main() {
 				KeyFile:      grpcTLSKey,
 				ClientCAFile: grpcClientCA,
 			},
-			Token: grpcToken,
+			Token:         grpcToken,
+			AllowInsecure: grpcInsecure,
 		}
 		// Validated here rather than at the first connection: a half-configured
 		// setup that silently falls back to plaintext is how a stream ends up

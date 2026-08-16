@@ -143,6 +143,7 @@ func TestAuthDescribe(t *testing.T) {
 func serveWithAuth(t *testing.T, auth AuthConfig) *grpc.ClientConn {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
+	auth.AllowInsecure = true
 	srv := New(Options{Auth: auth})
 
 	opts, err := auth.ServerOptions()
@@ -339,5 +340,58 @@ func BenchmarkTokenInterceptor(b *testing.B) {
 		if _, err := unary(ctx, nil, &grpc.UnaryServerInfo{}, handler); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The default has to refuse. The stream carries every denial on the node, and
+// an operator who forgets a certificate and an operator who reads the startup
+// log are rarely the same person - so a warning is not a control.
+func TestPlaintextIsRefusedByDefault(t *testing.T) {
+	err := AuthConfig{}.Validate()
+	require.Error(t, err, "a plaintext, unauthenticated listener started without objection")
+	// The message has to say what to do, not just that something is wrong.
+	assert.Contains(t, err.Error(), "--grpc-tls-cert")
+	assert.Contains(t, err.Error(), "--grpc-insecure")
+
+	// And ServerOptions must refuse too, or a caller that skips Validate gets
+	// the insecure listener anyway.
+	_, err = AuthConfig{}.ServerOptions()
+	assert.Error(t, err)
+}
+
+func TestAllowInsecureIsTheDeliberateEscape(t *testing.T) {
+	assert.NoError(t, AuthConfig{AllowInsecure: true}.Validate())
+	opts, err := AuthConfig{AllowInsecure: true}.ServerOptions()
+	require.NoError(t, err)
+	assert.Empty(t, opts, "an insecure listener must not carry credentials it does not have")
+}
+
+// AllowInsecure must not weaken a configuration that is otherwise wrong. A cert
+// without a key is a typo either way.
+func TestAllowInsecureDoesNotExcuseAHalfConfiguredSetup(t *testing.T) {
+	err := AuthConfig{TLS: TLSConfig{CertFile: "c"}, AllowInsecure: true}.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "both a certificate and a key")
+
+	err = AuthConfig{Token: "t", AllowInsecure: true}.Validate()
+	require.Error(t, err, "a bearer token in cleartext is published, insecure listener or not")
+	assert.Contains(t, err.Error(), "requires TLS")
+}
+
+func TestSecureReportsWhetherPeersAreAuthenticated(t *testing.T) {
+	// TLS alone encrypts the stream and authenticates nobody, so it is not
+	// "secure" in the sense the status line means.
+	assert.False(t, AuthConfig{TLS: TLSConfig{CertFile: "c", KeyFile: "k"}}.Secure())
+	assert.True(t, AuthConfig{TLS: TLSConfig{CertFile: "c", KeyFile: "k", ClientCAFile: "ca"}}.Secure())
+	assert.True(t, AuthConfig{TLS: TLSConfig{CertFile: "c", KeyFile: "k"}, Token: "t"}.Secure())
+	assert.False(t, AuthConfig{AllowInsecure: true}.Secure())
+}
+
+func BenchmarkAuthConfigValidate(b *testing.B) {
+	a := AuthConfig{TLS: TLSConfig{CertFile: "c", KeyFile: "k", ClientCAFile: "ca"}, Token: "t"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = a.Validate()
 	}
 }

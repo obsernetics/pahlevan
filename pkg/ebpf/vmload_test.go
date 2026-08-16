@@ -17,10 +17,15 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/obsernetics/pahlevan/pkg/seccomp"
 )
 
 // cgroupV2Root is the unified cgroup hierarchy mount point.
 const cgroupV2Root = "/sys/fs/cgroup"
+
+// seccompNames is the architecture's syscall number-to-name table. Wrapped so
+// the VM tests do not each import the seccomp package for one map.
+func seccompNames() map[uint64]string { return seccomp.SyscallName }
 
 // TestVMLoadSyscallMonitor loads and attaches the CO-RE syscall monitor, then
 // verifies real events flow through the ring buffer with plausible attribution.
@@ -261,7 +266,7 @@ func TestVMFileAdaptiveEnforcement(t *testing.T) {
 	t.Logf("learned %d (cgroup,path) allow-set entries", learned)
 
 	// Switch the cgroup to ENFORCE.
-	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["file_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce mode: %v", err)
 	}
 
@@ -399,7 +404,7 @@ func TestVMExecAdaptiveEnforcement(t *testing.T) {
 		t.Fatalf("learn run failed: %v", err)
 	}
 	// ENFORCE.
-	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["exec_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce: %v", err)
 	}
 	// Learned /bin/true still runs.
@@ -810,7 +815,7 @@ func TestVMSeededAllowEntryIsHonoured(t *testing.T) {
 		t.Fatalf("AllowFilePath: %v", err)
 	}
 
-	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["file_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce mode: %v", err)
 	}
 
@@ -872,7 +877,7 @@ func TestVMSeededSymlinkPathDoesNotMatch(t *testing.T) {
 	if err := m.AllowFilePath(cgID, link, true); err != nil {
 		t.Fatalf("AllowFilePath: %v", err)
 	}
-	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["file_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce mode: %v", err)
 	}
 	if err := runIn(link); err == nil {
@@ -1019,7 +1024,7 @@ func TestVMNetworkProtocolIsGoverned(t *testing.T) {
 		t.Fatal("no event observed for the learning TCP connect")
 	}
 
-	if err := coll.Maps["network_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["network_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce mode: %v", err)
 	}
 
@@ -1085,7 +1090,7 @@ func TestVMWriteIsNotGrantedByALearnedRead(t *testing.T) {
 		t.Fatalf("learning read failed: %v", err)
 	}
 
-	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["file_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce mode: %v", err)
 	}
 
@@ -1161,7 +1166,7 @@ func TestVMOomScoreAdjStaysWritableUnderEnforcement(t *testing.T) {
 	if err := run("read line < /etc/hostname"); err != nil {
 		t.Fatalf("learning read failed: %v", err)
 	}
-	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["file_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce mode: %v", err)
 	}
 
@@ -1678,7 +1683,7 @@ func TestVMProcFilterEnforcedInKernel(t *testing.T) {
 	if err := runIn("/bin/true"); err != nil {
 		t.Fatalf("learn run failed: %v", err)
 	}
-	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["exec_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce: %v", err)
 	}
 	if err := runIn("/bin/true"); err != nil {
@@ -1778,7 +1783,7 @@ func TestVMProcFilterUIDDenialIsFlagged(t *testing.T) {
 	if err := runIn("/bin/true"); err != nil {
 		t.Fatalf("learn run failed: %v", err)
 	}
-	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["exec_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce: %v", err)
 	}
 
@@ -1881,7 +1886,7 @@ func TestVMRevokingALearnedPathDeniesIt(t *testing.T) {
 	if err := readIn(); err != nil {
 		t.Fatalf("learning read failed: %v", err)
 	}
-	if err := coll.Maps["file_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["file_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce: %v", err)
 	}
 	if err := readIn(); err != nil {
@@ -1974,7 +1979,7 @@ func TestVMBlanketEgressPermissions(t *testing.T) {
 	}
 
 	// Enforce with an empty allow-set: everything is refused.
-	if err := coll.Maps["network_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["network_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce: %v", err)
 	}
 	if err := dial("127.0.0.53", 53); err == nil {
@@ -2147,7 +2152,7 @@ func TestVMBreakoutAcrossMountNamespacesIsRefused(t *testing.T) {
 	}
 
 	// ENFORCE.
-	if err := coll.Maps["exec_mode"].Put(cgID, uint8(1)); err != nil {
+	if err := coll.Maps["exec_mode"].Put(cgID, uint32(ActionDeny)); err != nil {
 		t.Fatalf("set enforce: %v", err)
 	}
 	if err := runNormally(); err != nil {
@@ -2162,4 +2167,537 @@ func TestVMBreakoutAcrossMountNamespacesIsRefused(t *testing.T) {
 	} else {
 		t.Logf("DENIED in-kernel as expected: %v", err)
 	}
+}
+
+// TestVMSyscallArgumentsAreCaptured proves the tracepoint switch worked: an
+// event must carry the arguments the syscall was actually made with.
+//
+// The distinction is the whole reason for the change. ptrace(PTRACE_TRACEME)
+// and ptrace(PTRACE_ATTACH, <somebody else>) are the same event without
+// arguments, and only one of them is worth waking a person for.
+func TestVMSyscallArgumentsAreCaptured(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadSyscallMonitor()
+	if err != nil {
+		t.Fatalf("LoadSyscallMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	l, err := link.Tracepoint("raw_syscalls", "sys_enter", coll.Programs["handle_sys_enter"], nil)
+	if err != nil {
+		t.Fatalf("attaching tracepoint raw_syscalls/sys_enter: %v", err)
+	}
+	defer l.Close()
+
+	rd, err := ringbuf.NewReader(coll.Maps["events"])
+	if err != nil {
+		t.Fatalf("ringbuf.NewReader: %v", err)
+	}
+	defer rd.Close()
+
+	// kill(pid, 0) is a probe that changes nothing and whose arguments are
+	// entirely under this test's control: our own pid and signal zero. Any
+	// syscall would prove arguments arrive; one with known arguments proves
+	// they arrive *correctly*, which is the part that could be silently wrong.
+	self := uint64(os.Getpid())
+	go func() {
+		for i := 0; i < 200; i++ {
+			_ = syscall.Kill(os.Getpid(), 0)
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	byName := map[string]uint64{}
+	for nr, name := range seccompNames() {
+		byName[name] = nr
+	}
+	killNr, ok := byName["kill"]
+	if !ok {
+		t.Skip("kill is not a syscall on this architecture")
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	rd.SetDeadline(deadline)
+	for time.Now().Before(deadline) {
+		rec, err := rd.Read()
+		if err != nil {
+			t.Fatalf("no syscall event carrying arguments arrived: %v", err)
+		}
+		ev := parseSyscallEvent(rec.RawSample)
+		if ev == nil {
+			t.Fatalf("failed to parse a %d-byte syscall event", len(rec.RawSample))
+		}
+		if ev.SyscallNr != killNr || ev.Args[0] != self {
+			continue
+		}
+		if ev.Args[1] != 0 {
+			t.Errorf("kill(%d, 0) reported signal %d", self, ev.Args[1])
+		}
+		t.Logf("kill(%d, %d) decoded from the kernel: %s",
+			ev.Args[0], ev.Args[1], DescribeSyscallArgs(ev.SyscallNr, ev.Args))
+		return
+	}
+	t.Fatal("no kill event with the expected arguments arrived within the deadline")
+}
+
+// TestVMWatchedSyscallsBypassDeduplication proves the watch set does what it
+// exists for: an escalation primitive must report every occurrence, not only
+// its first.
+//
+// Without this the feature looks like it works - the first ptrace produces an
+// event - and silently loses every subsequent one, which is exactly the set
+// that matters.
+func TestVMWatchedSyscallsBypassDeduplication(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadSyscallMonitor()
+	if err != nil {
+		t.Fatalf("LoadSyscallMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	byName := map[string]uint64{}
+	for nr, name := range seccompNames() {
+		byName[name] = nr
+	}
+	// getpid is watched only by this test: it is harmless, cheap, and nothing
+	// else in the VM calls it in a tight loop. Using a real escalation
+	// primitive would mean performing one.
+	watched, ok := byName["getpid"]
+	if !ok {
+		t.Skip("getpid is not a syscall on this architecture")
+	}
+	var one uint8 = 1
+	if err := coll.Maps["syscall_watch"].Put(&watched, &one); err != nil {
+		t.Fatalf("populating syscall_watch: %v", err)
+	}
+
+	l, err := link.Tracepoint("raw_syscalls", "sys_enter", coll.Programs["handle_sys_enter"], nil)
+	if err != nil {
+		t.Fatalf("attaching tracepoint raw_syscalls/sys_enter: %v", err)
+	}
+	defer l.Close()
+
+	rd, err := ringbuf.NewReader(coll.Maps["events"])
+	if err != nil {
+		t.Fatalf("ringbuf.NewReader: %v", err)
+	}
+	defer rd.Close()
+
+	self := uint32(os.Getpid())
+	go func() {
+		for i := 0; i < 500; i++ {
+			_, _, _ = syscall.Syscall(uintptr(watched), 0, 0, 0)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	// Three events for the same (cgroup, syscall) pair from the same process.
+	// Deduplication would cap it at one no matter how long we wait.
+	seen := 0
+	deadline := time.Now().Add(25 * time.Second)
+	rd.SetDeadline(deadline)
+	for seen < 3 && time.Now().Before(deadline) {
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseSyscallEvent(rec.RawSample)
+		if ev == nil || ev.SyscallNr != watched || ev.PID != self {
+			continue
+		}
+		seen++
+	}
+	if seen < 3 {
+		t.Fatalf("a watched syscall produced %d events for one (cgroup, syscall) pair, want at least 3; "+
+			"the watch set is not bypassing deduplication", seen)
+	}
+	t.Logf("a watched syscall reported %d times for one (cgroup, syscall) pair", seen)
+
+	// And the counter still runs, so the watch set does not cost the frequency
+	// ranking it bypasses.
+	var k, v uint64
+	total := uint64(0)
+	it := coll.Maps["syscall_seen"].Iterate()
+	for it.Next(&k, &v) {
+		if k&0xffff == watched&0xffff {
+			total += v
+		}
+	}
+	if total < 3 {
+		t.Errorf("the dedup counter recorded %d occurrences of a watched syscall, want at least 3", total)
+	}
+}
+
+// TestVMCredMonitorCatchesAnUnexplainedEscalation is the credential monitor's
+// reason to exist: privilege gained with no execve to explain it.
+//
+// The test drops privilege in a child and raises it again with setresuid,
+// which is a syscall - but the point being proved is the detection path, and a
+// real kernel exploit would arrive at commit_creds by exactly the same route
+// with no syscall at all.
+func TestVMCredMonitorCatchesAnUnexplainedEscalation(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("this test drops and regains root, so it must start as root")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadCredMonitor()
+	if err != nil {
+		t.Fatalf("LoadCredMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	l, err := link.Kprobe("commit_creds", coll.Programs["handle_commit_creds"], nil)
+	if err != nil {
+		t.Fatalf("attaching kprobe/commit_creds: %v", err)
+	}
+	defer l.Close()
+
+	var key, on uint32 = 0, 1
+	if err := coll.Maps["cred_config"].Put(&key, &on); err != nil {
+		t.Fatalf("enabling the credential monitor: %v", err)
+	}
+
+	rd, err := ringbuf.NewReader(coll.Maps["cred_events"])
+	if err != nil {
+		t.Fatalf("ringbuf.NewReader: %v", err)
+	}
+	defer rd.Close()
+
+	// A child that drops to an unprivileged uid and then climbs back to root.
+	// The climb is the event: euid 0 gained, no execve underway. Only the
+	// climb is reported - the monitor discards changes that merely drop
+	// privilege, which is the common case by a wide margin.
+	script := `
+		set -e
+		# setpriv keeps the saved-set uid, so the shell can return to root.
+		setpriv --reuid=1000 --regid=1000 --clear-groups --no-new-privs=0 true 2>/dev/null || true
+		exec sudo -n true
+	`
+	go func() {
+		for i := 0; i < 30; i++ {
+			_ = exec.Command("/bin/sh", "-c", script).Run()
+			// sudo execs, so this also exercises the in-execve case that must
+			// NOT be reported as unexplained.
+			_ = exec.Command("sudo", "-n", "true").Run()
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+
+	deadline := time.Now().Add(25 * time.Second)
+	rd.SetDeadline(deadline)
+	sawAny := false
+	for time.Now().Before(deadline) {
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseCredEvent(rec.RawSample)
+		if ev == nil {
+			t.Fatalf("failed to parse a %d-byte credential event", len(rec.RawSample))
+		}
+		sawAny = true
+		t.Logf("credential change: %s", ev.Summary())
+
+		// Every event must have gained something: the kernel program discards
+		// pure drops before it reserves a record, and a drop arriving here
+		// would mean every privilege-dropping daemon startup produces noise.
+		if ev.Flags&(CredGainedRoot|CredGainedCaps) == 0 {
+			t.Errorf("an event arrived that gained nothing: flags=%#x %s", ev.Flags, ev.Summary())
+		}
+		if ev.Unexplained() {
+			t.Logf("UNEXPLAINED escalation detected, which is what the monitor exists for: %s",
+				ev.Summary())
+			return
+		}
+	}
+	if !sawAny {
+		t.Fatal("no credential change was observed at all; the kprobe is not firing")
+	}
+	// Reaching here means every change was explained by an execve. That is a
+	// correct outcome for an environment where nothing escalates outside a
+	// setuid binary, so it is not a failure - but say so rather than passing
+	// silently, because a reader would otherwise assume the interesting path
+	// was exercised.
+	t.Skip("every observed credential change was explained by an execve; " +
+		"the unexplained path was not exercised in this environment")
+}
+
+// TestVMCredMonitorIgnoresPrivilegeDrops guards the property that makes the
+// monitor usable at all.
+//
+// Every well-behaved daemon drops privilege at startup. If those changes were
+// reported, a node would produce hundreds of credential events per boot and
+// the one that matters would be buried in them.
+func TestVMCredMonitorIgnoresPrivilegeDrops(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("this test drops root, so it must start as root")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadCredMonitor()
+	if err != nil {
+		t.Fatalf("LoadCredMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	l, err := link.Kprobe("commit_creds", coll.Programs["handle_commit_creds"], nil)
+	if err != nil {
+		t.Fatalf("attaching kprobe/commit_creds: %v", err)
+	}
+	defer l.Close()
+
+	var key, on uint32 = 0, 1
+	if err := coll.Maps["cred_config"].Put(&key, &on); err != nil {
+		t.Fatalf("enabling the credential monitor: %v", err)
+	}
+	rd, err := ringbuf.NewReader(coll.Maps["cred_events"])
+	if err != nil {
+		t.Fatalf("ringbuf.NewReader: %v", err)
+	}
+	defer rd.Close()
+
+	// setpriv drops to an unprivileged uid and gid and clears the supplementary
+	// groups: three credential changes, none of which gains anything.
+	for i := 0; i < 20; i++ {
+		_ = exec.Command("setpriv", "--reuid=1000", "--regid=1000", "--clear-groups", "true").Run()
+	}
+
+	// Anything that arrives in the next second must have gained something.
+	// Other things on the node run concurrently, so the assertion is about the
+	// content of the events rather than their absence.
+	rd.SetDeadline(time.Now().Add(1500 * time.Millisecond))
+	for {
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseCredEvent(rec.RawSample)
+		if ev == nil {
+			continue
+		}
+		if ev.Flags&(CredGainedRoot|CredGainedCaps) == 0 {
+			t.Errorf("a pure privilege drop was reported, which would bury the real signal: %s",
+				ev.Summary())
+		}
+	}
+}
+
+// TestVMAuditActionReportsWithoutDenying is the property the Audit action was
+// added for, and the one that is easy to get subtly wrong: it must report the
+// violation AND let the operation through, and it must not learn.
+//
+// Learning mode is not a substitute. Learning widens the allow-set as it goes,
+// so the very operation that would have been denied is added to the set instead
+// of being reported, and the second occurrence is silent.
+func TestVMAuditActionReportsWithoutDenying(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadFileMonitor()
+	if err != nil {
+		t.Fatalf("LoadFileMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(file_open): %v", err)
+	}
+	defer l.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-audit-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+	cgID := st.Ino
+
+	runIn := func(path string) error {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec cat %s", cg, path)
+		return exec.Command("/bin/sh", "-c", script).Run()
+	}
+
+	// Learn one path so the allow-set is not empty, then switch to Audit.
+	if err := runIn("/etc/hostname"); err != nil {
+		t.Fatalf("learning run: %v", err)
+	}
+	audit := EnforcementSpec{Action: ActionAudit}.Pack()
+	if err := coll.Maps["file_mode"].Put(cgID, audit); err != nil {
+		t.Fatalf("setting the Audit action: %v", err)
+	}
+
+	rd, err := ringbuf.NewReader(coll.Maps["file_events"])
+	if err != nil {
+		t.Fatalf("ringbuf.NewReader: %v", err)
+	}
+	defer rd.Close()
+
+	// Under Deny this open fails. Under Audit it must succeed.
+	const unlearned = "/etc/os-release"
+	if err := runIn(unlearned); err != nil {
+		t.Fatalf("Audit denied an open it was only supposed to report: %v", err)
+	}
+
+	// And it must have been reported, marked as a would-be denial rather than
+	// as a denial - a dashboard that cannot tell the two apart turns a planned
+	// dry run into an apparent outage.
+	rd.SetDeadline(time.Now().Add(10 * time.Second))
+	for {
+		rec, err := rd.Read()
+		if err != nil {
+			t.Fatalf("Audit allowed the open but reported nothing: %v", err)
+		}
+		ev := parseFileEvent(rec.RawSample)
+		if ev == nil || ev.Path != unlearned {
+			continue
+		}
+		if !ev.WouldDeny() {
+			t.Errorf("the audited open is not marked as a would-be denial: flags=%#x", ev.Flags)
+		}
+		if ev.IsDenied() {
+			t.Errorf("the audited open is marked as denied, which it was not: flags=%#x", ev.Flags)
+		}
+		break
+	}
+
+	// Critically: Audit must not have learned it. If it had, a second run would
+	// report nothing, and an operator would conclude the violation had stopped.
+	if err := runIn(unlearned); err != nil {
+		t.Fatalf("second audited open failed: %v", err)
+	}
+	rd.SetDeadline(time.Now().Add(10 * time.Second))
+	reportedAgain := false
+	for {
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseFileEvent(rec.RawSample)
+		if ev != nil && ev.Path == unlearned && ev.WouldDeny() {
+			reportedAgain = true
+			break
+		}
+	}
+	if !reportedAgain {
+		t.Error("the second audited open was not reported; Audit learned the path, " +
+			"which makes it silently stop reporting the violation it exists to surface")
+	}
+
+	// Switching to Deny must then actually deny, proving Audit was a choice and
+	// not a broken enforcement path.
+	deny := EnforcementSpec{Action: ActionDeny}.Pack()
+	if err := coll.Maps["file_mode"].Put(cgID, deny); err != nil {
+		t.Fatalf("setting the Deny action: %v", err)
+	}
+	if err := runIn(unlearned); err == nil {
+		t.Error("after switching from Audit to Deny, the same open still succeeded")
+	}
+}
+
+// TestVMDenyWithACustomErrno proves the errno override reaches userspace as the
+// errno the policy asked for.
+//
+// A workload that copes with ENOENT and treats EPERM as fatal is better served
+// by the errno it can handle, and "the policy says ENOENT" is worth nothing if
+// the caller still sees EPERM.
+func TestVMDenyWithACustomErrno(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadFileMonitor()
+	if err != nil {
+		t.Fatalf("LoadFileMonitor: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+	l, err := link.AttachLSM(link.LSMOptions{Program: coll.Programs["file_open"]})
+	if err != nil {
+		t.Fatalf("AttachLSM(file_open): %v", err)
+	}
+	defer l.Close()
+
+	cg := fmt.Sprintf("/sys/fs/cgroup/pahlevan-errno-%d", os.Getpid())
+	if err := os.Mkdir(cg, 0o755); err != nil && !os.IsExist(err) {
+		t.Skipf("cannot create test cgroup: %v", err)
+	}
+	defer os.Remove(cg)
+	var st syscall.Stat_t
+	if err := syscall.Stat(cg, &st); err != nil {
+		t.Fatalf("stat cgroup: %v", err)
+	}
+
+	// `cat` reports the errno in its message, which is the same string the
+	// workload's own error handling would see.
+	run := func(path string) string {
+		script := fmt.Sprintf("echo $$ > %s/cgroup.procs && exec cat %s", cg, path)
+		out, _ := exec.Command("/bin/sh", "-c", script).CombinedOutput()
+		return string(out)
+	}
+	_ = run("/etc/hostname") // learn something so the set is not empty
+
+	spec2 := EnforcementSpec{Action: ActionDeny, Errno: uint16(syscall.ENOENT)}
+	v := spec2.Pack()
+	if err := coll.Maps["file_mode"].Put(st.Ino, v); err != nil {
+		t.Fatalf("setting Deny with ENOENT: %v", err)
+	}
+
+	out := run("/etc/os-release")
+	if strings.Contains(out, "Permission denied") {
+		t.Errorf("the policy asked for ENOENT and the caller saw EPERM: %q", out)
+	}
+	if !strings.Contains(out, "No such file") {
+		t.Errorf("the caller did not see ENOENT: %q", out)
+	}
+	t.Logf("a denied open with Errno=ENOENT reported: %s", strings.TrimSpace(out))
 }

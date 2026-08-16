@@ -19,11 +19,12 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include "enforce.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
-#define MODE_LEARN   0
-#define MODE_ENFORCE 1
+#define EV_DENIED 0x80000000u
+#define EV_KILLED 0x40000000u
 
 struct cap_event {
 	__u64 cgroup_id;
@@ -78,11 +79,12 @@ struct {
 	__uint(max_entries, 1 << 13);
 } cap_allowed SEC(".maps");
 
-/* Per-cgroup mode: absent/0 = learning, 1 = enforcing. */
+/* Per-cgroup enforcement action, packed: see bpf/enforce.h. Absent or zero is
+ * ACT_LEARN. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
-	__type(value, __u8);
+	__type(value, __u32);
 	__uint(max_entries, 1 << 13);
 } cap_mode SEC(".maps");
 
@@ -123,13 +125,17 @@ int BPF_PROG(capable_check, const struct cred *cred, struct user_namespace *ns,
 	__u64 cgroup_id = bpf_get_current_cgroup_id();
 	__u64 key = (cgroup_id << 8) | ((__u64)cap & 0xff);
 
-	__u8 *modep = bpf_map_lookup_elem(&cap_mode, &cgroup_id);
-	__u8 mode = modep ? *modep : MODE_LEARN;
+	__u32 *specp = bpf_map_lookup_elem(&cap_mode, &cgroup_id);
+	__u32 spec = specp ? *specp : 0;
+	__u8 action = ENFORCE_ACTION(spec);
 	__u8 *known = bpf_map_lookup_elem(&cap_allowed, &key);
 
-	if (mode == MODE_ENFORCE) {
+	if (!action_learns(action)) {
 		if (known)
 			return 0; /* learned capability: permit */
+
+		__u32 flags = 0;
+		int ret = enforce_apply(spec, &flags, EV_DENIED, EV_KILLED);
 
 		struct cap_event *e = bpf_ringbuf_reserve(&cap_events, sizeof(*e), 0);
 		if (e) {
@@ -137,7 +143,7 @@ int BPF_PROG(capable_check, const struct cred *cred, struct user_namespace *ns,
 			e->timestamp_ns = bpf_ktime_get_ns();
 			e->pid = tgid;
 			e->cap = (__u32)cap;
-			e->flags = 0x80000000; /* denied */
+			e->flags = flags;
 			e->pad = 0;
 			e->pad2 = 0;
 			fill_cap_sets(e);
@@ -145,7 +151,7 @@ int BPF_PROG(capable_check, const struct cred *cred, struct user_namespace *ns,
 			bpf_get_current_comm(&e->comm, sizeof(e->comm));
 			bpf_ringbuf_submit(e, 0);
 		}
-		return -1; /* -EPERM: the privileged operation fails */
+		return ret;
 	}
 
 	/* Learning: record the capability, emit the first observation only. */
