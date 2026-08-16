@@ -253,7 +253,7 @@ int BPF_PROG(file_open, struct file *file)
 		/* Outside the learned set. What happens now is the action's
 		 * decision: refuse, refuse and kill, refuse and signal, or - for
 		 * ACT_AUDIT - report and allow. */
-		int ret = enforce_apply(spec, &e->flags, EV_DENIED, EV_KILLED);
+		long ret = enforce_apply(spec, &e->flags, EV_DENIED, EV_KILLED);
 		bpf_ringbuf_submit(e, 0);
 		return ret;
 	}

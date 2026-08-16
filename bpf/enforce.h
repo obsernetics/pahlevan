@@ -68,15 +68,48 @@ static __always_inline int action_learns(__u8 action)
 /* The value an LSM hook returns for a denied operation.
  *
  * Zero means "use EPERM", so an unconfigured errno gives the behaviour every
- * previous version had. The value is clamped: an errno above 4095 is not an
- * errno, and returning one from an LSM hook produces a pointer the kernel will
- * treat as a valid result. */
-static __always_inline int enforce_errno(__u32 spec)
+ * previous version had.
+ *
+ * The clamp after the negation is the part that matters, and it is not
+ * defensive programming. An LSM program must return a value in [-4095, 0] and
+ * the verifier has to be able to prove it - but the verifier does not propagate
+ * bounds through BPF_NEG at all. Even with e provably in [1, 4095], the moment
+ * the compiler emits `r8 = -r8` the register becomes an unknown scalar and the
+ * program is rejected at load time with "the register R0 has unknown scalar
+ * value should have been in [-4095, 0]".
+ *
+ * Two signed comparisons after the negation re-establish the range, because
+ * conditional jumps are something the verifier does track. They can never fire:
+ * the value is already in range. They exist to say so in a form the verifier
+ * accepts.
+ *
+ * The 12-bit mask has one behavioural consequence: an errno above 4095 keeps
+ * its low bits rather than falling back to EPERM. Userspace rejects those
+ * before they are ever written (see EnforcementSpec.Validate), and 4096 masks
+ * to 0, which is EPERM anyway. */
+static __always_inline long enforce_errno(__u32 spec)
 {
-	__u16 e = ENFORCE_ERRNO(spec);
-	if (e == 0 || e > 4095)
-		return -1; /* -EPERM */
-	return -((int)e);
+	__u32 e = (spec >> 16) & 0xfff;
+	if (e == 0)
+		e = 1; /* EPERM */
+
+	/* long, not int. With a 32-bit type the compiler zero-extends the clamped
+	 * value back to 64 bits - `r8 <<= 32; r8 >>= 32` - and the verifier then
+	 * sees 0x00000000fffff001, a large positive number, rather than -4095. The
+	 * register the kernel reads is 64 bits wide, so the value has to be
+	 * negative in 64 bits. */
+	long ret = -(long)e;
+
+	/* barrier_var, or the compiler deletes both comparisons: it can prove they
+	 * never fire, and it is right. The verifier cannot, because it lost the
+	 * bound at the negation - so the checks have to survive into the object
+	 * even though they are provably dead in C. */
+	barrier_var(ret);
+	if (ret > -1)
+		ret = -1;
+	if (ret < -4095)
+		ret = -4095;
+	return ret;
 }
 
 /* Act on a violation, and report what was done through *flags.
@@ -88,8 +121,8 @@ static __always_inline int enforce_errno(__u32 spec)
  * EV_DENIED and EV_KILLED are passed in rather than defined here because each
  * program already defines them for its own event struct, and duplicating the
  * constants in a shared header is how the two halves drift apart. */
-static __always_inline int enforce_apply(__u32 spec, __u32 *flags,
-					 __u32 denied_bit, __u32 killed_bit)
+static __always_inline long enforce_apply(__u32 spec, __u32 *flags,
+					  __u32 denied_bit, __u32 killed_bit)
 {
 	__u8 action = ENFORCE_ACTION(spec);
 

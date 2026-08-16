@@ -574,7 +574,7 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 			return -1;
 		}
 
-		int ret = enforce_apply(spec, &e->flags, 0x80000000, 0x40000000);
+		long ret = enforce_apply(spec, &e->flags, 0x80000000, 0x40000000);
 		bpf_ringbuf_submit(e, 0);
 		return ret;
 	}

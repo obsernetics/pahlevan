@@ -135,7 +135,7 @@ int BPF_PROG(capable_check, const struct cred *cred, struct user_namespace *ns,
 			return 0; /* learned capability: permit */
 
 		__u32 flags = 0;
-		int ret = enforce_apply(spec, &flags, EV_DENIED, EV_KILLED);
+		long ret = enforce_apply(spec, &flags, EV_DENIED, EV_KILLED);
 
 		struct cap_event *e = bpf_ringbuf_reserve(&cap_events, sizeof(*e), 0);
 		if (e) {

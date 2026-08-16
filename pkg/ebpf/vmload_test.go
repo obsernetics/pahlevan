@@ -61,12 +61,9 @@ func TestVMLoadSyscallMonitor(t *testing.T) {
 		t.Fatal("program handle_sys_enter not found in collection")
 	}
 
-	l, err := link.AttachRawTracepoint(link.RawTracepointOptions{
-		Name:    "sys_enter",
-		Program: prog,
-	})
+	l, err := link.Tracepoint("raw_syscalls", "sys_enter", prog, nil)
 	if err != nil {
-		t.Fatalf("AttachRawTracepoint(sys_enter): %v", err)
+		t.Fatalf("attaching tracepoint raw_syscalls/sys_enter: %v", err)
 	}
 	defer l.Close()
 
@@ -1393,11 +1390,9 @@ func TestVMSyscallCountsAccumulate(t *testing.T) {
 	}
 	defer coll.Close()
 
-	l, err := link.AttachRawTracepoint(link.RawTracepointOptions{
-		Name: "sys_enter", Program: coll.Programs["handle_sys_enter"],
-	})
+	l, err := link.Tracepoint("raw_syscalls", "sys_enter", coll.Programs["handle_sys_enter"], nil)
 	if err != nil {
-		t.Fatalf("AttachRawTracepoint(sys_enter): %v", err)
+		t.Fatalf("attaching tracepoint raw_syscalls/sys_enter: %v", err)
 	}
 	defer l.Close()
 
@@ -2577,8 +2572,18 @@ func TestVMAuditActionReportsWithoutDenying(t *testing.T) {
 	}
 	defer rd.Close()
 
+	// A file created for this test, deliberately not one of the obvious
+	// candidates in /etc. bpf_d_path reports the RESOLVED path, and most of
+	// /etc/os-release and friends are symlinks into /usr/lib - so a test that
+	// matches on the name it asked for silently never matches, and reads as
+	// "the kernel emitted nothing" when the kernel emitted the right thing
+	// under a different name.
+	unlearned := filepath.Join(t.TempDir(), "unlearned.txt")
+	if err := os.WriteFile(unlearned, []byte("x"), 0o600); err != nil {
+		t.Fatalf("creating the unlearned file: %v", err)
+	}
+
 	// Under Deny this open fails. Under Audit it must succeed.
-	const unlearned = "/etc/os-release"
 	if err := runIn(unlearned); err != nil {
 		t.Fatalf("Audit denied an open it was only supposed to report: %v", err)
 	}
@@ -2593,7 +2598,11 @@ func TestVMAuditActionReportsWithoutDenying(t *testing.T) {
 			t.Fatalf("Audit allowed the open but reported nothing: %v", err)
 		}
 		ev := parseFileEvent(rec.RawSample)
-		if ev == nil || ev.Path != unlearned {
+		// Filtered by cgroup as well as by path. The LSM hook is attached
+		// node-wide, and this test process created the file it is about to
+		// read - so without the cgroup filter the first match is the test's
+		// own write open, from outside the governed cgroup entirely.
+		if ev == nil || ev.Path != unlearned || ev.CgroupID != cgID {
 			continue
 		}
 		if !ev.WouldDeny() {
@@ -2618,7 +2627,7 @@ func TestVMAuditActionReportsWithoutDenying(t *testing.T) {
 			break
 		}
 		ev := parseFileEvent(rec.RawSample)
-		if ev != nil && ev.Path == unlearned && ev.WouldDeny() {
+		if ev != nil && ev.Path == unlearned && ev.CgroupID == cgID && ev.WouldDeny() {
 			reportedAgain = true
 			break
 		}

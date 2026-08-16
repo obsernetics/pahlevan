@@ -217,7 +217,7 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 		 * the network event has only the single direction byte, so the
 		 * decision is taken in the wide word and folded down. */
 		__u32 flags = 0;
-		int ret = enforce_apply(spec, &flags, EV_DENIED, EV_KILLED);
+		long ret = enforce_apply(spec, &flags, EV_DENIED, EV_KILLED);
 
 		struct network_event *e = bpf_ringbuf_reserve(&network_events, sizeof(*e), 0);
 		if (e) {
