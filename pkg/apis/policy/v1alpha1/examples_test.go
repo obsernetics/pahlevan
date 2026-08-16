@@ -200,3 +200,57 @@ func BenchmarkStrictDecodeExample(b *testing.B) {
 		_ = yaml.UnmarshalStrict(data, &p)
 	}
 }
+
+// No example may set a field that does nothing.
+//
+// Six fields are accepted by the API and acted on by nothing - windowSize,
+// lifecycleAware, three defaultActions, requireSignature, and the whole
+// observabilityConfig block. An example that sets one teaches the reader to
+// configure something inert, and they have no way to tell: the policy applies,
+// the status goes green, and the setting does nothing.
+//
+// comprehensive-security-policy.yaml is the exception, because its job is to
+// document every field including these, and it marks each one INERT.
+func TestNoExampleSetsAnInertField(t *testing.T) {
+	inertScalars := []string{
+		"windowSize:", "lifecycleAware:", "defaultAction:", "requireSignature:",
+	}
+	for path, docs := range exampleDocs(t) {
+		if strings.Contains(path, "comprehensive-security-policy") {
+			continue
+		}
+		for _, doc := range docs {
+			var tm typeMeta
+			if yaml.Unmarshal(doc, &tm) != nil || tm.Kind != "PahlevanPolicy" {
+				continue
+			}
+			text := string(doc)
+			t.Run(filepath.Base(path), func(t *testing.T) {
+				for _, field := range inertScalars {
+					assert.NotContains(t, text, field,
+						"%s sets %s, which the agent does not act on", filepath.Base(path), field)
+				}
+				assert.NotContains(t, text, "observabilityConfig:",
+					"%s configures observability per policy, which the agent does not read; "+
+						"the agent's flags are what configure it", filepath.Base(path))
+			})
+		}
+	}
+}
+
+// And the reference example must actually label them, or it is teaching the
+// same lesson with extra steps.
+func TestTheReferenceExampleLabelsItsInertFields(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(examplesDir, "advanced", "comprehensive-security-policy.yaml"))
+	require.NoError(t, err)
+	text := string(data)
+
+	for _, field := range []string{
+		"windowSize", "lifecycleAware", "defaultAction", "requireSignature", "observabilityConfig",
+	} {
+		require.Contains(t, text, field)
+	}
+	// One INERT marker per inert field, at least.
+	assert.GreaterOrEqual(t, strings.Count(text, "INERT"), 5,
+		"every inert field in the reference must be labeled as such")
+}

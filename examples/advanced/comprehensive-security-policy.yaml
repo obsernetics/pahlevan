@@ -5,6 +5,16 @@
 # reading the Go types - is not a reasonable ask, and because a policy that
 # sets a field the API does not have is silently pruned by the API server. You
 # get no error, and the setting simply is not there.
+#
+# Some fields below are marked INERT. They are accepted by the API and acted on
+# by nothing, and they are shown here precisely because they are the ones you
+# cannot otherwise tell apart from the fields that work: the policy applies, the
+# status goes green, and the setting does nothing. Run
+#
+#   pahlevan policy explain -f your-policy.yaml
+#
+# against your own policy and it will name every one of them. No other example
+# in this directory sets an inert field.
 apiVersion: policy.pahlevan.io/v1alpha1
 kind: PahlevanPolicy
 metadata:
@@ -33,7 +43,9 @@ spec:
   learningConfig:
     # Total observation before the container may transition.
     duration: "15m"
-    # Granularity of the sampling window inside that duration.
+    # INERT. The adaptive controller observes continuously rather than in
+    # sampling windows, and the only code that reads this is not built into the
+    # agent.
     windowSize: "1m"
     # Minimum observations before the profile is considered meaningful. A
     # container that sat idle through the window has learned nothing, and
@@ -41,8 +53,8 @@ spec:
     minSamples: 500
     # Flip to the configured mode automatically when the window elapses.
     autoTransition: true
-    # Treat container restarts and rolling updates as continuity rather than as
-    # new, unlearned behavior.
+    # INERT. Displayed and stored, acted on by nothing - a restarted container
+    # gets a new cgroup id and therefore a new baseline regardless.
     lifecycleAware: true
 
   # --- what to do about the rest ---------------------------------------------
@@ -106,7 +118,10 @@ spec:
     writeAllowedPaths:
     - "/tmp"
     - "/var/log/app"
-    # What happens to a path in none of the lists and not in the baseline.
+    # INERT, and redundant rather than merely unimplemented: default-deny of
+    # unlearned behavior is what enforcement *is*, so Deny is already the
+    # behavior under Blocking and Allow is what Monitoring means. The field
+    # cannot express a third thing.
     defaultAction: Deny
     executableFilter:
       allowedExecutables:
@@ -114,8 +129,8 @@ spec:
       deniedExecutables:
       - "/bin/sh"
       - "/usr/bin/curl"
-      # Not implemented by the data plane; reported on the policy status rather
-      # than silently ignored.
+      # INERT. Nothing verifies executable signatures, and the kernel hook has
+      # no way to.
       requireSignature: false
 
   # --- syscalls, capabilities and who may exec -------------------------------
@@ -191,6 +206,11 @@ spec:
     recoveryStrategy: Rollback
 
   # --- telemetry -------------------------------------------------------------
+  #
+  # INERT, the whole block. The agent's metrics, tracing and logging are
+  # configured by its flags - --observability-exports, --otlp-endpoint,
+  # --metrics-detail - and apply to the whole node rather than per policy. See
+  # examples/observability/lgtm-stack.yaml for the configuration that works.
   observabilityConfig:
     metrics:
       enabled: true
