@@ -28,10 +28,8 @@ spec:
 
   learningConfig:
     duration: "10m"
-    windowSize: "1m"
     minSamples: 300
     autoTransition: true
-    lifecycleAware: true
 
   enforcementConfig:
     mode: Blocking
@@ -61,7 +59,6 @@ spec:
       action: Allow
     # Everything else is refused. This is the line that matters: the default is
     # what governs the destination nobody thought of.
-    defaultAction: Deny
 
   filePolicy:
     readOnlyPaths:
@@ -96,10 +93,6 @@ spec:
     rollbackWindow: "10m"
     recoveryStrategy: Rollback
 
-  observabilityConfig:
-    metrics:
-      enabled: true
-      interval: "30s"
 ---
 # The sidecar. Separate policy, because a proxy legitimately dials everything
 # the application does plus the control plane, and folding the two together
@@ -121,7 +114,6 @@ spec:
   learningConfig:
     duration: "15m"
     autoTransition: true
-    lifecycleAware: true
 
   enforcementConfig:
     mode: Blocking
@@ -145,7 +137,6 @@ spec:
       - port: 15012
         protocol: TCP
       action: Allow
-    defaultAction: Deny
 
   filePolicy:
     readOnlyPaths:

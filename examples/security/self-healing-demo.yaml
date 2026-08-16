@@ -69,13 +69,6 @@ spec:
     # so.
     recoveryStrategy: Rollback
 
-  observabilityConfig:
-    metrics:
-      enabled: true
-      interval: "10s"
-    logging:
-      level: "debug"
-      format: "json"
 ---
 # A workload that will trip it.
 #

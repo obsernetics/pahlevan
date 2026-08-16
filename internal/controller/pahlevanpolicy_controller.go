@@ -173,15 +173,19 @@ func (r *PahlevanPolicyReconciler) handleInitialization(ctx context.Context, pol
 			continue
 		}
 
-		// Start learning for this workload. The eBPF manager is optional (e.g. on
-		// nodes where eBPF is unavailable, or in tests); guard against a nil
-		// manager rather than panicking during reconciliation.
-		if r.EBPFManager != nil {
-			r.EBPFManager.AddEventHandler(&PolicyEventHandler{
-				reconciler: r,
-				policy:     policy,
-			})
-		}
+		// No event handler is registered here, deliberately.
+		//
+		// This used to call EBPFManager.AddEventHandler once per target
+		// workload, on every reconcile that reached this function. Handlers are
+		// appended to a slice that is never pruned and is walked synchronously
+		// for every record the ring buffers deliver, so each reconcile made the
+		// hottest path in the system permanently slower - and the handler it
+		// added did nothing except increment a counter through a pointer to a
+		// policy object from an earlier reconcile, which is both a data race and
+		// a write nobody reads.
+		//
+		// The learning statistics it pretended to maintain are produced by the
+		// adaptive controller and reported on ContainerProfile status.
 	}
 
 	// Update status to learning phase
@@ -679,39 +683,6 @@ func (r *PahlevanPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Complete(r)
-}
-
-// PolicyEventHandler handles eBPF events for policy management
-type PolicyEventHandler struct {
-	reconciler *PahlevanPolicyReconciler
-	policy     *policyv1alpha1.PahlevanPolicy
-}
-
-func (h *PolicyEventHandler) HandleSyscallEvent(event *ebpf.SyscallEvent) error {
-	// Update learning statistics
-	if h.policy.Status.LearningStatus != nil {
-		h.policy.Status.LearningStatus.SamplesCollected++
-	}
-	return nil
-}
-
-func (h *PolicyEventHandler) HandleNetworkEvent(event *ebpf.NetworkEvent) error {
-	// Handle network events
-	return nil
-}
-
-func (h *PolicyEventHandler) HandleFileEvent(event *ebpf.FileEvent) error {
-	// Handle file events
-	return nil
-}
-
-func (h *PolicyEventHandler) HandleProcessEvent(event *ebpf.ProcessEvent) error {
-	// Handle process (exec) events
-	return nil
-}
-
-func (h *PolicyEventHandler) HandleCapabilityEvent(event *ebpf.CapabilityEvent) error {
-	return nil
 }
 
 // getWorkloadForPolicy finds the workload object that matches the policy selector

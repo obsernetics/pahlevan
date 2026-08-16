@@ -549,14 +549,46 @@ func NewPolicyStatusCommand() *cobra.Command {
 
 // Helper functions
 
+// formatProgress renders how far through its learning window a policy is.
+//
+// This returned the literal string "N/A" with a comment saying the field does
+// not exist. It does - status.learningStatus.progress - and the operator writes
+// it. Every `pahlevan policy list` has been printing N/A in a column whose data
+// was one dereference away.
 func formatProgress(policy *policyv1alpha1.PahlevanPolicy) string {
-	// Skip learning progress - field doesn't exist in current status type
-	return "N/A"
+	ls := policy.Status.LearningStatus
+	if ls == nil {
+		return "-"
+	}
+	if ls.Progress != nil {
+		return fmt.Sprintf("%d%%", *ls.Progress)
+	}
+	// No percentage yet, but the sample count still says something about
+	// whether anything is being observed at all - which is the question a
+	// stalled learning window raises.
+	if ls.SamplesCollected > 0 {
+		return fmt.Sprintf("%d samples", ls.SamplesCollected)
+	}
+	return "-"
 }
 
+// formatViolations renders how much this policy has blocked.
+//
+// Same story: status.enforcementStatus.blockedTotal exists and is rolled up by
+// the operator from the per-container profiles.
 func formatViolations(policy *policyv1alpha1.PahlevanPolicy) string {
-	// Skip violations count - field doesn't exist in current status type
-	return "N/A"
+	es := policy.Status.EnforcementStatus
+	if es == nil {
+		return "-"
+	}
+	if es.BlockedTotal == 0 {
+		return "0"
+	}
+	// The breakdown matters more than the total when triaging: a hundred file
+	// denials and a hundred exec denials are very different situations.
+	return fmt.Sprintf("%d (file %d, net %d, exec %d, cap %d)",
+		es.BlockedTotal, es.BlockedFileAccess, es.BlockedNetworkConnections,
+		es.BlockedExecs, es.BlockedCapabilities)
 }
 
 func formatLabels(labels map[string]string) string {

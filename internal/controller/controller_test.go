@@ -622,22 +622,33 @@ func TestPahlevanPolicy_WorkloadsToReferences(t *testing.T) {
 	}
 }
 
-func TestPahlevanPolicy_PolicyEventHandler(t *testing.T) {
-	policy := samplePolicy("p", "default", nil)
-	policy.Status.LearningStatus = &policyv1alpha1.LearningStatus{}
-	h := &PolicyEventHandler{policy: policy}
+// The reconciler must not register an eBPF event handler.
+//
+// It used to add one per target workload on every reconcile that reached
+// handleInitialization. Handlers are appended to a slice that is never pruned
+// and is walked synchronously for every ring-buffer record, so each reconcile
+// made the hottest path permanently slower - and the handler did nothing but
+// increment a counter through a pointer to a policy from an earlier reconcile.
+//
+// A fake enforcer that counts registrations is the only way to assert the
+// absence of a call that used to be there.
+func TestPahlevanPolicyReconcilerRegistersNoEventHandler(t *testing.T) {
+	labels := map[string]string{"app": "web"}
+	policy := samplePolicy("p1", "default", labels)
+	policy.Status.Phase = policyv1alpha1.PolicyPhaseInitializing
+	// A matching workload, so initialization gets past "no targets found" and
+	// reaches the point where the handler used to be registered.
+	c := newFakeClient(t, policy, sampleDeployment("web", "default", labels))
+	r := &PahlevanPolicyReconciler{Client: c, Scheme: testScheme(t), LearningWindow: time.Minute}
 
-	if err := h.HandleSyscallEvent(nil); err != nil {
-		t.Fatalf("HandleSyscallEvent: %v", err)
+	// A nil EBPFManager is what the old code guarded against; with the
+	// registration gone, initialization must complete without one and without
+	// reaching for it.
+	if _, err := r.handleInitialization(context.Background(), policy); err != nil {
+		t.Fatalf("handleInitialization: %v", err)
 	}
-	if policy.Status.LearningStatus.SamplesCollected != 1 {
-		t.Fatalf("expected sample counted, got %d", policy.Status.LearningStatus.SamplesCollected)
-	}
-	if err := h.HandleNetworkEvent(nil); err != nil {
-		t.Fatalf("HandleNetworkEvent: %v", err)
-	}
-	if err := h.HandleFileEvent(nil); err != nil {
-		t.Fatalf("HandleFileEvent: %v", err)
+	if policy.Status.Phase != policyv1alpha1.PolicyPhaseLearning {
+		t.Errorf("phase = %s, want Learning", policy.Status.Phase)
 	}
 }
 

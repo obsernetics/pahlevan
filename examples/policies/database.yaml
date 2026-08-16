@@ -40,10 +40,8 @@ spec:
     # An hour, so at least one checkpoint and one WAL rotation land inside the
     # window. Even so, see the exceptions below: backup usually will not.
     duration: "1h"
-    windowSize: "5m"
     minSamples: 1000
     autoTransition: false
-    lifecycleAware: true
 
   enforcementConfig:
     # Start in Monitoring. Flipping to Blocking is a deliberate act after the
@@ -109,7 +107,6 @@ spec:
       - port: 5432
         protocol: TCP
       action: Allow
-    defaultAction: Deny
 
   syscallPolicy:
     deniedSyscalls:
@@ -134,11 +131,3 @@ spec:
     rollbackThreshold: 10
     rollbackWindow: "15m"
     recoveryStrategy: Rollback
-
-  observabilityConfig:
-    metrics:
-      enabled: true
-      interval: "60s"
-    logging:
-      level: "info"
-      format: "json"
