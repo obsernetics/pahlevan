@@ -186,3 +186,42 @@ func BenchmarkNormalizedParents(b *testing.B) {
 		_ = f.normalizedParents()
 	}
 }
+
+// The runC breakout class - CVE-2024-21626 and the vulnerabilities that
+// followed - works by leaving the working directory pointing at a file
+// descriptor the runtime leaked from the host mount namespace. Everything
+// resolved relative to it resolves on the host.
+//
+// It is worth its own flag because nothing else Pahlevan observes separates it
+// from an ordinary exec: no capability is used, no mount is made, and no
+// syscall a seccomp profile would question is issued.
+func TestBreakoutFlagIsItsOwnBit(t *testing.T) {
+	for name, other := range map[string]uint32{
+		"denied": DeniedFlag, "killed": KilledFlag,
+		"exited": ExitedFlag, "filter": FilterDeniedFlag,
+	} {
+		assert.Zero(t, BreakoutFlag&other, "BreakoutFlag overlaps %s", name)
+	}
+	assert.Equal(t, uint32(0x08000000), BreakoutFlag, "must match EV_BREAKOUT in the C")
+}
+
+// The breakout reason outranks the others. An operator who reads "not in the
+// learned allow-set" for a host escape goes looking for a missing exception,
+// which is the wrong thing entirely.
+func TestBreakoutOutranksTheOtherDenialReasons(t *testing.T) {
+	assert.False(t, (&ProcessEvent{}).IsBreakout())
+	assert.True(t, (&ProcessEvent{Flags: BreakoutFlag}).IsBreakout())
+
+	assert.Contains(t,
+		(&ProcessEvent{Flags: DeniedFlag | BreakoutFlag}).DenialReason(),
+		"container breakout")
+	assert.Contains(t,
+		(&ProcessEvent{Flags: DeniedFlag | FilterDeniedFlag | BreakoutFlag}).DenialReason(),
+		"container breakout")
+
+	// And it is reported even while learning, when DeniedFlag is absent -
+	// because the behavior is never legitimate and learning it would be
+	// learning the exploit.
+	assert.Contains(t, (&ProcessEvent{Flags: BreakoutFlag}).DenialReason(),
+		"container breakout")
+}

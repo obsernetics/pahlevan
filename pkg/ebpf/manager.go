@@ -164,6 +164,22 @@ const (
 	// uses, so what userspace sees and what the kernel keyed on cannot
 	// disagree. It shares a bit position with KilledFlag, which is exec-only.
 	WriteFlag uint32 = 0x40000000
+	// BreakoutFlag is set on ProcessEvent.Flags when the exec happened with a
+	// working directory inside procfs's file-descriptor directory, which is the
+	// signature of the runC breakout class - CVE-2024-21626 and the
+	// vulnerabilities that followed it.
+	//
+	// The runtime leaks a descriptor from the host mount namespace and the
+	// container's working directory is left pointing at it, so everything
+	// resolved relative to that directory resolves on the host. No capability,
+	// no mount and no unusual syscall is involved, which is why a seccomp
+	// profile and a capability allow-set both miss it.
+	//
+	// It is flagged in learning mode as well as under enforcement, and
+	// deliberately never added to the allow-set: the descriptor number differs
+	// on every attempt, so it could not be learned usefully, and learning it
+	// would be learning the exploit.
+	BreakoutFlag uint32 = 0x08000000
 	// FilterDeniedFlag is set alongside DeniedFlag on ProcessEvent.Flags when
 	// the exec was refused by the policy's process filter rather than by the
 	// learned allow-set. The distinction matters to whoever reads the event:
@@ -193,10 +209,20 @@ func (e *ProcessEvent) IsDenied() bool { return e.Flags&DeniedFlag != 0 }
 // filter rather than from the learned allow-set. It implies IsDenied.
 func (e *ProcessEvent) DeniedByFilter() bool { return e.Flags&FilterDeniedFlag != 0 }
 
+// IsBreakout reports whether the exec ran with a working directory inside
+// procfs's file-descriptor directory - the runC breakout signature. It is set
+// in learning mode too, because the behavior is never legitimate.
+func (e *ProcessEvent) IsBreakout() bool { return e.Flags&BreakoutFlag != 0 }
+
 // DenialReason names why the exec was refused, for logs, events and the CLI.
 // It returns the empty string when the exec was not refused at all.
 func (e *ProcessEvent) DenialReason() string {
 	switch {
+	case e.IsBreakout():
+		// Reported first: it is the only reason here that describes an exploit
+		// rather than an absence, and an operator reading "not in the learned
+		// allow-set" would go looking for the wrong thing entirely.
+		return "container breakout: working directory is a leaked host file descriptor"
 	case !e.IsDenied():
 		return ""
 	case e.DeniedByFilter():

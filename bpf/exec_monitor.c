@@ -203,6 +203,49 @@ static __always_inline __u64 filter_key(__u64 cgroup_id, __u64 kind, __u64 value
 	return cgroup_id ^ (kind * KIND_MIX) ^ value;
 }
 
+/* EV_BREAKOUT marks an exec whose working directory is a file descriptor in
+ * procfs, which is the signature of the runC breakout class.
+ *
+ * CVE-2024-21626 and the vulnerabilities that followed it work by leaving the
+ * process's working directory pointing at /proc/self/fd/N, where N is a
+ * descriptor the runtime leaked from the host mount namespace. Everything the
+ * container then resolves relative to that directory resolves on the host, so
+ * a write to ../../../etc/cron.d escapes without any capability, any mount,
+ * and any syscall a seccomp profile would question.
+ *
+ * The reason this is worth a dedicated check rather than a learned baseline:
+ * the path is different every time - the descriptor number varies - so it
+ * hashes to a new allow-set key on each attempt and cannot be learned, and a
+ * denial keyed on the binary says nothing about why. Nothing else Pahlevan
+ * observes distinguishes it from an ordinary exec.
+ *
+ * A legitimate workload does not chdir into procfs. The few that read
+ * /proc/self/fd do so with an explicit path rather than by making it the
+ * working directory. */
+#define EV_BREAKOUT 0x08000000u
+
+static __always_inline int cwd_is_procfs_fd(const __u8 *cwd)
+{
+	/* "/proc/" then a digit or "self". Compared byte by byte because the
+	 * verifier will not accept a library string comparison here, and the
+	 * prefix is short enough that unrolling costs nothing. */
+	if (cwd[0] != '/' || cwd[1] != 'p' || cwd[2] != 'r' || cwd[3] != 'o' ||
+	    cwd[4] != 'c' || cwd[5] != '/')
+		return 0;
+
+	/* Find "/fd/" within the next stretch of the path. /proc/self/fd/4 and
+	 * /proc/1234/fd/4 both qualify; /proc/self/cwd does not. */
+#pragma unroll
+	for (int i = 6; i < 24; i++) {
+		if (cwd[i] == 0)
+			return 0;
+		if (cwd[i] == '/' && cwd[i + 1] == 'f' && cwd[i + 2] == 'd' &&
+		    cwd[i + 3] == '/')
+			return 1;
+	}
+	return 0;
+}
+
 static __always_inline __u64 hash_name(const __u8 *p, int n)
 {
 	__u64 h = 1469598103934665603ULL;
@@ -454,6 +497,16 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	__u8 mode = modep ? *modep : MODE_LEARN;
 	__u8 *known = bpf_map_lookup_elem(&exec_allowed, &key);
 
+	/* The breakout check runs in every mode, including learning.
+	 *
+	 * Everything else here is a baseline question - has this container done
+	 * this before - and the honest answer during learning is "it has now".
+	 * This is not that: an exec from inside a leaked host file descriptor is
+	 * never legitimate, so learning it would be learning the exploit. Under
+	 * enforcement it is refused; while learning it is reported and, critically,
+	 * not added to the allow-set. */
+	int breakout = cwd_is_procfs_fd(e->cwd);
+
 	if (mode == MODE_ENFORCE || mode == MODE_ENFORCE_KILL) {
 		/* Two independent reasons to refuse: the binary was never learned, or
 		 * the policy's process filter rejects who is running it. They are
@@ -482,13 +535,15 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 				filter_deny = 1;
 		}
 
-		if (known && !filter_deny) {
+		if (known && !filter_deny && !breakout) {
 			bpf_ringbuf_discard(e, 0);
 			return 0;
 		}
 		e->flags |= 0x80000000; /* denied */
 		if (filter_deny)
 			e->flags |= 0x10000000; /* denied by the process filter */
+		if (breakout)
+			e->flags |= EV_BREAKOUT;
 		if (mode == MODE_ENFORCE_KILL) {
 			e->flags |= 0x40000000; /* killed */
 			bpf_send_signal(9);     /* SIGKILL the offending task */
@@ -497,6 +552,13 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 		return -1; /* -EPERM: execve fails */
 	}
 
+	/* Learning. A breakout is reported and deliberately not learned: adding it
+	 * to the allow-set would make the exploit permanent for this cgroup. */
+	if (breakout) {
+		e->flags |= EV_BREAKOUT;
+		bpf_ringbuf_submit(e, 0);
+		return 0;
+	}
 	if (known) {
 		bpf_ringbuf_discard(e, 0);
 		return 0;
