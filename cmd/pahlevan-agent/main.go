@@ -593,6 +593,16 @@ func (o *agentObserver) HandleProcessEvent(e *ebpf.ProcessEvent) error {
 		return nil
 	}
 	o.execs.Add(1)
+	if e.IsBreakout() {
+		// Logged even when not denied - during learning, or in Monitoring mode -
+		// because a working directory outside the process's own mount namespace
+		// is never legitimate, and a report that waits for enforcement to be on
+		// is a report that arrives after the escape.
+		o.denied("breakout", "binary", e.Filename, "cwd", e.Cwd,
+			"reason", e.DenialReason(), "lineage", e.AncestryChain(),
+			"blocked", e.IsDenied(), "pid", e.PID, "cgroup", e.CgroupID)
+		return nil
+	}
 	if e.IsDenied() {
 		// The lineage is what turns "curl was denied" into "nginx ran a shell
 		// that ran curl", and DenialReason separates "never learned this" from

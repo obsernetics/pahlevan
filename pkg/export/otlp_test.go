@@ -432,3 +432,36 @@ func TestOTLPNetworkRecordCarriesTheDestination(t *testing.T) {
 	assert.Equal(t, "service", a["pahlevan.destination.kind"])
 	assert.Equal(t, "postgres", a["pahlevan.destination.port_name"])
 }
+
+// A container breakout is the one event here that is an error rather than the
+// system working as designed, and it must be graded above a denial even when
+// it was not denied - during learning, or in Monitoring mode - because the
+// escape does not wait for enforcement to be switched on.
+func TestBreakoutIsGradedAboveADenial(t *testing.T) {
+	sink, proc := newTestSink(t, false)
+
+	observedBreakout := &Event{
+		Type: EventTypeProcess, Action: ActionObserve,
+		Process: ProcessInfo{PID: 1, Comm: "sh"},
+		Exec:    &ExecInfo{Binary: "/bin/true", Breakout: true},
+	}
+	ordinaryDenial := &Event{
+		Type: EventTypeProcess, Action: ActionDeny,
+		Process: ProcessInfo{PID: 1, Comm: "sh"},
+		Exec:    &ExecInfo{Binary: "/tmp/x"},
+	}
+	require.NoError(t, sink.Export(context.Background(),
+		[]*Event{observedBreakout, ordinaryDenial}))
+	require.Len(t, proc.records, 2)
+
+	assert.Equal(t, otellog.SeverityError, proc.records[0].Severity(),
+		"a breakout is an error even when it was only observed")
+	assert.Equal(t, otellog.SeverityWarn, proc.records[1].Severity(),
+		"an ordinary denial is enforcement working as designed")
+
+	assert.Equal(t, "true", attrsOf(t, proc.records[0])["pahlevan.breakout"])
+	// Absent rather than false on an ordinary event, so a query for the
+	// attribute selects exactly the breakouts.
+	_, present := attrsOf(t, proc.records[1])["pahlevan.breakout"]
+	assert.False(t, present)
+}

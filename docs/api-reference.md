@@ -528,6 +528,7 @@ GET /metrics
 | `pahlevan_ebpf_denials_total` | Counter | Operations denied in-kernel with EPERM, by `kind` |
 | `pahlevan_ebpf_decode_errors_total` | Counter | Ring-buffer records that could not be decoded, by `kind` |
 | `pahlevan_ebpf_handler_errors_total` | Counter | Event handlers that returned an error, by `kind` |
+| `pahlevan_ebpf_breakouts_total` | Counter | Execs whose working directory was outside the process's own mount namespace |
 | `pahlevan_ebpf_program_load_errors_total` | Counter | eBPF program load errors |
 
 `pahlevan_ebpf_handler_errors_total` is the one to alert on if you export

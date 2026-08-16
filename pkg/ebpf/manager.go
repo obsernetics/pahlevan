@@ -64,11 +64,25 @@ var (
 		Name: "pahlevan_ebpf_handler_errors_total",
 		Help: "Event handlers that returned an error, by event kind",
 	}, []string{"kind"})
+	// Container breakouts. Separate from the denial counter because this is not
+	// enforcement working as designed: it counts execs whose working directory
+	// was outside the process's own mount namespace, which is the runC breakout
+	// signature and never legitimate. It is incremented while a container is
+	// still learning too, since the escape does not wait for enforcement.
+	//
+	// No labels: it is a single, rare, node-level fact, and the detail an
+	// operator needs next - the binary, the lineage - is in the event, not in a
+	// label that would multiply the series.
+	ebpfBreakoutsTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pahlevan_ebpf_breakouts_total",
+		Help: "Execs whose working directory was outside the process's mount namespace",
+	})
 )
 
 func init() {
 	ctrlmetrics.Registry.MustRegister(
 		ebpfEventsTotal, ebpfDenialsTotal, ebpfDecodeErrorsTotal, ebpfHandlerErrorsTotal,
+		ebpfBreakoutsTotal,
 	)
 	// Pre-create every child so a kind that has not fired yet reports 0 rather
 	// than being absent. An absent series and a genuinely idle one look the same
@@ -1041,6 +1055,9 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 		// Flag bit 0x80000000 marks an in-kernel denied execve (see exec_monitor.c).
 		if event.Flags&DeniedFlag != 0 {
 			m.counters[kindExec].denials.Inc()
+		}
+		if event.IsBreakout() {
+			ebpfBreakoutsTotal.Inc()
 		}
 		m.notifyHandlers(kindExec, func(h EventHandler) error { return h.HandleProcessEvent(event) })
 	}
