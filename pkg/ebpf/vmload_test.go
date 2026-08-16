@@ -2102,8 +2102,14 @@ func TestVMBreakoutAcrossMountNamespacesIsRefused(t *testing.T) {
 	// symlink lands on the target and the string never appears. The test failing
 	// is what found that.
 	runFromForeignMountNS := func() error {
+		// Open a directory descriptor, then unshare the mount namespace and
+		// chdir back through that descriptor. The new namespace gets a copy of
+		// the mount tree, but the descriptor still refers to the mount in the
+		// *old* one - so the working directory ends up outside the process's
+		// own namespace, which is the state a leaked host descriptor creates.
 		script := fmt.Sprintf(
-			"echo $$ > %s/cgroup.procs && exec unshare -m --propagation unchanged /bin/true", cg)
+			"echo $$ > %s/cgroup.procs && exec 9< / && "+
+				"exec unshare -m sh -c 'cd /proc/self/fd/9 && exec /bin/true'", cg)
 		return exec.Command("/bin/sh", "-c", script).Run()
 	}
 	runNormally := func() error {
