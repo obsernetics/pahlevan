@@ -2030,7 +2030,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// TestVMBreakoutViaProcfsFdIsRefused reproduces the shape of the runC breakout
+// TestVMBreakoutAcrossMountNamespacesIsRefused reproduces the shape of the runC breakout
 // class and proves the kernel refuses it.
 //
 // CVE-2024-21626 and the vulnerabilities that followed work by leaving the
@@ -2041,10 +2041,11 @@ func shellQuote(s string) string {
 // seccomp profile would question.
 //
 // The exploit is not reproduced here - that would need a vulnerable runtime.
-// What is reproduced is the observable it leaves behind, which is what Pahlevan
-// keys on: an execve whose working directory is inside procfs's fd directory.
-// A workload that has legitimately chdir'd there does not exist.
-func TestVMBreakoutViaProcfsFdIsRefused(t *testing.T) {
+// What is reproduced is the invariant it violates, which is what Pahlevan keys
+// on: an execve whose working directory belongs to a different mount namespace
+// from the process itself. There is no legitimate way to reach that state from
+// inside a container.
+func TestVMBreakoutAcrossMountNamespacesIsRefused(t *testing.T) {
 	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
 		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only; requires bpf LSM)")
 	}
@@ -2087,12 +2088,22 @@ func TestVMBreakoutViaProcfsFdIsRefused(t *testing.T) {
 	}
 	cgID := st.Ino
 
-	// cd into a directory fd in procfs and exec from there. `exec 9< /` opens a
-	// descriptor to a directory; /proc/self/fd/9 then resolves to it, which is
-	// exactly the state a leaked host descriptor leaves the process in.
-	runFromProcfsFd := func() error {
+	// Reproducing the invariant, not the exploit: a process whose working
+	// directory belongs to a different mount namespace from the process itself.
+	//
+	// unshare -m gives the child its own mount namespace while its working
+	// directory is still the one it inherited, whose mount belongs to the
+	// parent's namespace. That is the same mismatch a leaked host descriptor
+	// produces, reached by a route that needs no vulnerable runtime.
+	//
+	// The first version of this test tried `cd /proc/self/fd/9`, on the theory
+	// that the exploit's usual spelling would show up in the path. It does not:
+	// the kernel stores the resolved directory, so chdir through a procfs
+	// symlink lands on the target and the string never appears. The test failing
+	// is what found that.
+	runFromForeignMountNS := func() error {
 		script := fmt.Sprintf(
-			"echo $$ > %s/cgroup.procs && exec 9< / && cd /proc/self/fd/9 && exec /bin/true", cg)
+			"echo $$ > %s/cgroup.procs && exec unshare -m --propagation unchanged /bin/true", cg)
 		return exec.Command("/bin/sh", "-c", script).Run()
 	}
 	runNormally := func() error {
@@ -2104,7 +2115,7 @@ func TestVMBreakoutViaProcfsFdIsRefused(t *testing.T) {
 	// to the allow-set: the descriptor number differs every time, so learning
 	// it would be learning the exploit.
 	drainRing(t, rd)
-	_ = runFromProcfsFd()
+	_ = runFromForeignMountNS()
 
 	var sawBreakoutWhileLearning bool
 	deadline := time.Now().Add(5 * time.Second)
@@ -2140,8 +2151,8 @@ func TestVMBreakoutViaProcfsFdIsRefused(t *testing.T) {
 
 	// The same learned binary, from a procfs fd: refused. This is the assertion
 	// that matters - the allow-set says yes and the breakout check overrides it.
-	if err := runFromProcfsFd(); err == nil {
-		t.Error("expected an exec from a procfs fd working directory to be DENIED")
+	if err := runFromForeignMountNS(); err == nil {
+		t.Error("expected an exec whose cwd is outside its mount namespace to be DENIED")
 	} else {
 		t.Logf("DENIED in-kernel as expected: %v", err)
 	}

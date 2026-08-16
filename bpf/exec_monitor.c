@@ -203,49 +203,6 @@ static __always_inline __u64 filter_key(__u64 cgroup_id, __u64 kind, __u64 value
 	return cgroup_id ^ (kind * KIND_MIX) ^ value;
 }
 
-/* EV_BREAKOUT marks an exec whose working directory is a file descriptor in
- * procfs, which is the signature of the runC breakout class.
- *
- * CVE-2024-21626 and the vulnerabilities that followed it work by leaving the
- * process's working directory pointing at /proc/self/fd/N, where N is a
- * descriptor the runtime leaked from the host mount namespace. Everything the
- * container then resolves relative to that directory resolves on the host, so
- * a write to ../../../etc/cron.d escapes without any capability, any mount,
- * and any syscall a seccomp profile would question.
- *
- * The reason this is worth a dedicated check rather than a learned baseline:
- * the path is different every time - the descriptor number varies - so it
- * hashes to a new allow-set key on each attempt and cannot be learned, and a
- * denial keyed on the binary says nothing about why. Nothing else Pahlevan
- * observes distinguishes it from an ordinary exec.
- *
- * A legitimate workload does not chdir into procfs. The few that read
- * /proc/self/fd do so with an explicit path rather than by making it the
- * working directory. */
-#define EV_BREAKOUT 0x08000000u
-
-static __always_inline int cwd_is_procfs_fd(const __u8 *cwd)
-{
-	/* "/proc/" then a digit or "self". Compared byte by byte because the
-	 * verifier will not accept a library string comparison here, and the
-	 * prefix is short enough that unrolling costs nothing. */
-	if (cwd[0] != '/' || cwd[1] != 'p' || cwd[2] != 'r' || cwd[3] != 'o' ||
-	    cwd[4] != 'c' || cwd[5] != '/')
-		return 0;
-
-	/* Find "/fd/" within the next stretch of the path. /proc/self/fd/4 and
-	 * /proc/1234/fd/4 both qualify; /proc/self/cwd does not. */
-#pragma unroll
-	for (int i = 6; i < 24; i++) {
-		if (cwd[i] == 0)
-			return 0;
-		if (cwd[i] == '/' && cwd[i + 1] == 'f' && cwd[i + 2] == 'd' &&
-		    cwd[i + 3] == '/')
-			return 1;
-	}
-	return 0;
-}
-
 static __always_inline __u64 hash_name(const __u8 *p, int n)
 {
 	__u64 h = 1469598103934665603ULL;
@@ -256,6 +213,64 @@ static __always_inline __u64 hash_name(const __u8 *p, int n)
 		h *= 1099511628211ULL;
 	}
 	return h;
+}
+
+/* EV_BREAKOUT marks an exec whose working directory lives in a different mount
+ * namespace from the process itself.
+ *
+ * That is the invariant the runC breakout class violates. CVE-2024-21626 and
+ * the vulnerabilities that followed work by leaving the container's working
+ * directory on a file descriptor the runtime leaked from the host mount
+ * namespace; everything the container then resolves relative to it resolves on
+ * the host, so a write to ../../../etc/cron.d escapes with no capability, no
+ * mount, and no syscall a seccomp profile would question.
+ *
+ * The first version of this check looked for a working directory matching
+ * /proc/self/fd/, which is how the exploit is usually *written*. That was
+ * wrong, and a VM test said so: the kernel stores the resolved directory, so
+ * chdir through a procfs symlink leaves fs->pwd pointing at the target, and
+ * the string never appears. The namespace comparison is the property itself
+ * rather than a spelling of it, and it holds however the descriptor was
+ * obtained.
+ *
+ * A process whose working directory is outside its own mount namespace is not
+ * a workload doing something unusual. There is no legitimate way to reach that
+ * state from inside a container.
+ */
+#define EV_BREAKOUT 0x08000000u
+
+static __always_inline int cwd_escapes_mount_ns(void)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+	if (!task)
+		return 0;
+
+	/* The namespace the process belongs to. */
+	struct nsproxy *ns = BPF_CORE_READ(task, nsproxy);
+	if (!ns)
+		return 0;
+	struct mnt_namespace *task_ns = BPF_CORE_READ(ns, mnt_ns);
+	if (!task_ns)
+		return 0;
+
+	/* The namespace the working directory's mount belongs to. fs->pwd.mnt is
+	 * the vfsmount embedded in a struct mount, so the containing struct is
+	 * reached by subtracting the member offset - the kernel's own
+	 * real_mount(). */
+	struct fs_struct *fs = BPF_CORE_READ(task, fs);
+	if (!fs)
+		return 0;
+	struct vfsmount *vm = BPF_CORE_READ(fs, pwd.mnt);
+	if (!vm)
+		return 0;
+
+	struct mount *m = (struct mount *)((char *)vm - offsetof(struct mount, mnt));
+	struct mnt_namespace *pwd_ns = BPF_CORE_READ(m, mnt_ns);
+	if (!pwd_ns)
+		return 0;
+
+	/* Equal is the overwhelmingly common case and costs one comparison. */
+	return pwd_ns != task_ns;
 }
 
 /* EV_EXITED marks a record as a process exit rather than an exec. Exits ride
@@ -505,7 +520,7 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	 * never legitimate, so learning it would be learning the exploit. Under
 	 * enforcement it is refused; while learning it is reported and, critically,
 	 * not added to the allow-set. */
-	int breakout = cwd_is_procfs_fd(e->cwd);
+	int breakout = cwd_escapes_mount_ns();
 
 	if (mode == MODE_ENFORCE || mode == MODE_ENFORCE_KILL) {
 		/* Two independent reasons to refuse: the binary was never learned, or
