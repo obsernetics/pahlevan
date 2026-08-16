@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -235,5 +236,62 @@ func BenchmarkApplyCheck(b *testing.B) {
 		if _, err := Apply(root, facts, false); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The landing page is where an evaluator decides whether to read further, and
+// it is the artifact most likely to describe a version of the tool that no
+// longer exists. pagesync keeps its *numbers* honest; nothing kept its
+// *claims* honest, and it went a long way out of date - the page described
+// file and egress enforcement while the tool had gained a process filter,
+// destination naming, an OTLP pipeline and an offline policy explainer.
+//
+// A full prose check is not possible. What is checkable is that a capability
+// the repository demonstrably ships is mentioned somewhere on the page: each
+// entry below pairs a marker that proves the feature exists in the tree with a
+// phrase the page must contain.
+func TestTheSiteMentionsWhatTheToolShips(t *testing.T) {
+	const root = "../.."
+	page, err := os.ReadFile(filepath.Join(root, "pages", "index.html"))
+	if err != nil {
+		t.Skipf("not running in the repository: %v", err)
+	}
+	text := strings.ToLower(string(page))
+
+	for name, tc := range map[string]struct {
+		// proof is a path that exists only when the feature does.
+		proof string
+		// phrases are alternatives; the page must contain at least one.
+		phrases []string
+	}{
+		"process filter": {
+			proof:   "pkg/ebpf/procfilter.go",
+			phrases: []string{"processfilter", "who execs"},
+		},
+		"destination naming": {
+			proof:   "internal/netmap/resolver.go",
+			phrases: []string{"destinations have names", "prod/postgres"},
+		},
+		"otlp export": {
+			proof:   "pkg/export/otlp.go",
+			phrases: []string{"otlp", "loki"},
+		},
+		"policy explain": {
+			proof:   "cmd/pahlevan/commands/policyexplain.go",
+			phrases: []string{"policy explain"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := os.Stat(filepath.Join(root, tc.proof)); err != nil {
+				t.Skipf("%s is not present, so the page need not mention it", name)
+			}
+			for _, p := range tc.phrases {
+				if strings.Contains(text, strings.ToLower(p)) {
+					return
+				}
+			}
+			t.Errorf("%s ships (%s exists) but pages/index.html does not mention it; "+
+				"tried %v", name, tc.proof, tc.phrases)
+		})
 	}
 }

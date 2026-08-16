@@ -101,18 +101,16 @@ func (r *ContainerLearnerReconciler) handlePodPending(ctx context.Context, pod *
 	logger := log.FromContext(ctx)
 	logger.Info("Handling pending pod", "pod", pod.Name)
 
-	// For pending pods, we just track them and wait for them to start
-	r.trackPod(pod)
-
+	// Nothing to track yet, and saying so beats calling a function that does
+	// nothing. A pending pod has no container statuses, so it has no container
+	// ids - and the tracking map is keyed by container id. The requeue is the
+	// whole behavior here: come back when it is running.
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
 func (r *ContainerLearnerReconciler) handlePodRunning(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Handling running pod", "pod", pod.Name)
-
-	// Track the pod if not already tracked
-	r.trackPod(pod)
 
 	// Lazily initialize the tracking map: Reconcile may be invoked before
 	// SetupWithManager (notably in tests), and writing to a nil map panics.
@@ -220,11 +218,6 @@ func (r *ContainerLearnerReconciler) handlePodDeletion(namespacedName types.Name
 			delete(r.TrackedContainers, containerID)
 		}
 	}
-}
-
-func (r *ContainerLearnerReconciler) trackPod(pod *corev1.Pod) {
-	// Basic pod tracking logic
-	// This could be expanded to maintain more detailed pod lifecycle information
 }
 
 func (r *ContainerLearnerReconciler) findApplicablePolicies(ctx context.Context, pod *corev1.Pod) ([]*policyv1alpha1.PahlevanPolicy, error) {

@@ -32,6 +32,31 @@ func familyValue(t *testing.T, g prometheus.Gatherer, name string) (float64, boo
 	return 0, false
 }
 
+// familyTotal sums every child of a family, and reports zero for a family that
+// is absent.
+//
+// The policy-plane metrics are labeled by namespace and policy now, so a
+// counter that has never been incremented has no children and does not appear
+// in Gather() at all - there is no way to pre-create a child for a policy that
+// does not exist yet. "Absent" and "zero" are the same statement here, which is
+// not true of the per-kind data-plane counters, where every kind is pre-created
+// precisely so an idle kind reads 0 rather than vanishing.
+func familyTotal(t *testing.T, g prometheus.Gatherer, name string) float64 {
+	t.Helper()
+	families, err := g.Gather()
+	require.NoError(t, err)
+	total := float64(0)
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.Metric {
+			total += metricValue(m)
+		}
+	}
+	return total
+}
+
 func metricValue(m *dto.Metric) float64 {
 	switch {
 	case m.Counter != nil:
@@ -94,12 +119,10 @@ func TestPolicyViolationsCountedOnlyWhileEnforcing(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	c.now = func() time.Time { return base }
 
-	// Denied while still learning: not a policy violation. The series exists
-	// (it is registered unconditionally) but must still read zero.
+	// Denied while still learning: not a policy violation.
 	_ = c.HandleFileEvent(&ebpf.FileEvent{CgroupID: 42, Path: "/etc/shadow", Flags: DeniedFlag})
-	v, ok := familyValue(t, reg, "pahlevan_policy_violations_total")
-	require.True(t, ok)
-	assert.Equal(t, float64(0), v, "no violation should be recorded during learning")
+	assert.Equal(t, float64(0), familyTotal(t, reg, "pahlevan_policy_violations_total"),
+		"no violation should be recorded during learning")
 
 	c.now = func() time.Time { return base.Add(2 * time.Minute) }
 	c.Reconcile()
@@ -111,9 +134,8 @@ func TestPolicyViolationsCountedOnlyWhileEnforcing(t *testing.T) {
 	_ = c.HandleNetworkEvent(&ebpf.NetworkEvent{CgroupID: 42, Direction: DeniedDirection})
 	_ = c.HandleCapabilityEvent(&ebpf.CapabilityEvent{CgroupID: 42, Capability: 21, Flags: DeniedFlag})
 
-	v, ok = familyValue(t, reg, "pahlevan_policy_violations_total")
-	require.True(t, ok)
-	assert.Equal(t, float64(4), v, "one per denied signal")
+	assert.Equal(t, float64(4), familyTotal(t, reg, "pahlevan_policy_violations_total"),
+		"one per denied signal")
 }
 
 func TestMetricsRecordedOnRollback(t *testing.T) {

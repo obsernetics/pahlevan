@@ -452,6 +452,10 @@ func (c *Controller) metricLabels(st *cgState) metrics.MetricLabels {
 	l := metrics.MetricLabels{
 		ContainerID: st.ref.ContainerID,
 		Phase:       string(st.phase),
+		// The governing policy is the dimension these metrics are actually
+		// queried by, and it was never populated - so every series would have
+		// been labeled policy="unknown".
+		PolicyName: st.policyName,
 	}
 	if ns, name, ok := c.policies.PodMeta(st.ref.PodUID); ok {
 		l.Namespace, l.PodName = ns, name
@@ -610,7 +614,7 @@ func (c *Controller) recordFleetMetrics() {
 	if len(c.state) > 0 {
 		progress = enforcing / float64(len(c.state))
 	}
-	c.Metrics.UpdateLearningProgress(metrics.MetricLabels{}, progress)
+	c.Metrics.UpdateLearningProgress(progress)
 }
 
 // maybeEnforce flips a learning container to enforcing when its window has

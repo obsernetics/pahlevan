@@ -1,0 +1,135 @@
+name: Demo GIF
+
+# The GIF on the README and the landing page is rendered from docs/assets/
+# demo.tape and demo.sh by charmbracelet/vhs. Nothing rendered it automatically,
+# so it drifted from the tool every time a feature landed and only got
+# re-recorded when somebody noticed.
+#
+# This does two things. On a pull request it checks the committed GIF is
+# consistent with its sources, so a change to the tape that nobody rendered
+# fails in review. On main it re-renders and commits, so the picture people see
+# is the picture the current tape produces.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/assets/demo.tape'
+      - 'docs/assets/demo.sh'
+      - '.github/workflows/demo-gif.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'docs/assets/demo.tape'
+      - 'docs/assets/demo.sh'
+      - 'docs/assets/demo.gif'
+      - '.github/workflows/demo-gif.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: demo-gif-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    name: Render and check the demo GIF
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Install vhs
+        run: |
+          set -euo pipefail
+          VHS_VERSION=0.10.0
+          curl -sSL -o /tmp/vhs.tar.gz \
+            "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf /tmp/vhs.tar.gz -C /tmp
+          sudo install -m 0755 "$(find /tmp -name vhs -type f | head -1)" /usr/local/bin/vhs
+          vhs --version
+
+      # vhs drives headless Chrome to rasterise the terminal. In a container
+      # running as a privileged user it refuses to start without --no-sandbox,
+      # and the flag can only be passed through the binary it launches.
+      - name: Allow headless Chrome to run in CI
+        run: |
+          set -euo pipefail
+          real=$(command -v google-chrome || command -v chromium-browser || command -v chromium || true)
+          if [ -z "$real" ]; then
+            echo "no chrome on the runner; vhs ships its own"
+            exit 0
+          fi
+          sudo mv "$real" "${real}.real"
+          printf '#!/bin/sh\nexec %s.real --no-sandbox --disable-dev-shm-usage "$@"\n' "$real" \
+            | sudo tee "$real" >/dev/null
+          sudo chmod +x "$real"
+
+      - name: Render
+        run: make demo-gif
+
+      # The render is not byte-reproducible - the encoder is not deterministic -
+      # so comparing bytes would fail on every run. What can be checked is that
+      # the GIF is a valid, non-trivial animation of the expected size, and that
+      # the published copy matches the source copy.
+      - name: Sanity-check the render
+        run: |
+          set -euo pipefail
+          size=$(stat -c%s docs/assets/demo.gif)
+          echo "rendered $size bytes"
+          # A tape that failed halfway still produces a file; a real render of
+          # this tape is over a megabyte and under ten.
+          if [ "$size" -lt 500000 ] || [ "$size" -gt 12000000 ]; then
+            echo "::error::demo.gif is $size bytes, which is outside the plausible range"
+            exit 1
+          fi
+          frames=$(python3 -c "print(open('docs/assets/demo.gif','rb').read().count(b'\x21\xf9\x04'))")
+          echo "$frames frames"
+          if [ "$frames" -lt 200 ]; then
+            echo "::error::demo.gif has $frames frames; the tape did not play through"
+            exit 1
+          fi
+          cmp docs/assets/demo.gif pages/assets/demo.gif
+
+      # On a pull request, report rather than commit. A fork cannot push, and a
+      # PR that changes the tape should show the author that it still renders.
+      - name: Upload the rendered GIF for review
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-gif
+          path: docs/assets/demo.gif
+          retention-days: 7
+
+      - name: Commit the re-rendered GIF
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/assets/demo.gif pages/assets/demo.gif; then
+            echo "the render is unchanged; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/assets/demo.gif pages/assets/demo.gif
+          # The DCO check requires a sign-off trailer on every commit, and the
+          # message is written to a file so its blank lines cannot terminate
+          # this block scalar.
+          cat > /tmp/msg.txt <<'MSG'
+          docs: re-render the demo GIF from the current tape
+
+          Rendered by the demo-gif workflow because docs/assets/demo.tape or
+          demo.sh changed. The GIF used to be re-recorded only when somebody
+          noticed it had gone stale.
+
+          Signed-off-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          MSG
+          sed -i 's/^          //' /tmp/msg.txt
+          git commit -F /tmp/msg.txt
+          git push

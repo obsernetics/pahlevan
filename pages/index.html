@@ -357,6 +357,22 @@
                     <h3>Least-privilege control plane</h3>
                     <p>The operator runs with <code>hostUsers: false</code> and needs no host access.</p>
                 </article>
+                <article class="feature-card">
+                    <h3>Constrains who execs, not just what</h3>
+                    <p>The allow-set cannot tell your app running <code>python3</code> from an injected command running it. <code>processFilter</code> constrains the parent process, uid and gid at <code>bprm_check_security</code>.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>Destinations have names</h3>
+                    <p>A denial reads <code>prod/postgres:5432</code>, resolved from Services and pods the agent already caches. An address the cluster has never seen is tagged <code>external</code> &mdash; the difference between a misconfiguration and exfiltration.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>One resource across three signals</h3>
+                    <p>Events ship as OTLP log records to the same collector as the metrics and traces, sharing the attributes Grafana joins on. Loki, Tempo and Mimir correlate without a hand-written query.</p>
+                </article>
+                <article class="feature-card">
+                    <h3>See what a policy really does</h3>
+                    <p><code>pahlevan policy explain -f policy.yaml</code> translates it offline and names every part the data plane cannot enforce. <code>--strict</code> fails a CI gate.</p>
+                </article>
             </div>
         </div>
     </section>
