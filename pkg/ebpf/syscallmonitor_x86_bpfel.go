@@ -67,9 +67,10 @@ type SyscallMonitorProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type SyscallMonitorMapSpecs struct {
-	ConfigMap   *ebpf.MapSpec `ebpf:"config_map"`
-	Events      *ebpf.MapSpec `ebpf:"events"`
-	SyscallSeen *ebpf.MapSpec `ebpf:"syscall_seen"`
+	ConfigMap    *ebpf.MapSpec `ebpf:"config_map"`
+	Events       *ebpf.MapSpec `ebpf:"events"`
+	SyscallSeen  *ebpf.MapSpec `ebpf:"syscall_seen"`
+	SyscallWatch *ebpf.MapSpec `ebpf:"syscall_watch"`
 }
 
 // SyscallMonitorVariableSpecs contains global variables before they are loaded into the kernel.
@@ -98,9 +99,10 @@ func (o *SyscallMonitorObjects) Close() error {
 //
 // It can be passed to LoadSyscallMonitorObjects or ebpf.CollectionSpec.LoadAndAssign.
 type SyscallMonitorMaps struct {
-	ConfigMap   *ebpf.Map `ebpf:"config_map"`
-	Events      *ebpf.Map `ebpf:"events"`
-	SyscallSeen *ebpf.Map `ebpf:"syscall_seen"`
+	ConfigMap    *ebpf.Map `ebpf:"config_map"`
+	Events       *ebpf.Map `ebpf:"events"`
+	SyscallSeen  *ebpf.Map `ebpf:"syscall_seen"`
+	SyscallWatch *ebpf.Map `ebpf:"syscall_watch"`
 }
 
 func (m *SyscallMonitorMaps) Close() error {
@@ -108,6 +110,7 @@ func (m *SyscallMonitorMaps) Close() error {
 		m.ConfigMap,
 		m.Events,
 		m.SyscallSeen,
+		m.SyscallWatch,
 	)
 }
 

@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
 #
-# run.sh - Reproducible Pahlevan vs Falco vs Tetragon runtime-security benchmark.
+# run.sh - Reproducible measurement of what Pahlevan detects, what it blocks,
+# and what it costs to run.
 #
 # Runs INSIDE the kernel-isolated VM (hack/vm/). eBPF is never loaded on the host.
-# The VM has only ~3.8 GiB RAM, so the three agents are run ONE AT A TIME against
-# the SAME target workload and the SAME scenarios, then torn down. Everything this
-# produces is a real measurement; see docs/benchmarks/ for recorded runs.
+#
+# Two passes against the same workload and the same attack scenarios: a control
+# pass with no agent installed, and a Pahlevan pass. The control pass is what
+# makes the cost figure meaningful - CPU and memory are only interesting as a
+# difference from an unwatched node, and detection counts are only interesting
+# once you know the scenarios actually executed with nothing to stop them.
+#
+# Everything this produces is a real measurement; see docs/benchmarks/ for
+# recorded runs.
 #
 # Usage (from the repo root, on the host):
 #   hack/vm/up.sh                      # boot the VM (kernel 6.8, bpf LSM active)
 #   test/benchmark/run.sh setup        # k3s + helm + the nginx:1.27 target
+#   test/benchmark/run.sh control      # the same scenarios with no agent at all
 #   test/benchmark/run.sh pahlevan     # build+deploy Pahlevan, learn, enforce, attack
-#   test/benchmark/run.sh falco        # deploy Falco (modern eBPF), attack
-#   test/benchmark/run.sh tetragon     # deploy Tetragon, attack (observe-only)
-#   test/benchmark/run.sh all          # sequentially: setup + pahlevan + falco + tetragon
+#   test/benchmark/run.sh all          # setup + control + pahlevan
 #
 # Artifacts land in ${SCRATCH}/results/<tool>/ on the HOST:
 #   scenarios.txt  raw SCENARIO lines from the in-pod runner (with timestamps)
@@ -64,9 +70,6 @@ set -eu
 command -v k3s >/dev/null 2>&1 || curl -sfL https://get.k3s.io | sudo INSTALL_K3S_EXEC="--write-kubeconfig-mode=644 --disable=traefik --disable=metrics-server" sh -
 command -v helm >/dev/null 2>&1 || (curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | sudo bash)
 sudo kubectl wait --for=condition=Ready node --all --timeout=180s
-helm repo add falcosecurity https://falcosecurity.github.io/charts >/dev/null 2>&1 || true
-helm repo add cilium https://helm.cilium.io >/dev/null 2>&1 || true
-helm repo update >/dev/null 2>&1
 EOF
 }
 
@@ -388,8 +391,8 @@ subjects:
 YAML
 sudo kubectl apply -f /tmp/agent-rbac-workaround.yaml
 
-# Event export is the per-scenario signal source (Falco and Tetragon both write
-# their events out by default; Pahlevan does not, so it is switched on here).
+# Event export is the per-scenario signal source. The agent does not write
+# events to a file by default, so it is switched on here.
 cat > /tmp/export-patch.json <<'JSON'
 [
  {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--export-file=/var/log/pahlevan/events.jsonl"},
@@ -580,100 +583,7 @@ EOF
 }
 
 # --------------------------------------------------------------------------
-# 5. FALCO (alert-only by design; modern eBPF / CO-RE driver)
-# --------------------------------------------------------------------------
-run_falco() {
-  mkdir -p "${RESULTS}/falco"
-  log "FALCO: install (chart defaults + modern_ebpf driver + JSON output)"
-  vms falco-install <<'EOF'
-set -eu
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-sudo kubectl create ns falco 2>/dev/null || true
-helm install falco falcosecurity/falco -n falco \
-  --set driver.kind=modern_ebpf \
-  --set tty=true \
-  --set falco.json_output=true \
-  --wait --timeout=8m
-sudo kubectl -n falco rollout status ds/falco --timeout=240s
-sudo kubectl -n falco get pods -o wide
-EOF
-  stage_scenarios
-  target_facts >"${RESULTS}/falco/facts.txt"
-  start_runner
-  sleep 5
-  arm_and_wait
-  fetch_scenarios falco
-
-  log "FALCO: agent resources"
-  measure_agent 'app.kubernetes.io/name=falco' falco 'falco' >"${RESULTS}/falco/resources.txt" 2>&1
-  cat "${RESULTS}/falco/resources.txt"
-
-  log "FALCO: collect alerts for the run window (Falco NEVER blocks; Blocked=No for all)"
-  vms falco-signals <<'EOF'
-set -eu
-. /tmp/bench-window
-sudo kubectl -n falco logs -l app.kubernetes.io/name=falco -c falco --timestamps \
-  --since-time="$RUN_START" --tail=-1 2>&1 | sudo tee /tmp/falco-signals.raw >/dev/null
-wc -l /tmp/falco-signals.raw
-EOF
-  vm 'sudo cat /tmp/falco-signals.raw' >"${RESULTS}/falco/signals.raw"
-  vm 'sudo kubectl -n falco get ds falco -o jsonpath="{.spec.template.spec.containers[0].image}"; echo; helm -n falco list' \
-    >"${RESULTS}/falco/meta.txt" 2>&1 || true
-
-  log "FALCO: teardown"
-  vm 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml; helm uninstall falco -n falco || true; sudo kubectl delete ns falco --grace-period=5 || true; sleep 10'
-  correlate falco
-}
-
-# --------------------------------------------------------------------------
-# 6. TETRAGON (observe-only by default; enforcement needs a TracingPolicy)
-# --------------------------------------------------------------------------
-run_tetragon() {
-  mkdir -p "${RESULTS}/tetragon"
-  log "TETRAGON: install (chart defaults = process telemetry, no blocking)"
-  vms tetragon-install <<'EOF'
-set -eu
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-helm install tetragon cilium/tetragon -n kube-system --wait --timeout=8m
-sudo kubectl -n kube-system rollout status ds/tetragon --timeout=240s
-sudo kubectl -n kube-system get pods -l app.kubernetes.io/name=tetragon -o wide
-EOF
-  stage_scenarios
-  target_facts >"${RESULTS}/tetragon/facts.txt"
-  start_runner
-  sleep 5
-  arm_and_wait
-  fetch_scenarios tetragon
-
-  log "TETRAGON: agent resources"
-  measure_agent 'app.kubernetes.io/name=tetragon' kube-system 'tetragon' >"${RESULTS}/tetragon/resources.txt" 2>&1
-  cat "${RESULTS}/tetragon/resources.txt"
-
-  log "TETRAGON: collect telemetry for the run window"
-  vms tetragon-signals <<'EOF'
-set -eu
-. /tmp/bench-window
-. /tmp/bench-facts
-sudo kubectl -n kube-system logs -l app.kubernetes.io/name=tetragon -c export-stdout \
-  --since-time="$RUN_START" --tail=-1 2>&1 | grep -F "$POD" | sudo tee /tmp/tetragon-signals.raw >/dev/null || true
-wc -l /tmp/tetragon-signals.raw
-EOF
-  vm 'sudo cat /tmp/tetragon-signals.raw' >"${RESULTS}/tetragon/signals.raw"
-  vm 'sudo kubectl -n kube-system get ds tetragon -o jsonpath="{.spec.template.spec.containers[*].image}"; echo; helm -n kube-system list' \
-    >"${RESULTS}/tetragon/meta.txt" 2>&1 || true
-
-  # NOTE: enforcement with a hand-written TracingPolicy is NOT run here. On
-  # 2026-08-14 an un-scoped Sigkill policy on security_file_permission killed
-  # unrelated processes node-wide and froze the VM. Reproduce only with a
-  # pod-scoped matchBinaries selector, in a disposable VM.
-
-  log "TETRAGON: teardown"
-  vm 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml; helm uninstall tetragon -n kube-system || true; sleep 10'
-  correlate tetragon
-}
-
-# --------------------------------------------------------------------------
-# 7. Correlate one tool's raw stream into a per-scenario matrix
+# 5. Correlate one tool's raw stream into a per-scenario matrix
 # --------------------------------------------------------------------------
 correlate() {
   local tool="$1" dir="${RESULTS}/$1"
@@ -714,11 +624,9 @@ main() {
   env)      environment | tee "${RESULTS}/environment.txt" ;;
   control)  run_control ;;
   pahlevan) run_pahlevan ;;
-  falco)    run_falco ;;
-  tetragon) run_tetragon ;;
   all)      setup_cluster; deploy_target; environment | tee "${RESULTS}/environment.txt"
-            run_control; run_pahlevan; run_falco; run_tetragon ;;
-  *) echo "usage: $0 {setup|env|control|pahlevan|falco|tetragon|all}" >&2; exit 2 ;;
+            run_control; run_pahlevan ;;
+  *) echo "usage: $0 {setup|env|control|pahlevan|all}" >&2; exit 2 ;;
   esac
   log "Done. Artifacts in ${RESULTS}"
 }

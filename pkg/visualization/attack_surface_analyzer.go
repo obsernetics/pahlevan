@@ -557,7 +557,7 @@ func (asa *AttackSurfaceAnalyzer) Start(ctx context.Context) error {
 	// There were two more workers here, ticking every hour to call
 	// performVulnerabilityScans and updateThreatModel - both of which had empty
 	// bodies. Two goroutines and two timers, for nothing. Vulnerability
-	// scanning and threat modeling are listed as absent in docs/comparison.md;
+	// scanning and threat modeling are listed as absent in ROADMAP.md;
 	// a goroutine that pretends otherwise makes the absence harder to see, not
 	// easier.
 

@@ -24,10 +24,17 @@ import (
 // that can reach the port is not a defensible default for a security tool, and
 // "bind it to localhost" is advice rather than a control.
 //
-// So the server takes credentials. It still starts without them - an agent that
-// refuses to run because nobody has issued a certificate is an agent nobody
-// runs - but it says loudly what it is doing, and the flag that enables the
-// listener has to be set deliberately either way.
+// So the server requires credentials. It used to start without them and merely
+// say so in the log, on the reasoning that an agent refusing to run because
+// nobody had issued a certificate is an agent nobody runs. That reasoning was
+// wrong in one specific way: the person who forgets the certificate and the
+// person who reads the startup log are rarely the same person, and a warning
+// nobody reads is not a control. Serving a reconnaissance report in plaintext
+// is now a startup error naming exactly what to do about it.
+//
+// AllowInsecure exists for the cases that are genuinely fine - a unit test, a
+// developer on a laptop, a listener bound to loopback behind a sidecar that
+// terminates TLS. It has to be set on purpose, which is the whole difference.
 //
 // Two mechanisms, deliberately separate:
 //
@@ -153,6 +160,17 @@ type AuthConfig struct {
 	TLS TLSConfig
 	// Token, when set, requires a matching bearer token on every call.
 	Token string
+	// AllowInsecure permits a plaintext, unauthenticated listener.
+	//
+	// Without it a listener with neither TLS nor a token fails to start. The
+	// failure is the point: an operator who meant to configure credentials
+	// finds out at startup rather than after somebody else finds the port.
+	AllowInsecure bool
+}
+
+// Secure reports whether the stream is encrypted and its peers authenticated.
+func (a AuthConfig) Secure() bool {
+	return a.TLS.Enabled() && (a.TLS.ClientCAFile != "" || a.Token != "")
 }
 
 // Validate rejects a configuration that would not do what it appears to.
@@ -167,6 +185,18 @@ func (a AuthConfig) Validate() error {
 		return fmt.Errorf(
 			"a grpc bearer token requires TLS: without it the token is sent in cleartext " +
 				"on every call and protects nothing")
+	}
+	// The stream carries every denial on the node - which pods exist, which
+	// paths they read, which destinations they dial, the full command line of
+	// every exec. Serving that to anything that can reach the port is not a
+	// defensible default, and "bind it to localhost" is advice rather than a
+	// control.
+	if !a.TLS.Enabled() && a.Token == "" && !a.AllowInsecure {
+		return fmt.Errorf(
+			"the grpc listener would be plaintext and unauthenticated, and it serves every " +
+				"denial on this node. Configure --grpc-tls-cert and --grpc-tls-key, add " +
+				"--grpc-client-ca for mTLS or --grpc-token for a bearer token, or pass " +
+				"--grpc-insecure if this listener is genuinely unreachable")
 	}
 	return nil
 }
@@ -206,6 +236,6 @@ func (a AuthConfig) Describe() string {
 	case a.TLS.Enabled():
 		return "TLS, no client authentication"
 	default:
-		return "PLAINTEXT AND UNAUTHENTICATED - bind to localhost or a trusted network"
+		return "PLAINTEXT AND UNAUTHENTICATED (--grpc-insecure) - reachable by anything that can reach the port"
 	}
 }

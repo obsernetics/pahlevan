@@ -2,8 +2,7 @@
 
 <h1>Pahlevan</h1>
 
-<p><b>eBPF-powered runtime security for Kubernetes.</b><br/>
-Self-learning workload baselines, enforced <i>in-kernel</i> - no hand-written rules.</p>
+<p><b>Your workload writes its own security policy. The kernel enforces it.</b></p>
 
 <p>
   <a href="https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/obsernetics/pahlevan/ci.yml?branch=main&label=CI&logo=github" alt="CI" /></a>
@@ -23,38 +22,94 @@ Self-learning workload baselines, enforced <i>in-kernel</i> - no hand-written ru
 
 </div>
 
-## Why Pahlevan
+## The idea
 
-Most runtime tools either *watch* (alert-only) or make you *write the rules yourself*.
-Pahlevan learns what a workload does, then blocks the rest in-kernel.
+A container is the most predictable thing in your infrastructure. It runs one
+program. It opens the same files every time. It dials the same handful of
+destinations. It uses maybe sixty of the kernel's four hundred syscalls, and it
+will use exactly those sixty for as long as the image is deployed.
 
-- **Auto-learning, not manual rules.** Files opened, destinations dialed, binaries executed, and capabilities used during a learning window become a per-cgroup allow-set.
-- **Real in-kernel enforcement.** LSM BPF hooks deny unlearned file opens, egress (IPv4 and IPv6), execs, and capability use with `EPERM`. The syscall never succeeds.
-- **Accurate attribution.** Events tie to the container via `bpf_get_current_cgroup_id()`; paths resolve in-kernel with `bpf_d_path()`.
-- **Constrains who, not just what.** The allow-set stops a binary the workload has never run. It cannot tell the application running `python3` from an injected command running it, because both are the same learned binary - so `processFilter` constrains the parent process, uid and gid at exec, in the same kernel hook.
-- **Destinations have names.** A denial reads `default/postgres:5432`, resolved from Services, pods and nodes the agent already caches, and an address the cluster has never heard of is tagged `external` - which is the difference between a misconfiguration and exfiltration. No DNS query is made, so a burst of denials does not become a burst of DNS traffic.
-- **Events leave the process.** A gRPC streaming API with server-side filtering, JSON-lines file and webhook export, and OTLP log records so events reach Loki through the same collector as everything else. Metrics, traces and events share one OpenTelemetry resource, which is what lets Grafana join them. Every event carries the node, pod, image, owning workload, labels, the process lineage, and for an exec its full command line.
-- **Kubernetes-native and self-healing.** Three CRDs drive the lifecycle, a seccomp profile is generated from the learned syscalls and materialized on every node, and enforcement rolls back automatically if it disrupts the workload.
+Pahlevan watches a container do all of that, once, and then refuses everything
+else — in the kernel, at the moment of the attempt, with `EPERM`.
 
-| | **Pahlevan** | Falco | Tetragon | Cilium |
-| --- | --- | --- | --- | --- |
-| Learns behavior | **Auto (per-cgroup)** | Manual rules | Manual `TracingPolicy` | Static policy |
-| Blocks in-kernel | **Files, egress, exec, capabilities** | Alert only | Possible, hand-written | Network only |
-| Rules to author | **None (learned)** | Many | Per-policy | Network rules |
-| Coverage | Syscalls, files, egress, exec, capabilities | Runtime events | Kernel tracing | L3-L7 traffic |
-| Enforces on the caller | **Parent, uid, gid at exec** | Alert only | Selectors, hand-written | n/a |
+Nobody writes a rule. There is no rule to write. The container already told you
+what it does; the only question was whether anything was listening.
 
-Falco and Tetragon are excellent observability tools with far larger ecosystems.
-Two documents, and read them in this order:
-[`docs/why-pahlevan.md`](docs/why-pahlevan.md) is the seven things Pahlevan does that
-they do not, each with the file that implements it;
-[`docs/comparison.md`](docs/comparison.md) is the fifteen things they do better.
-Pahlevan's claim is narrower than "better": close the loop. Learn the baseline, then
-*prevent* the deviation.
+```
+  learning window                        enforcement
+ ┌─────────────────────┐               ┌──────────────────────────┐
+ │ open /etc/nginx/*   │──┐            │ open /etc/nginx/*     ok  │
+ │ open /var/log/*     │  │  becomes   │ open /var/log/*       ok  │
+ │ connect 10.0.1.7:5432│ ├───────────▶│ connect 10.0.1.7:5432 ok  │
+ │ exec nginx          │  │  the       │ ─────────────────────────│
+ │ 61 syscalls         │──┘  allow-set │ open /etc/shadow    EPERM │
+ └─────────────────────┘               │ exec /tmp/xmrig     EPERM │
+                                       │ connect 45.9.1.4:80 EPERM │
+                                       └──────────────────────────┘
+```
 
-Watch it happen on a real workload: [`docs/live-scenario.md`](docs/live-scenario.md) runs
-a web application for fifty minutes, learns it, enforces, and then attacks it. Nine
-scenarios, nothing asserted - each line is what the kernel did.
+## What that buys you
+
+**An attacker inherits your baseline, not root.** A command-injection bug in a
+Python service gets an attacker `python3` — because the service runs `python3`
+constantly and it is in the allow-set. What it does not get them is
+`/etc/shadow`, an egress to an address the workload never dialed, a binary
+dropped in `/tmp`, or `CAP_SYS_ADMIN`. Every one of those is refused before the
+syscall returns.
+
+**The policy is never out of date.** A learned baseline describes the image that
+is actually running. Redeploy with a new dependency and the next learning window
+picks it up. There is no rule set to review, no detection content to subscribe
+to, and no gap between "we deployed something new" and "somebody updated the
+rules".
+
+**A denial is a fact, not a score.** There is no threshold, no anomaly model, no
+confidence percentage. The kernel either found the path in a hash map or it did
+not. When Pahlevan says a container tried to read `/etc/shadow`, it did, and it
+did not succeed.
+
+## The trade, stated plainly
+
+A baseline narrow enough to stop an attacker is narrow enough to stop you.
+
+If you `kubectl exec` into a production pod and run `curl`, Pahlevan will deny
+it, because the workload never ran `curl` and Pahlevan cannot tell your hands
+from someone else's. That is not a bug being worked around — it is the same
+mechanism working correctly, and every honest evaluation of this tool has to
+start there.
+
+Three things exist because of it: `Monitoring` mode, which learns and reports
+without ever denying; self-healing, which returns a container to learning if
+enforcement breaks it; and policy exceptions, which let you widen the set
+deliberately and in writing. Use the first one until you believe the baseline.
+
+## What it watches
+
+Seven eBPF programs, all CO-RE, all scoped to a single cgroup so nothing leaks
+across containers or reaches the rest of the node.
+
+| Program | Sees | Does |
+|---|---|---|
+| `lsm/file_open` | Every open, path resolved in-kernel by `bpf_d_path` | `EPERM` on an unlearned path |
+| `lsm/socket_connect` | Every connect, IPv4 and IPv6, named against cluster Services | `EPERM` on an unlearned destination |
+| `lsm/bprm_check_security` | Every exec: binary, argv, cwd, four levels of ancestry | `EPERM` or `SIGKILL` on an unlearned binary |
+| `lsm/capable` | Every capability check, plus the task's effective/permitted/inheritable sets | `EPERM` on a capability never exercised |
+| `kprobe/commit_creds` | The moment privilege actually changes | `SIGKILL` when privilege is gained with no `execve` to explain it |
+| `tracepoint/sys_enter` | Every syscall, with its six arguments | Becomes the generated seccomp profile |
+| `uretprobe/readline` | Commands typed at an interactive prompt | Records what somebody with a shell actually did |
+
+Two of those are worth pointing at directly.
+
+**`commit_creds`** is the single function through which any task's credentials
+change. A local-root exploit that overwrites a `cred` struct and calls it
+directly makes no syscall a syscall monitor could see — but it lands here, and
+it lands with no `execve` underway to explain it, which is what separates it
+from `sudo` doing its job.
+
+**`readline`** catches what the kernel cannot. `cd /root`, `export
+KUBECONFIG=…`, `history -c` are shell builtins: they change what a session is
+doing and produce no exec, no open, no connect. An exec-based monitor watches
+somebody work through them and reports nothing but the shell's own process.
 
 ## Architecture
 
@@ -62,19 +117,19 @@ scenarios, nothing asserted - each line is what the kernel did.
   <img src="docs/assets/architecture.svg" alt="Pahlevan architecture: a leader-elected operator and the PahlevanPolicy/ContainerProfile/AttackSurface CRDs drive per-node agents that load eBPF programs which observe and deny in-kernel" width="900" />
 </p>
 
-A per-node **agent** DaemonSet owns the eBPF data plane and enforces locally in the kernel.
-A leader-elected **operator** Deployment drives policy lifecycle, status aggregation, and CEL
-admission, with no host access and no webhook. Detail: [`docs/architecture.md`](docs/architecture.md).
+A per-node **agent** DaemonSet owns the eBPF data plane and enforces locally in
+the kernel. A leader-elected **operator** Deployment drives the policy
+lifecycle, status aggregation and CEL admission, with no host access and no
+mutating webhook. If the operator is down, enforcement already installed in the
+kernel keeps working. Detail: [`docs/architecture.md`](docs/architecture.md).
 
-## Quick Start
-
-Install the CRDs, RBAC, the operator, and the node agents:
+## Quick start
 
 ```bash
 kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml
 ```
 
-Apply an adaptive policy to any labelled workload:
+Point a policy at a labelled workload:
 
 ```yaml
 apiVersion: policy.pahlevan.io/v1alpha1
@@ -86,89 +141,103 @@ spec:
     matchLabels:
       app: nginx
   learningConfig:
-    duration: 5m          # observe normal behavior
-    autoTransition: true  # then enforce automatically
+    duration: 5m          # watch normal behaviour
+    autoTransition: true  # then enforce, automatically
   enforcementConfig:
-    mode: Monitoring      # use Blocking to deny in-kernel
+    mode: Monitoring      # Blocking denies in-kernel; start here
   selfHealing:
-    enabled: true         # roll back if enforcement breaks the workload
+    enabled: true         # return to learning if enforcement breaks the workload
 ```
-
-Then watch it learn and transition to enforcement:
 
 ```bash
 kubectl get pahlevanpolicy nginx-security -w
 ```
 
-Flip the mode to `Blocking` once you trust the baseline. More in [`examples/`](examples).
+Before you switch to `Blocking`, read what the baseline actually says:
 
-## Benchmarks
+```bash
+pahlevan policy explain -f nginx-security.yaml   # what this policy will and will not do
+pahlevan profile show nginx-abc123               # what was learned, offline
+```
 
-Measured head-to-head against Falco and Tetragon in a kernel-isolated k3s VM: one
-tool at a time, same `nginx:1.27` workload, 26 ATT&CK-mapped attack scenarios plus
-3 benign controls, vendor defaults, with a no-tool control run for attribution.
+`policy explain` runs without a cluster and tells you which fields translate
+into kernel state and which are ignored — including the ones that look like they
+work. More in [`examples/`](examples) and
+[`docs/policy-reference.md`](docs/policy-reference.md).
 
-| | **Pahlevan** | Falco | Tetragon |
-| --- | :---: | :---: | :---: |
-| Attacks blocked | **25 / 26** (in-kernel `EPERM`) | 0 / 26 (alert-only) | 0 / 26 (no blocking by default) |
-| Attacks detected | 25 / 26 | 9 / 26 (default rules) | 25 / 26 (exec telemetry) |
-| Benign controls blocked | **3 / 3** | 0 / 3 | 0 / 3 |
-| Agent memory | **66.7 MiB** | 195.3 MiB | 78.2 MiB |
-| Agent CPU under load | 11.3 % | 10.7 % | **7.8 %** |
+## Measured, not asserted
 
-Read the third row before the first. Blocking everything outside a learned baseline
-also blocks `curl`, `cat` and `getent`: nginx itself never broke (HTTP 200 throughout,
-zero restarts), but anything an operator might type into the container is refused.
-That is the tradeoff, not a footnote.
+Every number Pahlevan publishes comes from
+[`test/benchmark/run.sh`](test/benchmark/run.sh), run inside a kernel-isolated
+VM, twice: once with no agent installed at all, then with Pahlevan learning and
+enforcing.
 
-The distinction that row is really drawing is between the workload and a person
-inside it. The [live run](docs/live-scenario.md) separates them: over fifty minutes
-and 1509 requests the application served every one, while eight attacks were refused -
-because Pahlevan governs what the workload does, not what is done to it. A request
-arriving from outside is not the container executing anything. `kubectl exec` is.
+The control pass is the part that makes the rest mean anything. Without it, a
+scenario that silently failed to execute is indistinguishable from one that was
+prevented, and a CPU figure has no idle node to subtract from it. Scenarios are
+mapped to MITRE ATT&CK for Containers techniques and committed alongside the
+harness. Methodology and recorded runs:
+[`docs/benchmarks/`](docs/benchmarks).
 
-Falco is alert-only by design and Tetragon blocks only with a hand-written
-`TracingPolicy`, so their zeros are posture, not incapability. Methodology,
-environment, per-scenario results, the one attack that got through, and the rest of
-the caveats: [`docs/benchmarks/results.md`](docs/benchmarks/results.md). Every number
-comes from `test/benchmark/run.sh`.
+eBPF is never loaded on a developer machine. `hack/vm/` provisions a kernel with
+the BPF LSM active, and that is where every load, attach and enforcement test
+runs.
 
 ## Requirements
 
-- **Kubernetes 1.24+** (the user-namespace operator needs 1.30+).
-- **Linux 5.8+** for observation (CO-RE, ring buffer, `CAP_BPF`).
-- **`CONFIG_BPF_LSM` with `lsm=bpf`** for in-kernel enforcement; monitoring-only mode works without it.
+- **Kubernetes 1.24+** — the user-namespace operator needs 1.30+.
+- **Linux 5.8+** for observation: CO-RE, ring buffer, `CAP_BPF`.
+- **`CONFIG_BPF_LSM` with `lsm=bpf`** on the kernel command line for in-kernel
+  enforcement. Without it, the LSM hooks do not attach and Pahlevan runs as an
+  observability tool; the `commit_creds` kprobe and the syscall tracepoint still
+  work, because kprobes need no boot parameter.
 
-Details: [`docs/system-requirements.md`](docs/system-requirements.md), [`docs/lsm-support.md`](docs/lsm-support.md).
+Details: [`docs/system-requirements.md`](docs/system-requirements.md),
+[`docs/lsm-support.md`](docs/lsm-support.md).
 
-## Install and packages
+## Install
 
 ```bash
 helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
 helm install pahlevan pahlevan/pahlevan-operator -n pahlevan-system --create-namespace
 ```
 
-The distroless image `ghcr.io/obsernetics/pahlevan` ships the agent, operator, and CLI. Tags,
-chart usage, and manifest pinning: [`docs/packages.md`](docs/packages.md). Release notes:
+The distroless image `ghcr.io/obsernetics/pahlevan` ships the agent, operator
+and CLI. Tags, chart usage and manifest pinning:
+[`docs/packages.md`](docs/packages.md). Release notes:
 [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Development
 
 ```bash
-make build          # agent, operator, and CLI binaries
-make test           # unit tests (generated CRDs/manifests, fmt, vet)
+make build          # agent, operator and CLI binaries
+make test           # unit tests, generated CRDs and manifests, fmt, vet
 make lint           # golangci-lint + yamllint
-make ebpf-build     # regenerate CO-RE objects + Go bindings (needs clang)
+make ebpf-build     # regenerate CO-RE objects and Go bindings (needs clang)
 hack/vm/up.sh       # bring up the eBPF-capable VM, then: make vm-test
 ```
 
-[`hack/vm/`](hack/vm) provisions a kernel with the BPF LSM enabled for testing the eBPF
-programs. `make help` lists every target.
+Any change to `bpf/*.c`, to the loader, or to a map layout needs a `make
+vm-test` run: the verifier accepts or rejects a program at attach time, and a
+change that passes `go build` can still fail to load. `make help` lists every
+target.
+
+## Honest status
+
+One maintainer. A `v1alpha1` API. No public production adopters yet. The
+learning model has a conceptual limit no amount of engineering removes — a
+workload that is already compromised when learning begins gets its malicious
+behaviour baselined along with everything else.
+
+[`ROADMAP.md`](ROADMAP.md) says what exists, what is in progress, and what is
+merely planned, and marks each one. Nothing in this README describes something
+that is not in the tree.
 
 ## Contributing
 
-Contributions are welcome. Open an issue for substantial changes, run `make test lint` before
-submitting, and keep eBPF changes verifiable with `make vm-test`.
+Contributions are welcome. Open an issue for substantial changes, run `make test
+lint` before submitting, and keep eBPF changes verifiable with `make vm-test`.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
