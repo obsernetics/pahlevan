@@ -20,7 +20,7 @@ Welcome to the Pahlevan documentation! This directory contains comprehensive gui
 - **[Troubleshooting](troubleshooting.md)** - Common issues and solutions
 
 ### Benchmarks & Changes
-- **[Benchmarks](benchmarks/)** - Measured results against Falco and Tetragon
+- **[Benchmarks](benchmarks/)** - Measured overhead and detection latency
 - **[Changelog](../CHANGELOG.md)** - Release history
 
 ## Getting Started

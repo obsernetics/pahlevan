@@ -4,8 +4,7 @@
 # Attack: spawn an interactive shell wired to a TCP socket (reverse shell shape),
 # using the loopback address so nothing leaves the pod. nginx never opens an
 # interactive shell to a socket.
-# Expected: Pahlevan blocks the unexpected exec/socket; Falco alerts; Tetragon
-#           depends on policy.
+# Expected: under enforcement the unexpected exec and connect are both denied.
 # Marker: outcome=attempted (the connect target is loopback:4444 with no
 #         listener, so it fails regardless; judge blocking via tool logs).
 set -u

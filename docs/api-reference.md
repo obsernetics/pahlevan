@@ -361,7 +361,7 @@ envelope (`pahlevan.io/v1alpha1`):
 | JSON lines to a file | `--export-file` | What `pahlevan events` reads by default. Size-based rotation. |
 | HTTP webhook | `--export-webhook` | Batched POSTs, retried on 5xx/408/429. |
 | OTLP log records | `--otlp-endpoint` | Reaches Loki through the same collector as the metrics and traces. |
-| gRPC stream | `--grpc-bind-address` | `pahlevan.v1alpha1.EventService`; server-side filtering. TLS, mTLS and a bearer token are available and off by default. |
+| gRPC stream | `--grpc-bind-address` | `pahlevan.v1alpha1.EventService`; server-side filtering. Requires TLS, mTLS or a bearer token: a plaintext, unauthenticated listener refuses to start unless `--grpc-insecure` is passed deliberately. |
 
 The envelope is defined in `pkg/export/event.go` and mirrored on the wire by
 `api/v1alpha1/events.proto`; the two are asserted to agree in

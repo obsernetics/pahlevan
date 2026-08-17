@@ -25,15 +25,17 @@ import (
 // points, and the maps with their key and value sizes can all be compared
 // between the two builds. What this does NOT prove is that the arm64 verifier
 // accepts them, which needs an arm64 kernel and is listed as an open gap in
-// docs/comparison.md rather than papered over here.
+// ROADMAP.md rather than papered over here.
 
-// objects are the five programs, by the base name bpf2go derives.
+// objects are the seven programs, by the base name bpf2go derives.
 var archObjects = []string{
 	"syscallmonitor",
 	"networkmonitor",
 	"filemonitor",
 	"execmonitor",
 	"capabilitymonitor",
+	"credmonitor",
+	"shellmonitor",
 }
 
 func loadArchSpec(t *testing.T, base, arch string) *ebpf.CollectionSpec {
@@ -107,6 +109,8 @@ func TestAllowSetMapsExistOnBothArches(t *testing.T) {
 		"networkmonitor":    {"network_allowed", "network_mode"},
 		"execmonitor":       {"exec_allowed", "exec_mode", "exec_filter_on", "exec_filter_allowed"},
 		"capabilitymonitor": {"cap_allowed", "cap_mode"},
+		"credmonitor":       {"cred_config", "cred_governed"},
+		"shellmonitor":      {"shell_config"},
 	}
 	for _, arch := range []string{"x86", "arm64"} {
 		for base, maps := range want {
@@ -154,6 +158,58 @@ func BenchmarkLoadArm64Spec(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := ebpf.LoadCollectionSpec(path); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// The per-cgroup mode maps hold a packed enforcement action, not the bare mode
+// byte they held before the action set existed. Userspace writes a uint32; a
+// map still declared with a one-byte value would fail every write at runtime,
+// on a path only exercised once a policy reaches enforcement.
+func TestModeMapsHoldAPackedAction(t *testing.T) {
+	modeMaps := map[string]string{
+		"filemonitor":       "file_mode",
+		"networkmonitor":    "network_mode",
+		"execmonitor":       "exec_mode",
+		"capabilitymonitor": "cap_mode",
+	}
+	for _, arch := range []string{"x86", "arm64"} {
+		for base, name := range modeMaps {
+			t.Run(arch+"/"+name, func(t *testing.T) {
+				spec := loadArchSpec(t, base, arch)
+				m, ok := spec.Maps[name]
+				require.True(t, ok, "%s (%s) must declare %q", base, arch, name)
+				assert.Equal(t, uint32(8), m.KeySize,
+					"%s is keyed by cgroup id, which is 8 bytes", name)
+				assert.Equal(t, uint32(4), m.ValueSize,
+					"%s must hold the packed action from bpf/enforce.h, which is 4 bytes", name)
+			})
+		}
+	}
+}
+
+// The credential monitor is a kprobe and the shell monitor a uretprobe, on
+// purpose: neither needs the BPF LSM, so both work on kernels where the LSM
+// hooks do not attach at all. Compiled as the wrong type on one architecture
+// they would silently fail to attach there.
+func TestProbeTypesOnBothArches(t *testing.T) {
+	want := []struct {
+		base, prog string
+		typ        ebpf.ProgramType
+	}{
+		{"credmonitor", "handle_commit_creds", ebpf.Kprobe},
+		{"shellmonitor", "handle_readline", ebpf.Kprobe}, // uprobes are kprobe-type programs
+		{"syscallmonitor", "handle_sys_enter", ebpf.TracePoint},
+	}
+	for _, arch := range []string{"x86", "arm64"} {
+		for _, w := range want {
+			t.Run(arch+"/"+w.prog, func(t *testing.T) {
+				spec := loadArchSpec(t, w.base, arch)
+				p, ok := spec.Programs[w.prog]
+				require.True(t, ok, "%s (%s) must declare program %q", w.base, arch, w.prog)
+				assert.Equal(t, w.typ, p.Type,
+					"%s must be a %s program or it attaches nowhere", w.prog, w.typ)
+			})
 		}
 	}
 }

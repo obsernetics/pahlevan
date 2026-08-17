@@ -186,16 +186,15 @@ verifier accepts or rejects a program at attach time, and a change that passes
 
 The numbers in [`docs/benchmarks/`](docs/benchmarks) are produced by
 [`test/benchmark/run.sh`](test/benchmark/run.sh), never written by hand. It runs
-Pahlevan, Falco, and Tetragon against the same workload and the same attack
-scenarios inside the same VM, one tool at a time, and records what each one
-detected and what it actually blocked.
+the attack scenarios twice against the same workload inside the VM - once with
+no agent installed, once with Pahlevan - and records what was detected, what was
+actually prevented, and what the agent cost.
 
 ```bash
 hack/vm/up.sh                    # boot the VM first
+test/benchmark/run.sh control    # the same scenarios with nothing watching
 test/benchmark/run.sh pahlevan   # build, deploy, learn, enforce, attack
-test/benchmark/run.sh falco      # Falco with vendor defaults
-test/benchmark/run.sh tetragon   # Tetragon with vendor defaults
-test/benchmark/run.sh all        # cluster setup, then all three in sequence
+test/benchmark/run.sh all        # cluster setup, then both passes in sequence
 ```
 
 It installs k3s and Helm inside the VM if they are missing, deploys an
@@ -205,9 +204,11 @@ It installs k3s and Helm inside the VM if they are missing, deploys an
 Rules for benchmark contributions, because a benchmark that flatters us is worse
 than no benchmark:
 
-- Compare against **vendor defaults** for the other tools, and say so. If you
-  tune Falco's or Tetragon's configuration, tune it in the other direction too
-  and report both.
+- **Always run the control pass.** Without it a detection count has no
+  denominator: a scenario that silently failed to execute is indistinguishable
+  from one that was prevented.
+- **State the configuration posture** with every result: which hooks attached,
+  how long learning ran, whether the BPF LSM was active.
 - Commit the scenario script alongside any new result.
 - Record what could **not** be measured, and why. The existing results file does
   this and the habit is deliberate.
@@ -241,9 +242,9 @@ config/, deploy/          Kustomize bases for CRDs, RBAC, manager
 charts/                   Helm chart
 install.yaml              Generated single-file install manifest
 hack/vm/                  QEMU/KVM harness with the BPF LSM enabled
-test/benchmark/           Falco and Tetragon comparison harness and scenarios
+test/benchmark/           Detection, prevention and overhead harness with its scenarios
 test/integration/, test/e2e/
-docs/                     Architecture, policy reference, benchmarks, comparison
+docs/                     Architecture, policy reference, benchmarks
 examples/                 Example policies
 pages/                    GitHub Pages site
 ```

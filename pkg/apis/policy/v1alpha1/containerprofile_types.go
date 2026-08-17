@@ -32,8 +32,7 @@ type ContainerProfileSpec struct {
 
 // ContainerProfileStatus is the learned behavioral baseline reported by the
 // node agent. It is what the kernel enforces once the container is enforcing -
-// a first-class, inspectable, git-backupable record (no equivalent in Falco or
-// Tetragon).
+// a first-class, inspectable, git-backupable record.
 type ContainerProfileStatus struct {
 	// Phase is Learning or Enforcing.
 	Phase string `json:"phase,omitempty"`

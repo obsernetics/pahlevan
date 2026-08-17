@@ -46,6 +46,11 @@ func denialEvent(t export.EventType, ns, pod string) *export.Event {
 // real gRPC stack without binding a port.
 func dialServer(t *testing.T, s *Server) apiv1alpha1.EventServiceClient {
 	t.Helper()
+	// A bufconn listener is unreachable by anything outside the test binary,
+	// which is exactly the case AllowInsecure exists for. Setting it here keeps
+	// these tests about the service rather than about its transport; the
+	// default-refuses behaviour has its own test in auth_test.go.
+	s.auth.AllowInsecure = true
 	lis := bufconn.Listen(1 << 20)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

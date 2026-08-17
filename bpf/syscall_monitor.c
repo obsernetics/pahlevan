@@ -30,6 +30,21 @@ struct syscall_event {
 	__u32 uid;
 	__u32 gid;
 	__u8  comm[16];
+	/* The syscall's arguments, as the kernel received them.
+	 *
+	 * Without them a whole class of question is unanswerable: ptrace and
+	 * ptrace(PTRACE_ATTACH) are the same event, and so are unshare and
+	 * unshare(CLONE_NEWUSER). Those are the escalation primitives, and the
+	 * argument is the entire signal.
+	 *
+	 * Reading them is why this program moved from raw_tracepoint/sys_enter to
+	 * tracepoint/raw_syscalls/sys_enter. The raw variant hands over a
+	 * struct pt_regs, and extracting arguments from it needs
+	 * PT_REGS_PARM*_CORE_SYSCALL, which casts to struct user_pt_regs - a type
+	 * an x86-derived vmlinux.h does not have, and the exact construct that
+	 * broke the arm64 build once before. The ordinary tracepoint has already
+	 * extracted them into an array, identically on both architectures. */
+	__u64 args[6];
 };
 
 /* Ring buffer of syscall_event. */
@@ -69,6 +84,19 @@ struct {
 	__uint(max_entries, 1);
 } config_map SEC(".maps");
 
+/* Syscalls that bypass deduplication and report every occurrence.
+ *
+ * Populated from userspace with the escalation primitives for the running
+ * architecture - ptrace, unshare, setns, mount, bpf, io_uring_setup and the
+ * rest. Empty by default, so a deployment that does not want them pays
+ * nothing beyond one map lookup per syscall. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u64);
+	__type(value, __u8);
+	__uint(max_entries, 64);
+} syscall_watch SEC(".maps");
+
 static __always_inline int enabled(void)
 {
 	__u32 k = 0;
@@ -76,14 +104,23 @@ static __always_inline int enabled(void)
 	return !c || c->disabled == 0;
 }
 
-SEC("raw_tracepoint/sys_enter")
-int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
+/* The tracepoint's own layout: eight bytes of common fields, the syscall
+ * number, then the six arguments. Declared here rather than taken from
+ * vmlinux.h because the generated header does not describe tracepoint formats.
+ */
+struct sys_enter_ctx {
+	__u64 __pad_common;
+	__s64 id;
+	__u64 args[6];
+};
+
+SEC("tracepoint/raw_syscalls/sys_enter")
+int handle_sys_enter(struct sys_enter_ctx *ctx)
 {
 	if (!enabled())
 		return 0;
 
-	/* raw_tp/sys_enter args: [0]=struct pt_regs *, [1]=long syscall id */
-	__u64 syscall_nr = (__u64)ctx->args[1];
+	__u64 syscall_nr = (__u64)ctx->id;
 
 	__u64 cgroup_id = bpf_get_current_cgroup_id();
 
@@ -93,7 +130,23 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 	if (tgid == 0)
 		return 0;
 
-	/* Count every occurrence; emit only the first. */
+	/* Count every occurrence; emit only the first - except for the watched
+	 * set, which emits every time.
+	 *
+	 * Deduplication is what keeps this program cheap, and for a learned
+	 * baseline it loses nothing: the question is which syscalls a workload
+	 * uses, and the first occurrence answers it. For an escalation primitive
+	 * the question is the opposite. The first ptrace a workload makes is
+	 * usually a debugger attaching to itself at startup; the interesting one
+	 * is the fourteenth, an hour later, with PTRACE_ATTACH and somebody else's
+	 * pid. Deduplicating that away is deduplicating away the attack.
+	 *
+	 * The set is populated from userspace, because syscall numbers differ by
+	 * architecture and the kernel side has no table. Keeping the numbers in Go
+	 * means this program stays arch-neutral. */
+	__u64 watched_key = syscall_nr;
+	__u8 *watched = bpf_map_lookup_elem(&syscall_watch, &watched_key);
+
 	__u64 key = (cgroup_id << 16) | (syscall_nr & 0xffff);
 	__u64 *count = bpf_map_lookup_elem(&syscall_seen, &key);
 	if (count) {
@@ -101,10 +154,12 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 		 * hottest path in the program. A lost increment under concurrency
 		 * changes a frequency ranking by one, which nothing acts on. */
 		(*count)++;
-		return 0;
+		if (!watched)
+			return 0;
+	} else {
+		__u64 one = 1;
+		bpf_map_update_elem(&syscall_seen, &key, &one, BPF_ANY);
 	}
-	__u64 one = 1;
-	bpf_map_update_elem(&syscall_seen, &key, &one, BPF_ANY);
 
 	struct syscall_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e)
@@ -119,6 +174,9 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 	e->uid = (__u32)uid_gid;
 	e->gid = (__u32)(uid_gid >> 32);
 	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+#pragma unroll
+	for (int i = 0; i < 6; i++)
+		e->args[i] = ctx->args[i];
 
 	bpf_ringbuf_submit(e, 0);
 	return 0;

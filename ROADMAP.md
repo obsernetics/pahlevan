@@ -5,11 +5,9 @@ look good in a proposal. Anything marked **Done** you can point at in the code
 today. Anything marked **Planned** does not exist yet, and saying otherwise
 would waste the time of anyone evaluating this project.
 
-Companion reading: [`docs/comparison.md`](docs/comparison.md) is the
-feature-by-feature comparison against Falco and Tetragon, including a blunt list
-of where Pahlevan is behind. Most of the near-term items below exist to close
-entries on that list. [`docs/benchmarks/results.md`](docs/benchmarks/results.md)
-is where the performance numbers come from.
+Companion reading: [`docs/benchmarks/`](docs/benchmarks) is where the
+performance numbers come from, and nothing here quotes a figure that a run did
+not produce.
 
 There are no dates. The project has one maintainer, so a date would be a guess.
 The ordering within each section is roughly the intended order of work.
@@ -69,8 +67,8 @@ Shipped in `v2.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entry.
   file event totals, and enforcement actions.
 - `hack/vm/`: a reproducible QEMU/KVM harness that boots a kernel with the BPF
   LSM enabled, for eBPF load, attach, observe, and enforce testing.
-- `test/benchmark/`: a reproducible head-to-head harness against Falco and
-  Tetragon, and the first measured results.
+- `test/benchmark/`: a reproducible harness measuring detection, prevention and
+  overhead, with a no-agent control pass.
 
 ## In progress
 
@@ -81,8 +79,7 @@ wired end to end, and each item says which.
   (`bpf/capability_monitor.c`), learned per `(cgroup, capability)`, enforced
   with `EPERM`. Loaded, attached, and driven from the learn-to-enforce loop.
   Still needs a VM verification run and a benchmark scenario before it can be
-  called done. Note this observes capability *checks*, not the process
-  capability set, which both Falco and Tetragon report.
+  called done.
 - **Structured JSON event export.** `pkg/export` defines a versioned envelope
   (`pahlevan.io/v1alpha1`), stdout and file sinks with rotation, a bounded
   non-blocking queue that drops rather than stall the ring-buffer readers, and
@@ -121,9 +118,8 @@ Pahlevan is usable by someone other than its author.
 - **Planned: Kubernetes audit-log style integration.** Two distinct pieces: emit
   denials as Kubernetes `Event` objects on the target pod, so a denial shows up
   in `kubectl describe` where an operator will actually find it, and emit a
-  structured, append-only audit record suitable for shipping to a SIEM. Falco
-  covers Kubernetes audit *ingestion* through its `k8saudit` plugin; this item
-  is about Pahlevan's own denials being auditable, which is the part that
+  structured, append-only audit record suitable for shipping to a SIEM. This
+  item is about Pahlevan's own denials being auditable, which is the part that
   matters for a preventive tool.
 - **Planned: wire the export path into the agent** and populate the `kubernetes`
   block of the envelope from the existing attribution resolver.
@@ -140,8 +136,9 @@ Pahlevan is usable by someone other than its author.
 
 ### Reducing agent memory
 
-The measured agent used roughly 327 MiB against 106 MiB for Falco and 67 MiB for
-Tetragon. Three known contributors, in order of expected payoff:
+An early measurement put the agent at roughly 327 MiB. BPF map preallocation
+dominated that and is now 37.7 MiB; the rest has not been re-measured. Three
+known contributors, in order of expected payoff:
 
 - **Planned: right-size the BPF maps.** `file_allowed` is provisioned at 2^17
   entries and the ring buffers at 256 KiB each. The `MapSizing` hook already
@@ -260,8 +257,8 @@ Worth doing, not next.
 - **Planned: more enforcement actions.** `EPERM` is the only action today. An
   audit action that records a would-be denial without enforcing it, and a kill
   action, are both plausible. The exec program already contains an unexposed
-  in-kernel `SIGKILL` mode. The benchmark's Tetragon finding, where an unscoped
-  kill policy froze the node, is the cautionary note here: any kill action must
+  in-kernel `SIGKILL` mode. A past benchmark run froze a whole node with an
+  unscoped kill policy, which is the cautionary note here: any kill action must
   be cgroup scoped by construction.
 - **Planned: profile review and approval.** A learned baseline currently takes
   effect with nobody having looked at it. A workflow where a `ContainerProfile`
@@ -286,10 +283,9 @@ Worth doing, not next.
 
 Not committed to. Feedback on any of these is welcome in an issue.
 
-- **Non-Kubernetes deployment.** Falco and Tetragon both run on plain hosts.
-  Pahlevan's learning model is tied to cgroups rather than to Kubernetes, so a
-  standalone mode is technically plausible. Whether it is worth the maintenance
-  is another question.
+- **Non-Kubernetes deployment.** The learning model is tied to cgroups rather
+  than to Kubernetes, so a plain-host mode is technically plausible. Whether it
+  is worth the maintenance is another question.
 - **Anomaly scoring on top of the learned baseline**, rather than a binary
   in-set or out-of-set decision.
 - **Learned network policy generation**, emitting a Kubernetes `NetworkPolicy`
@@ -303,9 +299,10 @@ Not committed to. Feedback on any of these is welcome in an issue.
 
 Saying no is part of a roadmap.
 
-- **Pahlevan will not become a rule-based detection engine.** Falco already does
-  that better than we could, and competing on rule content would abandon the one
-  thing that makes this project distinct.
+- **Pahlevan will not become a rule-based detection engine.** The entire premise
+  is that the workload writes its own policy by running. Shipping a rule library
+  would abandon it, and a rule library is only as good as the person maintaining
+  it against attacks nobody has seen yet.
 - **Pahlevan will not replace a CNI or NetworkPolicy.** The egress allow-set is
   a last-resort backstop at the socket layer, not a network policy engine.
 - **Pahlevan will not attempt agentless operation.** In-kernel enforcement

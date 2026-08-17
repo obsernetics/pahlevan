@@ -16,13 +16,22 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include "enforce.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
 #define AF_INET  2
 #define AF_INET6 10
-#define MODE_LEARN 0
-#define MODE_ENFORCE 1
+/* Direction-byte markers. The network event predates the 32-bit flag word the
+ * other events carry, so its outcome bits live here. */
+#define DIR_DENIED     0x80 /* the connect was refused */
+#define DIR_WOULD_DENY 0x40 /* ACT_AUDIT: it would have been refused */
+#define DIR_KILLED     0x20 /* the task was signalled as well */
+
+/* Local names for the wide flag word enforce_apply writes into, folded down to
+ * the direction byte above. */
+#define EV_DENIED 0x80000000u
+#define EV_KILLED 0x40000000u
 
 struct network_event {
 	__u64 cgroup_id;
@@ -33,7 +42,7 @@ struct network_event {
 	__u16 sport;
 	__u16 dport;
 	__u8  protocol;   /* IPPROTO_* from sk->sk_protocol */
-	__u8  direction;  /* 0 = egress, bit 0x80 = denied */
+	__u8  direction;  /* 0 = egress; see the DIR_* bits below */
 	__u8  family;     /* AF_INET or AF_INET6 */
 	__u8  pad;
 	__u8  daddr6[16]; /* IPv6 destination, zero when family is AF_INET */
@@ -57,11 +66,12 @@ struct {
 	__uint(max_entries, 1 << 15);
 } network_allowed SEC(".maps");
 
-/* Per-cgroup mode: absent/0 = learning, 1 = enforcing. */
+/* Per-cgroup enforcement action, packed: see bpf/enforce.h. Absent or zero is
+ * ACT_LEARN. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
-	__type(value, __u8);
+	__type(value, __u32);
 	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } network_mode SEC(".maps");
 
@@ -182,8 +192,9 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 	__u64 key = cgroup_id ^ (addr_hash << 16) ^ (__u64)dport ^ (__u64)family ^
 		    ((__u64)protocol * 0x9E3779B97F4A7C15ULL);
 
-	__u8 *modep = bpf_map_lookup_elem(&network_mode, &cgroup_id);
-	__u8 mode = modep ? *modep : MODE_LEARN;
+	__u32 *specp = bpf_map_lookup_elem(&network_mode, &cgroup_id);
+	__u32 spec = specp ? *specp : 0;
+	__u8 action = ENFORCE_ACTION(spec);
 
 	/* Blanket permissions first, and deliberately not recorded in the allow-set.
 	 * Learning a destination because a blanket rule permitted it would make the
@@ -198,9 +209,15 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 
 	__u8 *known = bpf_map_lookup_elem(&network_allowed, &key);
 
-	if (mode == MODE_ENFORCE) {
+	if (!action_learns(action)) {
 		if (known)
 			return 0; /* learned destination: allow */
+
+		/* The action decides. enforce_apply works on a __u32 flag word;
+		 * the network event has only the single direction byte, so the
+		 * decision is taken in the wide word and folded down. */
+		__u32 flags = 0;
+		long ret = enforce_apply(spec, &flags, EV_DENIED, EV_KILLED);
 
 		struct network_event *e = bpf_ringbuf_reserve(&network_events, sizeof(*e), 0);
 		if (e) {
@@ -213,7 +230,13 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 			e->sport = 0;
 			e->dport = dport;
 			e->protocol = protocol;
-			e->direction = 0x80; /* denied marker */
+			e->direction = 0;
+			if (flags & EV_DENIED)
+				e->direction |= DIR_DENIED;
+			if (flags & EV_WOULD_DENY)
+				e->direction |= DIR_WOULD_DENY;
+			if (flags & EV_KILLED)
+				e->direction |= DIR_KILLED;
 			e->family = (__u8)family;
 			e->pad = 0;
 			e->pad2 = 0;
@@ -221,7 +244,7 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
 			bpf_get_current_comm(&e->comm, sizeof(e->comm));
 			bpf_ringbuf_submit(e, 0);
 		}
-		return -1; /* -EPERM: connect() fails */
+		return ret;
 	}
 
 	/* Learning: record the destination; emit the first time it is seen. */

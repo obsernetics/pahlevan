@@ -1,28 +1,34 @@
-# Pahlevan vs Falco vs Tetragon - reproducible benchmark
+# Reproducible benchmark
 
-This harness runs Pahlevan, Falco, and Tetragon **side by side, in the same
-kernel-isolated k3s cluster**, against an identical set of attack scenarios plus
-a set of benign controls, and records what each tool actually did. It is meant to
-be reproducible: the numbers in `docs/benchmarks/` are produced by running it,
-never hand-written.
+This harness runs Pahlevan in a kernel-isolated k3s cluster against a set of
+attack scenarios plus a set of benign controls, and records what it detected,
+what it prevented, and what it cost. It runs the identical scenarios first with
+no agent installed at all, because a detection count means nothing until you
+know the attacks succeed when nothing is watching, and a CPU figure means
+nothing without the idle node to subtract.
+
+It is meant to be reproducible: the numbers in `docs/benchmarks/` are produced
+by running it, never hand-written.
 
 > All eBPF runs inside a VM (see `hack/vm/`), never on the host.
 
 ## What is measured
 
-For each attack scenario (`scenarios/*.sh`) and each tool:
+For each attack scenario (`scenarios/*.sh`), on each pass:
 
 | Metric | Meaning |
 |--------|---------|
-| **Detected** | Did the tool observe/flag the malicious action? (read from the tool's own signal source: Pahlevan kernel maps/logs, Falco alerts, Tetragon telemetry) |
-| **Blocked** | Did the tool *prevent* it (the in-pod action failed)? Not just alert. |
+| **Detected** | Was the malicious action observed, read from the agent's own exported event stream and kernel maps? |
+| **Blocked** | Was it *prevented* - did the in-pod action fail? Not just reported. |
 | **Detection latency** | Time from action to signal |
-| **Agent CPU / memory** | Steady-state resource use of the node agent(s) |
-| **False positives** | Benign control actions (`scenarios/benign/*.sh`) wrongly flagged/blocked |
+| **Agent CPU / memory** | Steady-state resource use of the node agent, against the control pass |
+| **False positives** | Benign control actions (`scenarios/benign/*.sh`) wrongly flagged or blocked |
 
-The decisive column is **Blocked**: Falco is alert-only by design, so it cannot
-block; Tetragon blocks only with a hand-written `TracingPolicy`; Pahlevan blocks
-from an **auto-learned** allow-list with no rules authored by hand.
+The column that matters is **Blocked**, and the claim being tested is narrower
+than it looks: the allow-list doing the blocking was learned from the workload,
+with no rule written by hand for any of these scenarios. A benchmark where
+somebody wrote a rule per attack the week before proves only that they can
+write rules.
 
 ## How outcomes are classified
 
@@ -36,7 +42,7 @@ BENCH_RESULT tag=<name> kind=<attack|benign> outcome=<allowed|blocked|attempted|
 ```
 
 - `outcome=blocked` - the in-pod action was **prevented** (e.g. `EPERM`). For an
-  attack this is a **Blocked=Yes** for the tool under test.
+  attack this is a **Blocked=Yes**.
 - `outcome=allowed` - the action **completed**. Blocked=No.
 - `outcome=attempted` - success/failure is **ambiguous from inside the pod**
   (network reaching an unroutable destination, probes for paths that are normally
@@ -118,7 +124,7 @@ They are the fairness counterweight to the attack list: a tool that blocks
 everything scores perfectly on attacks but is useless if it also breaks the
 workload. **False positives matter as much as detections.** These are **never**
 counted as attacks; the correct outcome for each is always `allowed`, and any
-`blocked`/failed outcome is a false positive counted against the tool.
+`blocked`/failed outcome is a false positive and is counted as one.
 
 - `b01-serve-request` - serve an HTTP request on loopback (the liveness/probe
   and real-client path).
@@ -129,13 +135,13 @@ counted as attacks; the correct outcome for each is always `allowed`, and any
 
 `run.sh` will:
 1. `hack/vm/up.sh` - boot the kernel-isolated VM.
-2. Install k3s in the VM; deploy Falco, Tetragon, and Pahlevan (one at a time).
+2. Install k3s in the VM and deploy the target workload.
 3. Deploy a benign target workload (`nginx:1.27`); let Pahlevan learn its baseline.
-4. Start the resident in-pod runner (see below) while the tool is still
+4. Start the resident in-pod runner (see below) while the agent is still
    learning/observing, switch Pahlevan to enforcing, then run every attack
    scenario and every benign control inside the target pod.
-5. Scrape each tool's own signal stream and its cgroup v2 CPU/memory, plus the
-   BPF map memlock total for Pahlevan.
+5. Scrape the exported event stream and the agent cgroup v2 CPU/memory, plus the
+   BPF map memlock total.
 6. Correlate signals to scenarios by timestamp and record a matrix under
    `docs/benchmarks/`.
 
@@ -146,13 +152,11 @@ hack/vm/up.sh
 test/benchmark/run.sh setup       # cluster + target workload
 test/benchmark/run.sh control     # no tool installed: baseline outcome per scenario
 test/benchmark/run.sh pahlevan    # learn, enforce, attacks + benign controls
-test/benchmark/run.sh falco       # attacks + benign controls
-test/benchmark/run.sh tetragon    # attacks + benign controls
-test/benchmark/run.sh all         # setup + control + all three, sequentially
+test/benchmark/run.sh all         # setup + control + pahlevan, in sequence
 ```
 
 Artifacts land in `/tmp/pahlevan-bench/results/<tool>/` on the host:
-`scenarios.txt` (raw, timestamped), `signals.raw` (the tool's own stream),
+`scenarios.txt` (raw, timestamped), `signals.raw` (the exported event stream),
 `matrix.txt` / `matrix.json` (correlated), `resources.txt`, `meta.txt`.
 
 ### The resident in-pod runner (`pod-runner.sh`)
@@ -163,7 +167,7 @@ enforcing, the `runc exec` setup itself opens unlearned paths, so every
 ever measure "exec was denied". That is what the 2026-08-14 run hit, and it is
 why that run could not say which mechanism stopped which action.
 
-Instead `run.sh` starts `pod-runner.sh` inside the target pod **while the tool
+Instead `run.sh` starts `pod-runner.sh` inside the target pod **while the agent
 under test is still learning/observing**. At that point the runner reads every
 scenario into memory, opens its output file (fd 9) and a fifo it uses as a
 builtin sleep (fd 8), and then waits. From the trigger onward it uses **only bash
@@ -190,39 +194,34 @@ reported as its own line rather than being allowed to swallow the matrix.
 ### Correlating signals to scenarios (`correlate.py`)
 
 Every scenario records the wall-clock window `[t0, t1]` in which it ran. After
-the suite, each tool's own stream is pulled for the run window and bucketed into
+the exported event stream is pulled for the run window and bucketed into
 those windows (plus a settle margin, since userspace alerting is asynchronous):
 
 | Tool | Signal source | Attribution |
 |------|---------------|-------------|
 | Pahlevan | JSON-lines event export (`--export-file`) | `kubernetes.pod`, falling back to `cgroupId` |
-| Falco | `falco` container stdout with `json_output=true` | `k8s.pod.name` in `output_fields` |
-| Tetragon | `export-stdout` container JSON | `process.pod.name` |
 
 Signals that fall outside every window, or that belong to another workload, are
 counted and reported separately rather than being folded into a detection.
 
-## Fairness: results are only comparable at equal configuration posture
+## Honesty rules
 
-Results are **only** comparable when every tool is run with the **same
-configuration posture**: either all three on vendor defaults, or all three
-equally tuned. Comparing one tool's tuned ruleset against another's defaults is
-not a fair comparison and must not be presented as one.
+A benchmark you run on your own product is worth exactly as much as the rules
+you follow while running it.
 
-In particular, a **default-config** result of "did not block" must **not** be read
-as "tool X cannot block":
-
-- **Falco** is alert-only by design and does not block in any configuration;
-  reporting Blocked=No for Falco is a statement about its design, not a failure.
-- **Tetragon** does not block on defaults but **can** block with a hand-written
-  `TracingPolicy` (an unscoped one caused a node-wide outage on a past run - see
-  `docs/benchmarks/results.md`).
-- **Pahlevan** blocks from an auto-learned allow-list, but on the recorded run
-  only its `file_open` LSM path was wired; network/syscall enforcement was not
-  attached, so some scenarios are blocked only incidentally (via the file open of
-  an unlearned binary).
-
-State the posture used with every result. Scenarios and tool configs are
+- **State the configuration posture with every result.** Which hooks were
+  attached, how long learning ran, whether the BPF LSM was active. A result
+  recorded with only `file_open` wired is not the same product as one with
+  network and exec enforcement attached, and reporting the two as one number is
+  a lie of omission.
+- **Report what was not measured, and why.** The recorded results files do this
+  and the habit is deliberate.
+- **A scenario that Pahlevan fails stays in the suite.** Removing it is how a
+  benchmark becomes marketing.
+- **Never edit a results file to change a number.** Re-run and replace.
+- **The control pass is not optional.** Without it, "detected 14 of 16" has no
+  denominator you can trust: a scenario that silently failed to execute looks
+  identical to one that was prevented. Scenarios and tool configs are
 committed so runs are comparable and auditable. Do not fabricate results: the
 scenarios in this suite beyond the original four have not yet been run, and no
 results for them are recorded.

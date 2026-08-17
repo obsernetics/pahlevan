@@ -17,6 +17,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include "enforce.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -145,14 +146,14 @@ struct {
 	__uint(max_entries, 1 << 13);
 } exec_allowed SEC(".maps");
 
-/* Per-cgroup mode: absent/0 = learning, 1 = enforcing, 2 = enforcing + kill.
- * Mode 2 also sends SIGKILL to the offending task, matching Tetragon's Sigkill
- * action, for operators who want the process terminated and not merely refused. */
-#define MODE_ENFORCE_KILL 2
+/* Per-cgroup enforcement action, packed: see bpf/enforce.h. Absent or zero is
+ * ACT_LEARN. This map used to hold a bare mode byte where 2 meant "enforce and
+ * kill"; that value is still ACT_KILL, so the meaning of the low byte did not
+ * change when the rest of the word was given a job. */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __u64);
-	__type(value, __u8);
+	__type(value, __u32);
 	__uint(max_entries, 1 << 13); /* cgroups under policy on one node */
 } exec_mode SEC(".maps");
 
@@ -508,8 +509,9 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 
 	__u64 key = cgroup_id ^ hash_name(e->filename, sizeof(e->filename));
 
-	__u8 *modep = bpf_map_lookup_elem(&exec_mode, &cgroup_id);
-	__u8 mode = modep ? *modep : MODE_LEARN;
+	__u32 *specp = bpf_map_lookup_elem(&exec_mode, &cgroup_id);
+	__u32 spec = specp ? *specp : 0;
+	__u8 action = ENFORCE_ACTION(spec);
 	__u8 *known = bpf_map_lookup_elem(&exec_allowed, &key);
 
 	/* The breakout check runs in every mode, including learning.
@@ -522,7 +524,7 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 	 * not added to the allow-set. */
 	int breakout = cwd_escapes_mount_ns();
 
-	if (mode == MODE_ENFORCE || mode == MODE_ENFORCE_KILL) {
+	if (!action_learns(action)) {
 		/* Two independent reasons to refuse: the binary was never learned, or
 		 * the policy's process filter rejects who is running it. They are
 		 * reported with different flag bits, because "this container has never
@@ -554,17 +556,27 @@ int BPF_PROG(bprm_check, struct linux_binprm *bprm, int ret)
 			bpf_ringbuf_discard(e, 0);
 			return 0;
 		}
-		e->flags |= 0x80000000; /* denied */
 		if (filter_deny)
 			e->flags |= 0x10000000; /* denied by the process filter */
 		if (breakout)
 			e->flags |= EV_BREAKOUT;
-		if (mode == MODE_ENFORCE_KILL) {
-			e->flags |= 0x40000000; /* killed */
-			bpf_send_signal(9);     /* SIGKILL the offending task */
+
+		/* A breakout is refused whatever the action says, ACT_AUDIT
+		 * included. Every other question here is "has this container done
+		 * this before", where an audit pass reporting instead of refusing
+		 * is exactly what somebody rolling enforcement out wants. An exec
+		 * from inside a leaked host file descriptor is not that question:
+		 * it is never legitimate, and auditing it would mean watching the
+		 * escape and letting it proceed. */
+		if (breakout && ENFORCE_ACTION(spec) == ACT_AUDIT) {
+			e->flags |= 0x80000000;
+			bpf_ringbuf_submit(e, 0);
+			return -1;
 		}
+
+		long ret = enforce_apply(spec, &e->flags, 0x80000000, 0x40000000);
 		bpf_ringbuf_submit(e, 0);
-		return -1; /* -EPERM: execve fails */
+		return ret;
 	}
 
 	/* Learning. A breakout is reported and deliberately not learned: adding it
