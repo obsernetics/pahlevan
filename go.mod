@@ -2,6 +2,8 @@ module github.com/obsernetics/pahlevan
 
 go 1.26.0
 
+toolchain go1.26.7
+
 require (
 	github.com/cilium/ebpf v0.22.0
 	github.com/go-logr/logr v1.4.4

@@ -6,7 +6,7 @@ Pahlevan has **no known public production adopters**. The project's first
 release under its current architecture (`v2.0.0`) is recent, the CRD API is
 `v1alpha1`, and the honest summary of where it stands is: evaluated and tested,
 including a measured overhead benchmark in a kernel-isolated
-VM ([`docs/benchmarks/results.md`](docs/benchmarks/results.md)), but not yet
+VM ([`docs/benchmarks/`](docs/benchmarks)), but not yet
 running someone's production cluster as far as the maintainers are aware.
 
 This file exists so there is a real place to record adoption as it happens. It
