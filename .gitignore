@@ -78,3 +78,7 @@ bpf/vmlinux.h
 # hack/vm/smoke drops the binary next to its source, and a `git add -A` after
 # that commits 5.5 MB of ELF.
 hack/vm/smoke/pahlevan-vm-smoke
+
+# Scratch renders. The diagram sources live in docs/assets/diagrams/ and the
+# images they produce are committed; nothing else from a render run is.
+docs/assets/diagrams/*.png

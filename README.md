@@ -35,18 +35,10 @@ else — in the kernel, at the moment of the attempt, with `EPERM`.
 Nobody writes a rule. There is no rule to write. The container already told you
 what it does; the only question was whether anything was listening.
 
-```
-  learning window                        enforcement
- ┌─────────────────────┐               ┌──────────────────────────┐
- │ open /etc/nginx/*   │──┐            │ open /etc/nginx/*     ok  │
- │ open /var/log/*     │  │  becomes   │ open /var/log/*       ok  │
- │ connect 10.0.1.7:5432│ ├───────────▶│ connect 10.0.1.7:5432 ok  │
- │ exec nginx          │  │  the       │ ─────────────────────────│
- │ 61 syscalls         │──┘  allow-set │ open /etc/shadow    EPERM │
- └─────────────────────┘               │ exec /tmp/xmrig     EPERM │
-                                       │ connect 45.9.1.4:80 EPERM │
-                                       └──────────────────────────┘
-```
+<p align="center">
+  <img src="docs/assets/learn-then-enforce.png" width="920"
+       alt="Two panels. On the left, a learning window listing what an nginx container actually did: opened /etc/nginx/* and /var/log/*, connected to 10.0.1.7:5432, executed nginx, and used 61 of roughly 400 syscalls. An arrow labelled 'becomes the allow-set' leads to the right panel, enforcement, where those same three entries are marked ok and three that were never learned are refused with EPERM: /etc/shadow, /tmp/xmrig, and 45.9.1.4:80." />
+</p>
 
 ## What that buys you
 
@@ -87,6 +79,11 @@ deliberately and in writing. Use the first one until you believe the baseline.
 
 Seven eBPF programs, all CO-RE, all scoped to a single cgroup so nothing leaks
 across containers or reaches the rest of the node.
+
+<p align="center">
+  <img src="docs/assets/kernel-programs.png" width="920"
+       alt="The data plane. Userspace processes in one cgroup sit above the syscall boundary; below it, seven eBPF programs: file_open, socket_connect, bprm_check and capable on BPF LSM hooks, the syscall tracepoint, and the commit_creds kprobe and readline uretprobe which need no BPF LSM. Beneath them the five enforcement actions: Learn, Deny, Kill, Signal, Audit." />
+</p>
 
 | Program | Sees | Does |
 |---|---|---|
