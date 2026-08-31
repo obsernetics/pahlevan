@@ -182,6 +182,28 @@ must come with a `make vm-test` run, and the pull request should say so. The
 verifier accepts or rejects a program at attach time, and a change that passes
 `go build` can still fail to load.
 
+## Commit hooks
+
+Run this once after cloning:
+
+```bash
+scripts/setup-hooks.sh
+```
+
+It points `core.hooksPath` at [`.githooks/`](.githooks). Git does not share
+hooks through the repository itself, so this is one deliberate command per
+clone.
+
+The only hook today is `commit-msg`, and it rejects any message carrying AI or
+assistant attribution: `Co-Authored-By: Claude`, `Generated with ...`, and the
+robot emoji those trailers travel with. Commits here are authored by the person
+who made them.
+
+It is a hook rather than a review habit because those trailers are added by
+tooling, automatically, at the moment of commit - which is exactly the point at
+which nobody is reading the message. Three of them reached `main` that way, and
+removing them cost a rewrite of 221 commits and a force-push of a public branch.
+
 ## Running the benchmark harness
 
 The numbers in [`docs/benchmarks/`](docs/benchmarks) are produced by

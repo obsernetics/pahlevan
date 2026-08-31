@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# Reject any commit message carrying AI or assistant attribution.
+#
+# This repository's history contained three commits with a
+# "Co-Authored-By: Claude" trailer and a "Generated with" line. They were
+# removed, which cost a rewrite of 221 commits and a force-push of a public
+# branch. This hook exists so that never has to happen again.
+#
+# It is a hook rather than a code-review habit because the trailers are added
+# by tooling, automatically, at the moment of commit - which is exactly the
+# point at which nobody is reading the message.
+#
+# Enable it once per clone:
+#   git config core.hooksPath .githooks
+# CONTRIBUTING.md says the same, and scripts/setup-hooks.sh does it for you.
+
+set -euo pipefail
+
+msg_file="$1"
+
+# Trailers and marketing lines that must never appear. Matched
+# case-insensitively, and anchored where anchoring is meaningful so an ordinary
+# sentence mentioning a tool by name is not caught.
+patterns=(
+	'^[[:space:]]*co-authored-by:.*(claude|anthropic|copilot|chatgpt|openai|gemini|cursor)'
+	'generated with \[?(claude|chatgpt|copilot|cursor|gemini)'
+	'^[[:space:]]*(assisted|authored)-by:.*(claude|anthropic|copilot|chatgpt|openai)'
+	'🤖'
+)
+
+found=""
+for p in "${patterns[@]}"; do
+	if match=$(grep -inE "$p" "$msg_file" || true); [ -n "$match" ]; then
+		found+="  $match"$'\n'
+	fi
+done
+
+if [ -n "$found" ]; then
+	cat >&2 <<MSG
+
+Commit rejected: the message carries AI or assistant attribution.
+
+$found
+This project's commits are authored by the person who made them. Remove the
+trailer and commit again.
+
+If you believe this is a false positive, the patterns are in .githooks/commit-msg.
+MSG
+	exit 1
+fi
+
+exit 0

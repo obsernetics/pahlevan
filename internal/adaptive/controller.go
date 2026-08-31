@@ -1123,9 +1123,34 @@ func (c *Controller) persistProfile(st *cgState) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.Client.Patch(ctx, cp, client.Apply,
+
+	// Two applies, because ContainerProfile has a status subresource.
+	//
+	// An apply to the main resource does not write status - the API server
+	// silently drops it, which is the documented behaviour for any resource
+	// with `subresources: status`, and ours has it (see the CRD). Writing both
+	// in one call therefore persisted the spec and threw the learned profile
+	// away: the counts, the learned sets, the phase, the rollback history. The
+	// object existed and looked healthy while carrying an empty status.
+	//
+	// Nothing caught it because the fake client used to apply status from the
+	// main resource too. controller-runtime 0.24 models the real server, and
+	// the tests started failing the moment it was upgraded - which is the only
+	// reason this was ever found.
+	// Each apply gets its own copy. An apply patch writes the server's response
+	// back into the object it was handed, and that response has no TypeMeta -
+	// so reusing cp for the second call sends an object with no Kind, and
+	// server-side apply rejects it with "unstructured object has no kind".
+	spec := cp.DeepCopy()
+	if err := c.Client.Patch(ctx, spec, client.Apply,
 		client.FieldOwner("pahlevan-agent"), client.ForceOwnership); err != nil {
 		c.log.V(1).Info("failed to persist ContainerProfile", "pod", podName, "error", err.Error())
+		return
+	}
+	status := cp.DeepCopy()
+	if err := c.Client.Status().Patch(ctx, status, client.Apply,
+		client.FieldOwner("pahlevan-agent"), client.ForceOwnership); err != nil {
+		c.log.V(1).Info("failed to persist ContainerProfile status", "pod", podName, "error", err.Error())
 	}
 }
 
