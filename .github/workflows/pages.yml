@@ -55,12 +55,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.0'
           cache: true
 
       - name: Verify the published values match their sources
@@ -99,12 +99,12 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.25.13'
+          go-version: '1.26.0'
           cache: true
 
       # `check` has already passed, so this is normally a no-op. It exists so a

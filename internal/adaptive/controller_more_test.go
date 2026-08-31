@@ -2,13 +2,16 @@ package adaptive
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
@@ -254,5 +257,92 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+// A ContainerProfile has a status subresource, so an apply to the main resource
+// does not write status - a real API server drops it silently.
+//
+// persistProfile applied the whole object in one call, so every learned profile
+// reached the cluster with an empty status: no counts, no learned sets, no
+// phase, no rollback history. The object existed and looked healthy. Nothing
+// caught it because the fake client used to apply status from the main resource
+// too, and only started modelling the real server in controller-runtime 0.24.
+//
+// This test asserts the property directly rather than through the controller,
+// so it fails for the right reason if the two applies are ever collapsed back
+// into one.
+func TestPersistProfileWritesStatusThroughTheSubresource(t *testing.T) {
+	cl := newTestScheme(t).Build()
+	c := NewController(logr.Discard(), &fakeEnforcer{}, nil,
+		fakePoliciesMeta{window: 0, blocking: true, ok: true, ns: "prod", name: "web-abc", metaOK: true})
+	c.Client = cl
+	c.Node = "node-1"
+
+	c.mu.Lock()
+	st := c.track(91)
+	st.ref.PodUID = "pod-uid-status"
+	st.ref.ContainerID = "fedcba9876543210"
+	st.phase = PhaseEnforcing
+	st.enforcingSince = time.Unix(1700000500, 0)
+	st.syscalls = map[uint64]struct{}{1: {}, 2: {}, 3: {}}
+	c.mu.Unlock()
+
+	c.persistProfile(st)
+
+	cp := &policyv1alpha1.ContainerProfile{}
+	if err := cl.Get(context.Background(),
+		types.NamespacedName{Name: profileName(st.ref), Namespace: "prod"}, cp); err != nil {
+		t.Fatalf("the profile was not persisted at all: %v", err)
+	}
+
+	// The spec proves the first apply landed; the status proves the second one
+	// did. A test that only checked the spec would have passed throughout the
+	// entire time this was broken.
+	if cp.Spec.Node != "node-1" {
+		t.Errorf("spec was not persisted: node = %q", cp.Spec.Node)
+	}
+	if cp.Status.Phase != string(PhaseEnforcing) {
+		t.Errorf("status.Phase = %q, want %q - status is being dropped",
+			cp.Status.Phase, PhaseEnforcing)
+	}
+	if cp.Status.SyscallCount != 3 {
+		t.Errorf("status.SyscallCount = %d, want 3 - status is being dropped", cp.Status.SyscallCount)
+	}
+	if cp.Status.EnforcingSince == nil {
+		t.Error("status.EnforcingSince is nil - status is being dropped")
+	}
+}
+
+// The object handed to an apply patch comes back with its TypeMeta cleared, so
+// reusing it for a second apply sends an object with no Kind and server-side
+// apply rejects it with "unstructured object has no kind". persistProfile
+// therefore applies from two copies. This asserts the failure mode directly, so
+// the reason for the copies is written down somewhere that fails if it stops
+// being true.
+func TestApplyPatchClearsTypeMeta(t *testing.T) {
+	cl := newTestScheme(t).Build()
+	cp := &policyv1alpha1.ContainerProfile{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: policyv1alpha1.GroupVersion.String(),
+			Kind:       "ContainerProfile",
+		},
+		ObjectMeta: metav1.ObjectMeta{Name: "typemeta-probe", Namespace: "prod"},
+		Spec:       policyv1alpha1.ContainerProfileSpec{Node: "n1"},
+	}
+	ctx := context.Background()
+	if err := cl.Patch(ctx, cp, client.Apply,
+		client.FieldOwner("t"), client.ForceOwnership); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if cp.Kind != "" {
+		t.Skip("apply no longer clears TypeMeta; persistProfile's two copies are now redundant")
+	}
+	err := cl.Status().Patch(ctx, cp, client.Apply, client.FieldOwner("t"), client.ForceOwnership)
+	if err == nil {
+		t.Fatal("a second apply with cleared TypeMeta succeeded; the copies in persistProfile are unnecessary")
+	}
+	if !strings.Contains(err.Error(), "kind") {
+		t.Errorf("expected a missing-kind error, got: %v", err)
 	}
 }

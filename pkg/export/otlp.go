@@ -171,25 +171,32 @@ func (e *OTLPExporter) record(ev *Event) otellog.Record {
 	r.SetObservedTimestamp(time.Now())
 	r.SetSeverity(severityOf(ev))
 	r.SetSeverityText(strings.ToUpper(string(ev.Action)))
-	r.SetBody(otellog.StringValue(SummaryLine(ev)))
+	r.SetBody(attribute.StringValue(SummaryLine(ev)))
 
-	attrs := make([]otellog.KeyValue, 0, 20)
-	add := func(k string, v otellog.Value) { attrs = append(attrs, otellog.KeyValue{Key: k, Value: v}) }
+	// otel/log v0.21 dropped its own Value and KeyValue types in favour of the
+	// ones in go.opentelemetry.io/otel/attribute, so a log record's attributes
+	// are now the same type as a span's and a metric's. That is the right
+	// change - there was never a reason for three spellings of "a string
+	// keyed by a name" - but it is a breaking one.
+	attrs := make([]attribute.KeyValue, 0, 20)
+	add := func(k string, v attribute.Value) {
+		attrs = append(attrs, attribute.KeyValue{Key: attribute.Key(k), Value: v})
+	}
 	addStr := func(k, v string) {
 		if v != "" {
-			add(k, otellog.StringValue(v))
+			add(k, attribute.StringValue(v))
 		}
 	}
 	addInt := func(k string, v int64) {
 		if v != 0 {
-			add(k, otellog.Int64Value(v))
+			add(k, attribute.Int64Value(v))
 		}
 	}
 
 	addStr("pahlevan.schema", ev.Version)
 	addStr("pahlevan.event.type", string(ev.Type))
 	addStr("pahlevan.action", string(ev.Action))
-	add("pahlevan.denied", otellog.BoolValue(ev.Denied()))
+	add("pahlevan.denied", attribute.BoolValue(ev.Denied()))
 	addStr("pahlevan.cgroup.id", fmt.Sprint(ev.CgroupID))
 
 	// Process, using the semantic-convention names so a Grafana panel written
@@ -223,7 +230,7 @@ func (e *OTLPExporter) record(ev *Event) otellog.Record {
 		// the field an alert filters on - a denied read and a denied write to
 		// the same path are very different findings.
 		addStr("file.path", ev.File.Path)
-		add("pahlevan.file.write", otellog.BoolValue(ev.File.Flags&writeFlagBit != 0))
+		add("pahlevan.file.write", attribute.BoolValue(ev.File.Flags&writeFlagBit != 0))
 		addStr("pahlevan.file.syscall", ev.File.SyscallName)
 	case ev.Network != nil:
 		addStr("server.address", ev.Network.DestinationIP)
@@ -246,9 +253,9 @@ func (e *OTLPExporter) record(ev *Event) otellog.Record {
 		// somebody investigates and one they mute.
 		addStr("pahlevan.process.ancestry", ev.Exec.AncestryChain)
 		if ev.Exec.Breakout {
-			add("pahlevan.breakout", otellog.BoolValue(true))
+			add("pahlevan.breakout", attribute.BoolValue(true))
 		}
-		add("pahlevan.process.exited", otellog.BoolValue(ev.Exec.Exited))
+		add("pahlevan.process.exited", attribute.BoolValue(ev.Exec.Exited))
 	case ev.Capability != nil:
 		addStr("pahlevan.capability.name", ev.Capability.Name)
 		addInt("pahlevan.capability.number", int64(ev.Capability.Number))
