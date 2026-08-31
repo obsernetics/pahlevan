@@ -187,6 +187,17 @@ var marker = regexp.MustCompile(
 
 // Apply rewrites every marked span. It returns a description of each value that
 // was out of date.
+// markedFiles are the files outside pages/ that also borrow a fact.
+//
+// docs/packages.md is here because it is the page a reader copies install
+// commands out of, and it spent an entire release telling people to pull an
+// image tag that was two versions old. Nothing guarded it: pagesync only
+// walked pages/, so the site stayed correct while the docs did not.
+var markedFiles = []string{
+	filepath.Join("docs", "packages.md"),
+}
+
+// Apply rewrites every marked span across pages/*.html and markedFiles.
 func Apply(root string, facts map[string]string, write bool) ([]string, error) {
 	pagesDir := filepath.Join(root, "pages")
 	entries, err := os.ReadDir(pagesDir)
@@ -194,15 +205,27 @@ func Apply(root string, facts map[string]string, write bool) ([]string, error) {
 		return nil, fmt.Errorf("reading %s: %w", pagesDir, err)
 	}
 
+	var targets []string
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".html" {
+			targets = append(targets, filepath.Join("pages", e.Name()))
+		}
+	}
+	for _, f := range markedFiles {
+		if _, err := os.Stat(filepath.Join(root, f)); err == nil {
+			targets = append(targets, f)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("checking %s: %w", f, err)
+		}
+	}
+
 	var stale []string
 	seen := map[string]bool{}
 
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".html" {
-			continue
-		}
-		path := filepath.Join(pagesDir, e.Name())
-		data, err := os.ReadFile(path) // #nosec G304 -- a fixed directory in-tree
+	for _, rel := range targets {
+		path := filepath.Join(root, rel)
+		name := rel
+		data, err := os.ReadFile(path) // #nosec G304 -- a fixed set of in-tree paths
 		if err != nil {
 			return nil, err
 		}
@@ -221,14 +244,14 @@ func Apply(root string, facts map[string]string, write bool) ([]string, error) {
 				return match
 			}
 			stale = append(stale, fmt.Sprintf(
-				"%s: %s is %q, should be %q", e.Name(), key, current, want))
+				"%s: %s is %q, should be %q", name, key, current, want))
 			return []byte(fmt.Sprintf("<!--pahlevan:sync %s-->%s<!--/pahlevan:sync-->", key, want))
 		})
 
 		if len(unknown) > 0 {
 			sort.Strings(unknown)
 			return nil, fmt.Errorf("%s references unknown sync keys: %s",
-				e.Name(), strings.Join(unknown, ", "))
+				name, strings.Join(unknown, ", "))
 		}
 		if write && !bytes.Equal(out, data) {
 			if err := os.WriteFile(path, out, 0o644); err != nil { // #nosec G306 -- a published static site

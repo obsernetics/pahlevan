@@ -310,3 +310,42 @@ func TestTheSiteMentionsWhatTheToolShips(t *testing.T) {
 		})
 	}
 }
+
+// docs/packages.md is the page a reader copies install commands out of, and it
+// spent a whole release telling people to pull an image tag two versions old.
+// Nothing caught it because Apply only walked pages/. This asserts that files
+// outside pages/ are covered now.
+func TestMarkedFilesOutsidePagesAreChecked(t *testing.T) {
+	root := fixture(t, "<html></html>")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "docs", "packages.md"),
+		[]byte("Pull `<!--pahlevan:sync version-->v0.0.1<!--/pahlevan:sync-->`.\n"), 0o600))
+
+	facts, err := Collect(root)
+	require.NoError(t, err)
+
+	stale, err := Apply(root, facts, false)
+	require.NoError(t, err)
+	require.Len(t, stale, 1)
+	assert.Contains(t, stale[0], "docs/packages.md",
+		"a stale fact outside pages/ must be reported with the file it is in")
+	assert.Contains(t, stale[0], "v0.0.1")
+	assert.Contains(t, stale[0], "v2.0.0")
+
+	_, err = Apply(root, facts, true)
+	require.NoError(t, err)
+	after, err := os.ReadFile(filepath.Join(root, "docs", "packages.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "<!--pahlevan:sync version-->v2.0.0<!--/pahlevan:sync-->")
+}
+
+// A marked file that does not exist is skipped rather than failing the run, so
+// removing a document does not break the sync for every other one.
+func TestMissingMarkedFileIsSkipped(t *testing.T) {
+	root := fixture(t, "<html></html>")
+	facts, err := Collect(root)
+	require.NoError(t, err)
+	stale, err := Apply(root, facts, false)
+	require.NoError(t, err, "an absent docs/packages.md must not fail the run")
+	assert.Empty(t, stale)
+}
