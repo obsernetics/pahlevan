@@ -73,3 +73,8 @@ kubeconfig
 
 # Generated CO-RE kernel header (make vmlinux)
 bpf/vmlinux.h
+
+# Compiled output of the VM smoke helper. `go build ./...` inside
+# hack/vm/smoke drops the binary next to its source, and a `git add -A` after
+# that commits 5.5 MB of ELF.
+hack/vm/smoke/pahlevan-vm-smoke
