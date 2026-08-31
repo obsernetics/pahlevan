@@ -73,7 +73,35 @@ jobs:
     - name: Run govulncheck
       run: |
         go install golang.org/x/vuln/cmd/govulncheck@latest
-        govulncheck ./...
+
+        # Retry only a failure to fetch the vulnerability database.
+        #
+        # govulncheck downloads its index from vuln.go.dev on every run, and
+        # that fetch intermittently returns 403 from GitHub-hosted runners.
+        # A security gate that goes red because a CDN rate-limited it teaches
+        # everyone to ignore it, which is worse than not having the gate.
+        #
+        # Actual findings still fail the job on the first attempt: the retry
+        # is gated on the fetch error message, and any other non-zero exit is
+        # propagated immediately.
+        for attempt in 1 2 3; do
+          set +e
+          out="$(govulncheck ./... 2>&1)"
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if ! printf '%s' "$out" | grep -q 'fetching vulnerabilities'; then
+            echo "govulncheck reported findings; failing."
+            exit "$code"
+          fi
+          echo "Could not reach the vulnerability database (attempt $attempt/3); retrying in $((attempt * 15))s."
+          sleep $((attempt * 15))
+        done
+        echo "The vulnerability database was unreachable after 3 attempts."
+        exit 1
 
   codeql:
     name: CodeQL
