@@ -67,7 +67,7 @@
             <p>
                 What changed in each Pahlevan release, and every artifact you can install:
                 a distroless container image on GHCR, a Helm chart, and a single-file
-                Kubernetes manifest. The current release is <strong>v2.0.0</strong>.
+                Kubernetes manifest. The current release is <strong>v3.0.0</strong>.
             </p>
             <div class="hero-actions">
                 <a href="#changelog" class="btn btn-primary">Read the changelog</a>
@@ -81,7 +81,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Packages</span>
-                <h2>Three ways to install v2.0.0</h2>
+                <h2>Three ways to install v3.0.0</h2>
                 <p>
                     One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
                     <code>pahlevan-operator</code> (the leader-elected Deployment), and the
@@ -103,22 +103,22 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     </div>
                     <p class="qs-note">
                         The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
-                        DaemonSet. Swap <code>latest</code> for <code>v2.0.0</code> to pin a release.
+                        DaemonSet. Swap <code>latest</code> for <code>v3.0.0</code> to pin a release.
                     </p>
                 </div>
                 <div class="qs-col">
                     <h3>Container image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v2.0.0</code></pre>
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.0.0</code></pre>
                     </div>
                     <h3>Verifying the image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v2.0.0
-docker inspect ghcr.io/obsernetics/pahlevan:v2.0.0
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.0.0
+docker inspect ghcr.io/obsernetics/pahlevan:v3.0.0
 
 # Digest to pin in air-gapped or regulated environments
 docker inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/obsernetics/pahlevan:v2.0.0</code></pre>
+  ghcr.io/obsernetics/pahlevan:v3.0.0</code></pre>
                     </div>
                 </div>
             </div>
@@ -137,7 +137,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <td>Most recent build of the default branch</td>
                         </tr>
                         <tr>
-                            <th scope="row"><code>v2.0.0</code></th>
+                            <th scope="row"><code>v3.0.0</code></th>
                             <td>Immutable release tag, recommended for production</td>
                         </tr>
                         <tr>
@@ -187,9 +187,64 @@ docker inspect --format '{{index .RepoDigests 0}}' \
 
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.0.0</h3>
+                        <span class="release-date">2026-08-31</span>
+                        <span class="release-pill">Current</span>
+                    </div>
+                    <p class="release-summary">
+                        Two hundred and twenty-five commits since 2.0.0. The theme, unintentionally, is
+                        honesty: a large share of this release is the discovery and removal of things
+                        that looked like they worked and did not.
+                    </p>
+                    <div class="change-group">
+                        <h4>Breaking changes</h4>
+                        <ul>
+                            <li><strong>The gRPC event stream refuses to start plaintext and unauthenticated.</strong>
+                                If you run the agent with <code>--grpc-bind-address</code> and no transport security it now
+                                exits at startup. The stream carries every denial on the node, which is a reconnaissance
+                                report. Configure <code>--grpc-tls-cert</code> and <code>--grpc-tls-key</code>, add
+                                <code>--grpc-client-ca</code> for mTLS or <code>--grpc-token</code> for a bearer token, or
+                                pass <code>--grpc-insecure</code> to say the listener is genuinely unreachable. If you never
+                                set <code>--grpc-bind-address</code>, nothing changes.</li>
+                            <li><strong>The module requires Go 1.26.</strong> Anything importing
+                                <code>github.com/obsernetics/pahlevan</code> now needs Go 1.26 or newer. Running the
+                                published image is unaffected.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4>Added</h4>
+                        <ul>
+                            <li><strong>Syscall arguments</strong> on every syscall event, with a watch set of escalation
+                                primitives that report every occurrence rather than only the first.</li>
+                            <li><strong>Privilege-escalation detection</strong> at <code>kprobe/commit_creds</code>, the one
+                                function every credential change passes through, so an exploit that never makes a syscall
+                                still lands there. Needs no BPF LSM.</li>
+                            <li><strong>Interactive shell capture</strong> at <code>uretprobe/readline</code>, which sees the
+                                builtins that produce no exec, no open and no connect. Off by default.</li>
+                            <li><strong>Five enforcement actions</strong>: Learn, Deny, Kill, Audit and Signal, with a
+                                configurable errno. Audit reports what would have been refused and refuses nothing.</li>
+                            <li>Kernel-enforced <code>processFilter</code>, container-breakout detection, destination naming,
+                                OTLP export, <code>pahlevan policy explain</code>, and gRPC TLS/mTLS.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4>Fixed</h4>
+                        <ul>
+                            <li><strong>ContainerProfile status was silently discarded on every write.</strong> The resource
+                                has a status subresource, so a server-side apply to the main resource does not write status.
+                                Profiles reached the cluster with no counts, no learned sets, no phase and no rollback
+                                history, and looked healthy.</li>
+                            <li>Export formats returned canned strings; the metrics provider was built with no readers; nine
+                                metric recorders discarded their labels; <code>mode: Off</code> did the opposite of what it
+                                says; seccomp profiles were written world-readable.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">2.0.0</h3>
                         <span class="release-date">2026-08-14</span>
-                        <span class="release-pill">Current</span>
                     </div>
                     <p class="release-summary">
                         Pahlevan 2.0.0 is a redesign. The single all-in-one operator is replaced by a

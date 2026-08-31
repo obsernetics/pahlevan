@@ -7,12 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.1.0] - 2026-08-16
+## [3.0.0] - 2026-08-31
 
-Ninety-eight commits since 2.0.0. The theme, unintentionally, is honesty: a
-large share of this release is the discovery and removal of things that looked
-like they worked and did not. Where a feature could be implemented it was;
-where it could not, it now says so.
+Two hundred and twenty-five commits since 2.0.0. The theme, unintentionally, is
+honesty: a large share of this release is the discovery and removal of things
+that looked like they worked and did not. Where a feature could be implemented
+it was; where it could not, it now says so.
+
+This is a major release for two reasons, both listed under Breaking changes:
+the gRPC event stream will not start unauthenticated any more, and the module
+now requires Go 1.26.
+
+### Breaking changes
+
+- **The gRPC event stream refuses to start plaintext and unauthenticated.**
+
+  If you run the agent with `--grpc-bind-address` and no transport security,
+  it now exits at startup instead of serving. The stream carries every denial
+  on the node - which pods exist, which paths they read, which destinations
+  they dial, the full command line of every exec - and that is a
+  reconnaissance report.
+
+  Previously it started anyway and logged a warning. The person who forgets the
+  certificate and the person who reads the startup log are rarely the same
+  person, so the warning was not a control.
+
+  To upgrade, pick one:
+
+  ```yaml
+  # mTLS, the right answer in a cluster. cert-manager can issue the pair.
+  - --grpc-tls-cert=/etc/pahlevan/tls/tls.crt
+  - --grpc-tls-key=/etc/pahlevan/tls/tls.key
+  - --grpc-client-ca=/etc/pahlevan/tls/ca.crt
+  ```
+
+  ```yaml
+  # TLS plus a bearer token, for a collector that cannot present a certificate.
+  - --grpc-tls-cert=/etc/pahlevan/tls/tls.crt
+  - --grpc-tls-key=/etc/pahlevan/tls/tls.key
+  - --grpc-token=$(PAHLEVAN_GRPC_TOKEN)
+  ```
+
+  ```yaml
+  # Or say explicitly that this listener is unreachable and you accept it.
+  - --grpc-insecure
+  ```
+
+  A bearer token without TLS is still refused: in cleartext it is a token you
+  have published. If you do not set `--grpc-bind-address` at all, nothing
+  changes for you - the listener is off by default and always was.
+
+- **The module requires Go 1.26.**
+
+  `go.mod` declares `go 1.26.0`, so anything importing
+  `github.com/obsernetics/pahlevan` needs Go 1.26 or newer to build. This came
+  from `k8s.io/cli-runtime` 0.36.3, which requires it, and which in turn forced
+  `controller-runtime` to 0.24.1.
+
+  Running the published container image is unaffected - it ships compiled
+  binaries and needs no toolchain.
 
 ### Added
 
@@ -41,8 +94,47 @@ where it could not, it now says so.
 - **`allowDNS` and `allowLoopback` are enforced**, as a per-cgroup flag checked
   ahead of the allow-set.
 
+- **Syscall arguments on every syscall event.** The monitor moved from
+  `raw_tracepoint/sys_enter` to `tracepoint/raw_syscalls/sys_enter`, whose
+  format already carries the six arguments extracted, identically on both
+  architectures. A watch set of escalation primitives - `ptrace`, `unshare`,
+  `setns`, `bpf`, `mount`, `io_uring_setup` and the rest - bypasses the
+  in-kernel deduplication, so they report every occurrence rather than only the
+  first. The first `ptrace` a process makes is usually a debugger attaching at
+  startup; the interesting one is the fourteenth.
+- **Privilege-escalation detection at `kprobe/commit_creds`.** Every other
+  monitor watches a request; this one watches the result. `commit_creds` is the
+  single function through which any task's credentials change, so a local-root
+  exploit that overwrites a `cred` struct and calls it directly lands here
+  having made no syscall at all. The discriminator is `task->in_execve`: a
+  setuid binary gains privilege inside `execve` and `sudo` does it all day,
+  while privilege gained with none underway has no other explanation. Needs no
+  BPF LSM.
+- **Interactive shell capture at `uretprobe/readline`.** `cd`, `export` and
+  `history -c` are shell builtins: they produce no exec, no open and no
+  connect, so an exec-based monitor watches somebody work through them and
+  reports nothing but the shell's own process. Attached per container through
+  `/proc/<pid>/root` when a shell execs, and off by default behind
+  `--trace-shell-commands`, because recording what a person types is a decision
+  an operator makes deliberately.
+- **Five enforcement actions instead of two.** `Learn`, `Deny`, `Kill`,
+  `Audit` and `Signal`, with a configurable errno and signal number, packed
+  into one `__u32` per cgroup so the hot path still costs one map lookup.
+  `Audit` reports what would have been refused and refuses nothing, and
+  deliberately does not learn - an audit pass that quietly added everything it
+  reported would report each violation once and never again. `Signal` exists
+  for `SIGSTOP`: freezing a process leaves its memory for an incident
+  responder, where `SIGKILL` destroys exactly that.
+
 ### Fixed
 
+- **`ContainerProfile` status was silently discarded on every write.** The
+  resource has a status subresource, so a server-side apply to the main
+  resource does not write status - a real API server drops it. Profiles were
+  reaching the cluster with no counts, no learned syscalls, files, destinations
+  or capabilities, no phase and no rollback history. The object existed and
+  looked healthy. Found only when `controller-runtime` 0.24 started modelling
+  the real server in its fake client.
 - **Export formats returned canned strings.** `exportToMermaid` returned the
   literal `"graph TD"` for every cluster; GraphQL and Cytoscape returned `{}`.
 - **The metrics provider was built with no readers**, so every recorded metric
@@ -72,6 +164,17 @@ where it could not, it now says so.
 
 ### Changed
 
+- **Dependencies**: `cilium/ebpf` to 0.22.0, `prometheus/client_golang` to
+  1.24.1, `go-logr` to 1.4.4, the OpenTelemetry family to 1.45.0 (log and its
+  exporters to 0.21.0), `k8s.io/cli-runtime` to 0.36.3 and `controller-runtime`
+  to 0.24.1. `otel/log` 0.21 removed its own `Value` and `KeyValue` types in
+  favour of the ones in `go.opentelemetry.io/otel/attribute`, so a log record's
+  attributes are now the same type as a span's and a metric's.
+- **The README's diagrams are rendered images**, authored as HTML under
+  `docs/assets/diagrams/` and regenerated by `hack/render-diagrams.sh`, rather
+  than ASCII art whose box borders did not line up.
+- **Commit messages are checked by a hook.** `.githooks/commit-msg` rejects
+  assistant attribution trailers; `scripts/setup-hooks.sh` enables it.
 - **Every policy example was invalid against the CRD** and has been rewritten.
   About twenty-five invented keys were being silently pruned by the API server,
   so the examples applied cleanly and did a fraction of what they said. A
@@ -166,6 +269,7 @@ observe and deny in the kernel.
   with the `PahlevanPolicy` CRD, a learning phase, enforcement modes, self-healing,
   observability, and Helm plus manifest based installation.
 
-[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/obsernetics/pahlevan/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/obsernetics/pahlevan/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/obsernetics/pahlevan/releases/tag/v1.0.0
