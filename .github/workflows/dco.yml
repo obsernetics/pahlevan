@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The whole history of the branch, so every commit in the PR range is
           # available to inspect. A shallow clone would hide the older ones.

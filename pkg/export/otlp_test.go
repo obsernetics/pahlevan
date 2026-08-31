@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -42,8 +43,8 @@ func newTestSink(t *testing.T, denialsOnly bool) (*OTLPExporter, *recordingProce
 func attrsOf(t *testing.T, r sdklog.Record) map[string]string {
 	t.Helper()
 	out := map[string]string{}
-	r.WalkAttributes(func(kv otellog.KeyValue) bool {
-		out[kv.Key] = kv.Value.String()
+	r.WalkAttributes(func(kv attribute.KeyValue) bool {
+		out[string(kv.Key)] = kv.Value.String()
 		return true
 	})
 	return out

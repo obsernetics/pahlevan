@@ -8,7 +8,7 @@
   <a href="https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/obsernetics/pahlevan/ci.yml?branch=main&label=CI&logo=github" alt="CI" /></a>
   <a href="https://goreportcard.com/report/github.com/obsernetics/pahlevan"><img src="https://goreportcard.com/badge/github.com/obsernetics/pahlevan" alt="Go Report Card" /></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white" alt="Go 1.25" /></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26" /></a>
   <a href="https://github.com/obsernetics/pahlevan/releases"><img src="https://img.shields.io/github/v/release/obsernetics/pahlevan?sort=semver&color=success" alt="Latest release" /></a>
   <a href="https://github.com/obsernetics/pahlevan/stargazers"><img src="https://img.shields.io/github/stars/obsernetics/pahlevan?style=flat&logo=github&color=yellow" alt="GitHub stars" /></a>
   <br/>
@@ -90,13 +90,20 @@ across containers or reaches the rest of the node.
 
 | Program | Sees | Does |
 |---|---|---|
-| `lsm/file_open` | Every open, path resolved in-kernel by `bpf_d_path` | `EPERM` on an unlearned path |
-| `lsm/socket_connect` | Every connect, IPv4 and IPv6, named against cluster Services | `EPERM` on an unlearned destination |
-| `lsm/bprm_check_security` | Every exec: binary, argv, cwd, four levels of ancestry | `EPERM` or `SIGKILL` on an unlearned binary |
-| `lsm/capable` | Every capability check, plus the task's effective/permitted/inheritable sets | `EPERM` on a capability never exercised |
-| `kprobe/commit_creds` | The moment privilege actually changes | `SIGKILL` when privilege is gained with no `execve` to explain it |
-| `tracepoint/sys_enter` | Every syscall, with its six arguments | Becomes the generated seccomp profile |
+| `lsm/file_open` | Every open, path resolved in-kernel by `bpf_d_path` | Refuses an unlearned path |
+| `lsm/socket_connect` | Every connect, IPv4 and IPv6, named against cluster Services | Refuses an unlearned destination |
+| `lsm/bprm_check_security` | Every exec: binary, argv, cwd, four levels of ancestry | Refuses an unlearned binary, or one its parent may not launch |
+| `lsm/capable` | Every capability check, plus the task's effective/permitted/inheritable sets | Refuses a capability never exercised |
+| `kprobe/commit_creds` | The moment privilege actually changes | Reports it; kills the task if you ask it to |
+| `tracepoint/raw_syscalls/sys_enter` | Every syscall, with its six arguments | Becomes the generated seccomp profile |
 | `uretprobe/readline` | Commands typed at an interactive prompt | Records what somebody with a shell actually did |
+
+"Refuses" is five choices, not one. Per workload you pick **Deny** (`EPERM`, or
+an errno you name), **Kill**, **Signal** (`SIGSTOP` freezes the process with its
+memory intact, which `SIGKILL` destroys), **Audit** (report it and let it
+through), or **Learn**. Audit is the one to roll out with: it reports every
+operation that *would* have been refused without refusing any of them, and
+unlike learning mode it does not widen the baseline as it goes.
 
 Two of those are worth pointing at directly.
 
@@ -104,7 +111,10 @@ Two of those are worth pointing at directly.
 change. A local-root exploit that overwrites a `cred` struct and calls it
 directly makes no syscall a syscall monitor could see — but it lands here, and
 it lands with no `execve` underway to explain it, which is what separates it
-from `sudo` doing its job.
+from `sudo` doing its job. It reports by default and kills only for workloads
+you have explicitly marked as never legitimately escalating, because the only
+response available at that site is a signal and a false positive there ends a
+process rather than denying one operation.
 
 **`readline`** catches what the kernel cannot. `cd /root`, `export
 KUBECONFIG=…`, `history -c` are shell builtins: they change what a session is
@@ -156,12 +166,14 @@ kubectl get pahlevanpolicy nginx-security -w
 Before you switch to `Blocking`, read what the baseline actually says:
 
 ```bash
-pahlevan policy explain -f nginx-security.yaml   # what this policy will and will not do
-pahlevan profile show nginx-abc123               # what was learned, offline
+pahlevan policy explain -f nginx-security.yaml   # no cluster needed
+pahlevan profile list -n default                 # what has been learned so far
+pahlevan profile get pod-<uid> -o yaml           # one container's learned profile
 ```
 
-`policy explain` runs without a cluster and tells you which fields translate
-into kernel state and which are ignored — including the ones that look like they
+`policy explain` is the one to run first, and it is the only one of the three
+that needs no cluster. It tells you which fields of a policy translate into
+kernel state and which are ignored — including the ones that look like they
 work. More in [`examples/`](examples) and
 [`docs/policy-reference.md`](docs/policy-reference.md).
 
@@ -187,6 +199,7 @@ runs.
 
 - **Kubernetes 1.24+** — the user-namespace operator needs 1.30+.
 - **Linux 5.8+** for observation: CO-RE, ring buffer, `CAP_BPF`.
+- **Go 1.26+** to build from source. Running the published image needs nothing.
 - **`CONFIG_BPF_LSM` with `lsm=bpf`** on the kernel command line for in-kernel
   enforcement. Without it, the LSM hooks do not attach and Pahlevan runs as an
   observability tool; the `commit_creds` kprobe and the syscall tracepoint still
