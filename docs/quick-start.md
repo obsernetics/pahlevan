@@ -12,17 +12,18 @@ Before starting, ensure your cluster meets the [system requirements](system-requ
 
 ### Verify System Compatibility
 
-```bash
-# Check if your cluster supports eBPF
-kubectl run pahlevan-check --rm -i --tty \
-  --image=obsernetics/pahlevan:latest \
-  --command -- /pahlevan debug system-capabilities
+Pahlevan's own compatibility check (`pahlevan debug`) inspects the
+already-running agent and node state, so it only has something to report
+after install. Before installing, check the two things that actually gate
+whether the agent can load: the kernel version, and whether the nodes are
+Linux.
 
-# Expected output should show:
-# eBPF Support: true
-# Tracepoint Support: true
-# TC Support: true
+```bash
+kubectl get nodes -o custom-columns=NAME:.metadata.name,KERNEL:.status.nodeInfo.kernelVersion,OS:.status.nodeInfo.operatingSystem
 ```
+
+See [system requirements](system-requirements.md) for what each Pahlevan
+capability needs from the kernel.
 
 ## Installation
 
@@ -37,10 +38,12 @@ kubectl get pods -n pahlevan-system
 ```
 
 This installs:
-- Pahlevan operator with RBAC
-- Custom Resource Definitions (CRDs)
-- Default configuration
-- Service monitors for Prometheus
+- The `pahlevan-agent` DaemonSet (the eBPF data plane) and the
+  `pahlevan-operator` Deployment (the control plane), with RBAC
+- The three CRDs: `PahlevanPolicy`, `ContainerProfile`, `AttackSurface`
+- A Prometheus-format `/metrics` endpoint on both components (no
+  ServiceMonitor is installed; wire one up yourself if you run the
+  Prometheus Operator)
 
 ### Method 2: Helm Chart
 
@@ -92,18 +95,12 @@ spec:
   selector:
     matchLabels:
       app: nginx
-  learning:
-    enabled: true
+  learningConfig:
     duration: 5m
     autoTransition: false  # Manual transition for learning
-  enforcement:
-    mode: "monitor"        # Start with monitoring only
+  enforcementConfig:
+    mode: Monitoring        # Start with monitoring only; Blocking denies in-kernel
     blockUnknown: false
-  observability:
-    metrics:
-      enabled: true
-    alerts:
-      enabled: true
 EOF
 ```
 
@@ -135,83 +132,78 @@ kubectl get pahlevanpolicy nginx-monitor -w
 # Check detailed status
 kubectl describe pahlevanpolicy nginx-monitor
 
-# View learned behaviors
-kubectl get pahlevanpolicy nginx-monitor -o yaml
+# List the per-container profiles the policy is learning
+pahlevan profile list -n default
 ```
 
-After 5 minutes, you should see the policy status change to `LearningComplete`.
+After 5 minutes the policy's status phase moves from `Learning` to
+`Transition` and then `Enforcing` if `autoTransition` is set - here it is not,
+so it stays in `Learning` until you flip the mode yourself (see below).
 
 ## Understanding the Output
 
-### Policy Status
+### What's actually learned
 
-```yaml
-status:
-  phase: "Learning"  # or "Enforcing", "Failed"
-  conditions:
-  - type: "LearningComplete"
-    status: "True"
-    reason: "MinimumSamplesReached"
-  - type: "Ready"
-    status: "True"
-  learnedProfile:
-    syscalls:
-      allowed: [1, 2, 3, 4, 5, 6, 39, 41, 42, 45, 48, 49, 257, 262]
-    network:
-      allowedEgressPorts: [80, 443]
-      allowedIngressPorts: [80]
-    files:
-      allowedPaths:
-      - "/usr/share/nginx/html/*"
-      - "/var/cache/nginx/*"
-      deniedPaths:
-      - "/etc/passwd"
-      - "/proc/*/mem"
-```
-
-### Operator Logs
+The learned baseline is not on the `PahlevanPolicy` itself - it is on one
+`ContainerProfile` per matched container, which is what `pahlevan profile`
+reads:
 
 ```bash
-# View operator logs
-kubectl logs -n pahlevan-system deployment/pahlevan-operator -f
-
-# Look for these events:
-# - "Learning started for container"
-# - "Syscall profile updated"
-# - "Policy generated successfully"
-# - "Enforcement enabled"
+pahlevan profile get <pod-uid> -o yaml
 ```
+
+The fields worth reading on that resource's `status` are `learnedSyscalls`,
+`learnedFiles`, `learnedNetworkDestinations`, `learnedExecutables` and
+`learnedCapabilities`, plus the summary counts `syscallCount`, `fileCount`
+and `networkCount`. See [`docs/api-reference.md`](api-reference.md) for the
+full generated field reference.
+
+### Agent Logs
+
+Enforcement decisions are made and logged by the **agent** (the DaemonSet
+that runs the eBPF data plane), not the operator:
+
+```bash
+kubectl logs -n pahlevan-system daemonset/pahlevan-agent -f
+
+# Or, from anywhere kubectl works:
+pahlevan logs --component agent --follow
+```
+
+Every in-kernel denial logs a line starting `DENIED in-kernel`, naming what
+was refused, by whom, and its parent process.
 
 ## Transition to Enforcement
 
-Once learning is complete, you can enable enforcement:
+Once you are satisfied with the learned baseline, switch the policy to
+`Blocking`:
 
 ```bash
-# Update the policy to enforce mode
+# Update the policy to enforcing mode
 kubectl patch pahlevanpolicy nginx-monitor --type='merge' -p='{
   "spec": {
-    "enforcement": {
-      "mode": "enforce",
+    "enforcementConfig": {
+      "mode": "Blocking",
       "blockUnknown": true
     }
   }
 }'
 
-# Monitor enforcement actions
-kubectl logs -n pahlevan-system deployment/pahlevan-operator -f | grep "BLOCKED"
+# Watch for denials
+pahlevan logs --component agent --follow | grep "DENIED"
 ```
 
 ## Testing Enforcement
 
 ```bash
-# Try to execute a potentially blocked action
+# Try something outside the learned baseline
 kubectl exec deployment/nginx -- ls /etc/passwd
 
-# Monitor for enforcement actions
-kubectl logs -n pahlevan-system deployment/pahlevan-operator | grep "policy violation"
+# Watch for the denial
+pahlevan logs --component agent --follow | grep DENIED
 
-# Check metrics for blocked events
-kubectl exec -n pahlevan-system deployment/pahlevan-operator -- curl localhost:8080/metrics | grep pahlevan_blocked_events
+# Confirm it counted in the metrics
+pahlevan metrics --component agent --filter pahlevan_enforcement_actions_total
 ```
 
 ## Cleanup
@@ -242,14 +234,19 @@ Now that you have Pahlevan running:
 
 ### eBPF Programs Not Loading
 
-```bash
-# Check system capabilities
-kubectl logs -n pahlevan-system deployment/pahlevan-operator | grep "capability"
+The programs load in the **agent**, not the operator - it is the agent that
+runs privileged with the eBPF capabilities.
 
-# Common solutions:
-# 1. Ensure kernel version >= 4.18
-# 2. Check if eBPF is enabled in kernel config
-# 3. Verify the operator has sufficient privileges
+```bash
+pahlevan logs --component agent | grep -i "lsm\|unable to load"
+
+# Common causes:
+# 1. Kernel older than what the four LSM-hooked programs need (lsm=bpf on
+#    the kernel command line). The syscall, cred and shell programs work
+#    without it; see lsm-support.md.
+# 2. The agent pod is missing CAP_BPF/CAP_PERFMON (or CAP_SYS_ADMIN on an
+#    older kernel) - check its securityContext against
+#    charts/pahlevan-operator/values.yaml.
 ```
 
 ### No Learning Data
@@ -261,8 +258,8 @@ kubectl get pods --show-labels | grep nginx
 # Verify policy selector matches
 kubectl get pahlevanpolicy nginx-monitor -o yaml | grep -A5 selector
 
-# Check if containers are being monitored
-kubectl logs -n pahlevan-system deployment/pahlevan-operator | grep "container attached"
+# Confirm a ContainerProfile was created for the container
+pahlevan profile list -n default
 ```
 
 ### High Resource Usage
@@ -270,13 +267,12 @@ kubectl logs -n pahlevan-system deployment/pahlevan-operator | grep "container a
 ```bash
 # Check current resource usage
 kubectl top pods -n pahlevan-system
-
-# Tune ring buffer size if needed
-kubectl patch configmap pahlevan-config -n pahlevan-system -p='{
-  "data": {
-    "ring-buffer-size": "16384"
-  }
-}'
 ```
+
+The agent's DaemonSet requests/limits are a Helm value
+(`agent.resources` in
+[`charts/pahlevan-operator/values.yaml`](../charts/pahlevan-operator/values.yaml)),
+set at install or upgrade time - not something patched into a ConfigMap
+afterward.
 
 Need help? Check our [troubleshooting guide](troubleshooting.md) or [open an issue](https://github.com/obsernetics/pahlevan/issues).

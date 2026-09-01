@@ -4,7 +4,7 @@
 # Variables
 BINARY_NAME=pahlevan-operator
 CONTAINER_NAME=pahlevan/operator
-VERSION?=v3.0.0
+VERSION?=v3.1.0
 BUILD_DIR=bin
 BPF_DIR=bpf
 PKG_DIR=pkg/ebpf
@@ -319,7 +319,7 @@ quick-start: install-all ## Complete quick start installation with example
 	@echo "🚀 Setting up quick start example..."
 	kubectl apply -f examples/quickstart/simple-policy.yaml
 	@echo "✅ Example policy applied!"
-	@echo "📖 View the getting started guide: docs/USAGE.md"
+	@echo "📖 View the getting started guide: docs/quick-start.md"
 
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.

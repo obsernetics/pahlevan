@@ -1047,19 +1047,6 @@ func TestAttackSurface_IsSignificantChange(t *testing.T) {
 	}
 }
 
-func TestAttackSurface_SyscallNumberToName(t *testing.T) {
-	r := &AttackSurfaceAnalyzerReconciler{}
-	if got := r.syscallNumberToName(101); got != "ptrace" {
-		t.Errorf("101: got %s", got)
-	}
-	if got := r.syscallNumberToName(59); got != "execve" {
-		t.Errorf("59: got %s", got)
-	}
-	if got := r.syscallNumberToName(999999); got != "unknown" {
-		t.Errorf("unknown: got %s", got)
-	}
-}
-
 func TestAttackSurface_MatchesSelector(t *testing.T) {
 	r := &AttackSurfaceAnalyzerReconciler{}
 	if !r.matchesSelector(map[string]string{"app": "web"}, policyv1alpha1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}) {

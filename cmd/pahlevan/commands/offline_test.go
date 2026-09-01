@@ -48,6 +48,7 @@ func TestCommandsThatMustWorkWithoutACluster(t *testing.T) {
 		"completion":     Offline(NewCompletionCommand()),
 		"events":         NewEventsCommand(),
 		"policy explain": newPolicyExplainCommand(),
+		"coverage":       NewCoverageCommand(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			assert.True(t, IsOffline(cmd),

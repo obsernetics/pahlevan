@@ -3,7 +3,8 @@ package seccomp
 import "testing"
 
 // largeSyscallSet returns every known syscall number plus a batch of unknown
-// numbers, so Generate exercises both the name-lookup and skip paths at scale.
+// numbers, so GenerateWithOverrides exercises both the name-lookup and skip
+// paths at scale.
 func largeSyscallSet() []uint64 {
 	set := make([]uint64, 0, len(SyscallName)+64)
 	for nr := range SyscallName {
@@ -16,22 +17,22 @@ func largeSyscallSet() []uint64 {
 	return set
 }
 
-func BenchmarkGenerate_LargeSet(b *testing.B) {
+func BenchmarkGenerateWithOverrides_LargeSet(b *testing.B) {
 	allowed := largeSyscallSet()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = Generate(allowed)
+		_, _ = GenerateWithOverrides(allowed, nil, nil)
 	}
 }
 
-func BenchmarkGenerate_SmallSet(b *testing.B) {
+func BenchmarkGenerateWithOverrides_SmallSet(b *testing.B) {
 	// A typical learned workload: a few dozen common syscalls.
 	allowed := []uint64{0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 21, 22, 41, 42, 44, 45, 59, 60, 61, 202, 257, 262, 288}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = Generate(allowed)
+		_, _ = GenerateWithOverrides(allowed, nil, nil)
 	}
 }
 
@@ -40,7 +41,7 @@ func BenchmarkGenerateAndJSON(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		prof, _ := Generate(allowed)
+		prof, _ := GenerateWithOverrides(allowed, nil, nil)
 		if _, err := prof.JSON(); err != nil {
 			b.Fatal(err)
 		}

@@ -83,6 +83,9 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
 ### Tooling and CI
 - `pahlevan policy explain -f`, which translates a policy offline and names the
   fields that do not reach the kernel.
+- `pahlevan coverage`, which maps the seven eBPF programs to the MITRE ATT&CK
+  techniques their observations can help an analyst confirm or rule out - the
+  shared taxonomy this page used to say nothing provided.
 - Generated artifacts with drift guards: `docs/api-reference.md` from the Go
   types, `install.yaml` from the Kustomize bases, the demo GIF from its tape,
   the README diagrams from their sources, and the Pages site from the facts it
@@ -103,10 +106,6 @@ polish item.
   is the formatted, per-destination half: a Slack message, a PagerDuty
   incident, a template you fill in yourself. Getting a denial into a human's
   chat client is still something you build.
-- **Planned: a detection-coverage vocabulary.** Nothing maps the seven programs
-  to a shared taxonomy, so there is no way to answer "what does this cover"
-  except by reading the code. Mapping detectors to MITRE ATT&CK techniques and
-  reporting the coverage would fix that.
 - **Planned: DNS and L7 parsing.** Destinations inside the cluster are named
   from Services, pods and nodes, which costs no DNS query. Destinations
   *outside* the cluster, which are the ones that matter in an exfiltration,

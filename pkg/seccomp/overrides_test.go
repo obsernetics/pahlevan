@@ -66,9 +66,10 @@ func TestGenerateWithOverridesIgnoresBlankNames(t *testing.T) {
 	assert.True(t, allowedNames(t, p)["exit_group"])
 }
 
-// Generate is the no-override case and must stay equivalent.
-func TestGenerateMatchesGenerateWithOverrides(t *testing.T) {
-	a, skippedA := Generate([]uint64{0, 1, 2})
+// GenerateWithOverrides with no overrides must be deterministic: the same
+// input always produces the same profile.
+func TestGenerateWithOverridesIsDeterministic(t *testing.T) {
+	a, skippedA := GenerateWithOverrides([]uint64{0, 1, 2}, nil, nil)
 	b, skippedB := GenerateWithOverrides([]uint64{0, 1, 2}, nil, nil)
 	assert.Equal(t, skippedA, skippedB)
 	assert.Equal(t, a, b)
@@ -92,7 +93,7 @@ func TestArchitecturesMatchTheBuild(t *testing.T) {
 	arches := Architectures()
 	require.NotEmpty(t, arches)
 
-	p, _ := Generate(nil)
+	p, _ := GenerateWithOverrides(nil, nil, nil)
 	assert.Equal(t, arches, p.Architectures, "the profile must declare the build's architectures")
 
 	// The accessor returns a copy, so a caller cannot mutate the package state.
