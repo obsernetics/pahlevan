@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-01
+
+### Added
+
+- **`pahlevan coverage`**, and the `pkg/coverage` package behind it: Pahlevan's
+  own mapping of its seven eBPF programs to the MITRE ATT&CK techniques their
+  observations can help an analyst confirm or rule out. Closes the "detection
+  coverage vocabulary" gap ROADMAP.md has carried since 3.0.0 - previously the
+  only way to answer "what does this cover" was reading `bpf/*.c` one file at
+  a time.
+
+### Changed
+
+- `pkg/discovery`'s `ContainerTracker` (the Kubernetes-facing container
+  discovery used by the integration test harness) now has real unit test
+  coverage: 30.4% to 94.9%, with a removed dead-code scaffold (`ContainerScanner`,
+  `PodInfo`, `NodeInfo`, `EventWatcher` and friends in `pkg/discovery/types.go`)
+  that was never wired into anything and only tested itself.
+- `cmd/pahlevan-agent`'s event observer (`agentObserver`) and policy resolver's
+  `Refresh`/`PodMeta` now have unit test coverage (26.8% to 54.7%); the
+  remaining gap is `main()` itself, which loads real eBPF programs and cannot
+  be unit-tested on the host.
+- `cmd/pahlevan-operator`'s two admission runnables were extracted into
+  testable functions (`ensureAdmissionOnce`, `reconcileDerivedAdmissionOnce`)
+  with unit tests (0% to 15.3%); behavior is unchanged. The remaining gap is
+  again `main()`, which requires a live Kubernetes API server.
+- `docs/architecture.md`'s eBPF programs table was stale since the credential
+  and shell monitors shipped: it listed five programs, including a
+  `lsm_monitor.c` that does not exist, and was missing `capability_monitor.c`,
+  `cred_monitor.c` and `shell_monitor.c` entirely. Now lists all seven with
+  their real hooks.
+- `docs/quick-start.md` described a CRD shape and CLI that stopped existing
+  release ago: `learning`/`enforcement` spec fields (real names are
+  `learningConfig`/`enforcementConfig`), `monitor`/`enforce` mode strings
+  (real values are `Monitoring`/`Blocking`), a `pahlevan debug
+  system-capabilities` subcommand that was never implemented, a
+  `pahlevan_blocked_events` metric that does not exist, and enforcement logs
+  attributed to the operator when they are actually written by the agent
+  DaemonSet. Corrected throughout.
+
+### Removed
+
+- `docs/USAGE.md`: unlinked from every other doc, and almost entirely
+  fabricated (invented CLI subcommands like `pahlevan debug system-info`,
+  `pahlevan policy simulate`, `pahlevan policy apply -f policies/`; a
+  `pahlevan-config` ConfigMap tuning surface that was never built). Its
+  accurate content already lives in `docs/quick-start.md`,
+  `docs/policy-reference.md` and `docs/deployment.md`.
+- `pkg/seccomp.Generate`, a one-line wrapper around `GenerateWithOverrides`
+  with no callers anywhere in the tree. `GenerateWithOverrides(allowed, nil,
+  nil)` is the direct replacement for anyone calling it as a library.
+- `internal/controller` `AttackSurfaceAnalyzerReconciler.syscallNumberToName`,
+  an unreachable duplicate of the syscall table `pkg/ebpf`/`pkg/seccomp`
+  already maintain.
+
 ## [3.0.0] - 2026-08-31
 
 Two hundred and twenty-five commits since 2.0.0. The theme, unintentionally, is

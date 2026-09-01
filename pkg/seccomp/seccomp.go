@@ -38,21 +38,18 @@ var baseline = []string{
 	"nanosleep", "clock_nanosleep", "sched_yield",
 }
 
-// Generate builds a default-deny (SCMP_ACT_ERRNO) profile that allows the learned
-// syscalls plus the safety baseline. Unknown syscall numbers are skipped (they
-// cannot be named in a profile); callers can inspect the returned skipped count.
-func Generate(allowed []uint64) (Profile, int) {
-	return GenerateWithOverrides(allowed, nil, nil)
-}
-
-// GenerateWithOverrides is Generate plus the operator's syscall allow and deny
-// lists from a PahlevanPolicy. Denials are applied last and win over everything,
-// including the safety baseline: an operator who explicitly denies a syscall
-// meant it, and silently keeping it would make the profile a lie.
+// GenerateWithOverrides builds a default-deny (SCMP_ACT_ERRNO) profile that
+// allows the learned syscalls plus the safety baseline, then applies the
+// operator's syscall allow and deny lists from a PahlevanPolicy. Unknown
+// syscall numbers in allowed are skipped (they cannot be named in a profile);
+// callers can inspect the returned skipped count. Denials are applied last and
+// win over everything, including the safety baseline: an operator who
+// explicitly denies a syscall meant it, and silently keeping it would make the
+// profile a lie.
 //
-// Names are matched as written; an unrecognized name is reported through the
-// returned unknown list rather than dropped, so a typo surfaces instead of
-// quietly widening or narrowing the profile.
+// allowNames and denyNames are matched as written and are not validated
+// against the syscall table: a typo in either is applied literally rather
+// than rejected. Use KnownName to validate a name before passing it in.
 func GenerateWithOverrides(allowed []uint64, allowNames, denyNames []string) (Profile, int) {
 	names := map[string]struct{}{}
 	for _, s := range baseline {

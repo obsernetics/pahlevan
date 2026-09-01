@@ -57,13 +57,18 @@ All programs are CO-RE (compile once, run everywhere): they are compiled during
 the build, the objects and bpf2go bindings are committed to the tree, and no
 per-node compilation or kernel headers are required at runtime.
 
-| Program | Hook | Role |
-|---|---|---|
-| `syscall_monitor.c` | `raw_tracepoint/sys_enter` | Observes every syscall, deduplicated in-kernel per `(cgroup, syscall)` so the ring buffer sees each pair once. |
-| `file_monitor.c` | `lsm/file_open` | Observes opens with paths resolved in-kernel via `bpf_d_path()`; denies unlearned paths with `EPERM` under enforcement. |
-| `network_monitor.c` | `lsm/socket_connect` | Observes egress; denies connections to destinations outside the learned allow-set. |
-| `exec_monitor.c` | `lsm/bprm_check_security` | Observes process execution; denies unlearned binaries. |
-| `lsm_monitor.c` | `lsm/task_alloc`, `lsm/socket_create`, `lsm/ptrace_access_check`, `lsm/capable`, `lsm/bprm_check_security` | Broader security-event surface for posture analysis. |
+| Program | Hook | Needs BPF LSM | Role |
+|---|---|---|---|
+| `file_monitor.c` | `lsm/file_open` | Yes | Observes opens with paths resolved in-kernel via `bpf_d_path()`, split into separate read and write allow-set entries; denies unlearned paths with `EPERM` under enforcement. |
+| `network_monitor.c` | `lsm/socket_connect` | Yes | Observes IPv4 and IPv6 egress; denies connections to destinations outside the learned allow-set. |
+| `exec_monitor.c` | `lsm/bprm_check_security` | Yes | Observes process execution - binary, argv, working directory, and four levels of ancestry - and denies unlearned binaries. Also detects container breakout by comparing the working directory's mount namespace with the task's. |
+| `capability_monitor.c` | `lsm/capable` | Yes | Observes every capability check plus the task's effective, permitted, and inheritable sets, so an over-privileged container is visible even when no check was denied. |
+| `syscall_monitor.c` | `tracepoint/raw_syscalls/sys_enter` | No | Observes every syscall, deduplicated in-kernel per `(cgroup, syscall)`, with decoded arguments for the syscalls Pahlevan interprets and a watch set of escalation primitives reported on every occurrence. |
+| `cred_monitor.c` | `kprobe/commit_creds` | No | Observes every credential change, discriminated by whether an execve was underway, so a setuid binary's expected escalation is separable from one with no execve in progress. |
+| `shell_monitor.c` | `uretprobe/readline` | No | Captures one command per interactive shell prompt before the shell parses it - the builtins that produce no exec, no open, and no connect. |
+
+Run `pahlevan coverage` for the same table mapped to the MITRE ATT&CK
+techniques each program's observations are useful evidence for.
 
 Each enforcing program is driven by two map families: a `*_mode` map that says
 whether the cgroup is off, monitoring, or blocking, and a `*_allowed` map that

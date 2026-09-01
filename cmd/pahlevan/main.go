@@ -109,6 +109,7 @@ enforcement, and real-time monitoring of container behavior using eBPF technolog
 		commands.NewLogsCommand(),
 		commands.NewMetricsCommand(),
 		commands.NewDebugCommand(),
+		commands.NewCoverageCommand(),
 		// Neither touches the cluster: one writes a shell script, the other
 		// prints constants compiled into the binary.
 		commands.Offline(commands.NewCompletionCommand()),

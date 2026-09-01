@@ -67,7 +67,7 @@
             <p>
                 What changed in each Pahlevan release, and every artifact you can install:
                 a distroless container image on GHCR, a Helm chart, and a single-file
-                Kubernetes manifest. The current release is <strong>v3.0.0</strong>.
+                Kubernetes manifest. The current release is <strong>v3.1.0</strong>.
             </p>
             <div class="hero-actions">
                 <a href="#changelog" class="btn btn-primary">Read the changelog</a>
@@ -81,7 +81,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Packages</span>
-                <h2>Three ways to install v3.0.0</h2>
+                <h2>Three ways to install v3.1.0</h2>
                 <p>
                     One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
                     <code>pahlevan-operator</code> (the leader-elected Deployment), and the
@@ -103,22 +103,22 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     </div>
                     <p class="qs-note">
                         The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
-                        DaemonSet. Swap <code>latest</code> for <code>v3.0.0</code> to pin a release.
+                        DaemonSet. Swap <code>latest</code> for <code>v3.1.0</code> to pin a release.
                     </p>
                 </div>
                 <div class="qs-col">
                     <h3>Container image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.0.0</code></pre>
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.1.0</code></pre>
                     </div>
                     <h3>Verifying the image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.0.0
-docker inspect ghcr.io/obsernetics/pahlevan:v3.0.0
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.1.0
+docker inspect ghcr.io/obsernetics/pahlevan:v3.1.0
 
 # Digest to pin in air-gapped or regulated environments
 docker inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/obsernetics/pahlevan:v3.0.0</code></pre>
+  ghcr.io/obsernetics/pahlevan:v3.1.0</code></pre>
                     </div>
                 </div>
             </div>
@@ -137,7 +137,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <td>Most recent build of the default branch</td>
                         </tr>
                         <tr>
-                            <th scope="row"><code>v3.0.0</code></th>
+                            <th scope="row"><code>v3.1.0</code></th>
                             <td>Immutable release tag, recommended for production</td>
                         </tr>
                         <tr>
@@ -187,9 +187,60 @@ docker inspect --format '{{index .RepoDigests 0}}' \
 
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.1.0</h3>
+                        <span class="release-date">2026-09-01</span>
+                        <span class="release-pill">Current</span>
+                    </div>
+                    <p class="release-summary">
+                        A monthly maintenance release: a new capability, a large jump in test
+                        coverage for the two binaries, and the removal of documentation and code
+                        that had drifted from what the tree actually does.
+                    </p>
+                    <div class="change-group">
+                        <h4 class="added">Added</h4>
+                        <ul>
+                            <li><strong><code>pahlevan coverage</code></strong>, and the <code>pkg/coverage</code>
+                                package behind it: Pahlevan's own mapping of its seven eBPF programs to the
+                                MITRE ATT&amp;CK techniques their observations can help an analyst confirm or
+                                rule out.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li><code>pkg/discovery</code>'s container tracker went from 30.4% to 94.9% test
+                                coverage, after removing a dead scaffold that was never wired into anything
+                                and only tested itself.</li>
+                            <li>The agent's event observer and policy resolver, and the operator's admission
+                                runnables, gained unit tests; the remaining coverage gap in both binaries is
+                                <code>main()</code>, which cannot be unit-tested without a privileged kernel or
+                                a live cluster.</li>
+                            <li><code>docs/architecture.md</code>'s eBPF programs table was stale since the
+                                credential and shell monitors shipped: it named a program that does not exist
+                                and omitted three that do. Now lists all seven with their real hooks.</li>
+                            <li><code>docs/quick-start.md</code> described CRD fields, CLI subcommands and
+                                metric names that never existed or stopped existing releases ago. Corrected
+                                throughout.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="removed">Removed</h4>
+                        <ul>
+                            <li><code>docs/USAGE.md</code>: unlinked from every other doc and almost entirely
+                                fabricated. Its accurate content already lives in
+                                <code>docs/quick-start.md</code>, <code>docs/policy-reference.md</code> and
+                                <code>docs/deployment.md</code>.</li>
+                            <li><code>pkg/seccomp.Generate</code>, a wrapper with no callers anywhere in the
+                                tree; <code>GenerateWithOverrides(allowed, nil, nil)</code> is the direct
+                                replacement.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.0.0</h3>
                         <span class="release-date">2026-08-31</span>
-                        <span class="release-pill">Current</span>
                     </div>
                     <p class="release-summary">
                         Two hundred and twenty-five commits since 2.0.0. The theme, unintentionally, is

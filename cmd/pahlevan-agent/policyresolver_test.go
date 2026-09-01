@@ -236,6 +236,31 @@ func TestNamespaceSelectorMatchExpressions(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestSelectorMatches(t *testing.T) {
+	r := newPolicyResolver(nil, "node-1")
+	p := pod("nginx-1", "prod", "uid-1", map[string]string{"app": "nginx", "tier": "frontend"})
+
+	assert.True(t, r.selectorMatches(policyv1alpha1.LabelSelector{}, p), "empty selector matches everything")
+
+	assert.True(t, r.selectorMatches(policyv1alpha1.LabelSelector{
+		MatchLabels: map[string]string{"app": "nginx"},
+	}, p))
+	assert.False(t, r.selectorMatches(policyv1alpha1.LabelSelector{
+		MatchLabels: map[string]string{"app": "apache"},
+	}, p), "a mismatched matchLabels value excludes the pod")
+
+	assert.True(t, r.selectorMatches(policyv1alpha1.LabelSelector{
+		MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{
+			{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"frontend"}},
+		},
+	}, p))
+	assert.False(t, r.selectorMatches(policyv1alpha1.LabelSelector{
+		MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{
+			{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"backend"}},
+		},
+	}, p), "a non-matching matchExpressions requirement excludes the pod")
+}
+
 func TestRequirementMatches(t *testing.T) {
 	labels := map[string]string{"tier": "frontend"}
 	req := func(op policyv1alpha1.LabelSelectorOperator, values ...string) policyv1alpha1.LabelSelectorRequirement {

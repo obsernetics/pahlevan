@@ -14,12 +14,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"os"
 	"time"
 
-	"github.com/obsernetics/pahlevan/internal/admission"
 	"github.com/obsernetics/pahlevan/pkg/observability"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -101,15 +99,7 @@ func main() {
 	// Control plane: ensure the CEL ValidatingAdmissionPolicy hardening baseline
 	// exists (in-process admission, no webhook/certs). Runs after cache sync.
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		if err := admission.Ensure(ctx, mgr.GetClient()); err != nil {
-			if errors.Is(err, admission.ErrUnsupported) {
-				setupLog.Info("CEL admission policy skipped", "reason", err.Error())
-				return nil
-			}
-			setupLog.Error(err, "failed to ensure CEL admission policy")
-			return nil // don't crash the operator over admission
-		}
-		setupLog.Info("CEL ValidatingAdmissionPolicy ensured (pahlevan-pod-hardening)")
+		ensureAdmissionOnce(ctx, setupLog, mgr.GetClient())
 		return nil
 	})); err != nil {
 		fatalf(err, "unable to add admission runnable")
@@ -125,26 +115,13 @@ func main() {
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		ticker := time.NewTicker(derivedAdmissionInterval)
 		defer ticker.Stop()
-		reconcile := func() {
-			n, err := admission.EnsureDerived(ctx, mgr.GetClient())
-			if errors.Is(err, admission.ErrUnsupported) {
-				return
-			}
-			if err != nil {
-				setupLog.V(1).Info("derived admission reconcile failed", "error", err.Error())
-				return
-			}
-			if n > 0 {
-				setupLog.Info("derived admission policies reconciled", "policies", n)
-			}
-		}
-		reconcile()
+		reconcileDerivedAdmissionOnce(ctx, setupLog, mgr.GetClient())
 		for {
 			select {
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
-				reconcile()
+				reconcileDerivedAdmissionOnce(ctx, setupLog, mgr.GetClient())
 			}
 		}
 	})); err != nil {

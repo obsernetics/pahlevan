@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-func TestGenerate(t *testing.T) {
+func TestGenerateWithOverrides(t *testing.T) {
 	// read(0), write(1), openat(257) - plus an unknown number.
-	prof, skipped := Generate([]uint64{0, 1, 257, 999999})
+	prof, skipped := GenerateWithOverrides([]uint64{0, 1, 257, 999999}, nil, nil)
 	if skipped != 1 {
 		t.Errorf("expected 1 skipped unknown syscall, got %d", skipped)
 	}
@@ -81,7 +81,7 @@ func TestGenerateUsesArchTable(t *testing.T) {
 	if !found {
 		t.Skip("no execve in this arch table")
 	}
-	prof, skipped := Generate([]uint64{execveNr})
+	prof, skipped := GenerateWithOverrides([]uint64{execveNr}, nil, nil)
 	if skipped != 0 {
 		t.Errorf("execve should resolve on this arch, got %d skipped", skipped)
 	}

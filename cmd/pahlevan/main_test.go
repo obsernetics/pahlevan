@@ -61,7 +61,7 @@ func TestNewRootCommand_Subcommands(t *testing.T) {
 	want := map[string]bool{
 		"policy": false, "attack-surface": false, "status": false,
 		"logs": false, "metrics": false, "debug": false,
-		"completion": false, "version": false,
+		"completion": false, "version": false, "coverage": false,
 	}
 	for _, sub := range cmd.Commands() {
 		want[sub.Name()] = true
