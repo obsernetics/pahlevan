@@ -386,11 +386,18 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 # used to filter on TestVMLoad and nothing else ever widened it.
 VM_RUN ?= TestVM
 
+# Where the harness keeps its large artifacts. This has to agree with
+# hack/vm/env.sh, which is the only other place that decides it: hardcoding
+# .vmcache here worked for as long as nobody set the variable, and broke the
+# first time CI put the cache on the runner's scratch disk.
+VM_CACHE ?= $(if $(PAHLEVAN_VM_CACHE),$(PAHLEVAN_VM_CACHE),.vmcache)
+
 .PHONY: vm-test
 vm-test: ## Run the eBPF tests inside the VM (hack/vm must be up). VM_RUN=<regex> to narrow.
 	@./hack/vm/up.sh
-	@git archive HEAD -o .vmcache/src.tar
-	@./hack/vm/cp.sh .vmcache/src.tar /home/pahlevan/src.tar
+	@mkdir -p "$(VM_CACHE)"
+	@git archive HEAD -o "$(VM_CACHE)/src.tar"
+	@./hack/vm/cp.sh "$(VM_CACHE)/src.tar" /home/pahlevan/src.tar
 	@./hack/vm/run.sh 'rm -rf ~/pahlevan && mkdir -p ~/pahlevan && tar -xf ~/src.tar -C ~/pahlevan && cd ~/pahlevan && sudo env PATH=$$PATH GOFLAGS=-mod=mod PAHLEVAN_EBPF_VM_TEST=1 go test ./pkg/ebpf/ -run $(VM_RUN) -timeout 20m -v'
 
 .PHONY: vm-test-load

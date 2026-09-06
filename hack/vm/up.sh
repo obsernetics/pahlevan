@@ -134,6 +134,16 @@ EOF
   # ----------------------------------------------------------------------
   # 5. Boot the VM headless under KVM.
   # ----------------------------------------------------------------------
+  if ! vm_kvm_ready; then
+    err "/dev/kvm is not usable by this user, and these tests need a real"
+    err "kernel rather than an emulated one: the whole point is that the BPF"
+    err "verifier accepts the programs."
+    err "  ls -l /dev/kvm => $(ls -l /dev/kvm 2>&1 || true)"
+    err "On a CI runner, grant access with a udev rule:"
+    err "  echo 'KERNEL==\"kvm\", GROUP=\"kvm\", MODE=\"0666\", OPTIONS+=\"static_node=kvm\"' | sudo tee /etc/udev/rules.d/99-kvm.rules"
+    err "  sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm"
+    exit 1
+  fi
   log "Booting VM (headless, KVM, ${VM_CPUS} vCPU / ${VM_MEM}MB, SSH -> ${SSH_HOST}:${SSH_PORT})..."
   rm -f "${VM_LOGFILE}"
   qemu-system-x86_64 \

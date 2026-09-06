@@ -62,13 +62,29 @@ jobs:
 
     - name: Check formatting
       run: |
-        unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v zz_generated))
+        # Piped into xargs rather than substituted into gofmt's arguments: the
+        # unquoted substitution split on whitespace, so a path containing a
+        # space would have been checked as two files that do not exist.
+        unformatted=$(git ls-files '*.go' | grep -v zz_generated | xargs -r gofmt -l)
         if [ -n "$unformatted" ]; then
           echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
         fi
 
     - name: Coverage summary
       run: go tool cover -func=coverage.out | tail -1
+
+    # A workflow with a malformed expression does not fail loudly: GitHub
+    # reports the run under the file's path instead of its name, ends it in
+    # zero seconds, and every job it was supposed to gate simply never appears.
+    # That is indistinguishable from a workflow that passed, which is how a
+    # broken `${{ ... }}` reached main once already.
+    - name: Lint the workflows
+      # Installed at a pinned version through the Go toolchain this job
+      # already has, rather than by piping an unpinned installer script from
+      # the network into a shell.
+      run: |
+        go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        "$(go env GOPATH)/bin/actionlint" -color
 
     # arm64 is a supported target claim, so prove it still compiles.
     - name: Cross-compile arm64
