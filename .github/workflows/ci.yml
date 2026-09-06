@@ -62,7 +62,10 @@ jobs:
 
     - name: Check formatting
       run: |
-        unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v zz_generated))
+        # Piped into xargs rather than substituted into gofmt's arguments: the
+        # unquoted substitution split on whitespace, so a path containing a
+        # space would have been checked as two files that do not exist.
+        unformatted=$(git ls-files '*.go' | grep -v zz_generated | xargs -r gofmt -l)
         if [ -n "$unformatted" ]; then
           echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
         fi

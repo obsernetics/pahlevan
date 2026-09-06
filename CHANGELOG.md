@@ -67,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counted on `pahlevan_ebpf_read_errors_total`, logged once, and backed off
   100ms. The loop still exits promptly on stop.
 
+
 - **The demo GIF claimed seven ATT&CK techniques Pahlevan does not list**, and
   attributed two more to the wrong hook. The coverage table in the recording is
   typed by hand, because it is a recording, and nothing connected it to
@@ -75,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recording now prints what `pahlevan coverage` prints, row for row, and a test
   fails if it ever shows a technique the table does not have, attributes one to
   the wrong hook, or drops a detector.
+
+- The CI formatting check split its file list on whitespace, so a path
+  containing a space would have been checked as two files that do not exist.
+  Found by the workflow linter this release adds.
 
 - **A data race in the container tracker.** `Start` runs discovery from two
   goroutines - the pod watch and the periodic refresh - and both reach
