@@ -317,7 +317,17 @@ func (ct *ContainerTracker) discoverExistingContainers(ctx context.Context) erro
 		ct.processPodContainers(&podList.Items[i])
 	}
 
-	ct.logger.Info("Container discovery completed", "containers", len(ct.containers))
+	// Read the count under the lock. Start() runs discovery from two
+	// goroutines - the pod watch and the periodic refresh - and both reach
+	// updateContainer, which takes the write lock. This log line was the one
+	// access to the map that did not, so a refresh landing while the watch was
+	// mid-discovery was a genuine data race on a line whose only job is to
+	// print a number.
+	ct.mu.RLock()
+	tracked := len(ct.containers)
+	ct.mu.RUnlock()
+
+	ct.logger.Info("Container discovery completed", "containers", tracked)
 	return nil
 }
 
