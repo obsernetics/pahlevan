@@ -40,9 +40,10 @@ const (
 	kindCapability = "capability"
 	kindCred       = "cred"
 	kindShell      = "shell"
+	kindKprobe     = "kernelprobe"
 )
 
-var eventKinds = []string{kindSyscall, kindNetwork, kindFile, kindExec, kindCapability, kindCred, kindShell}
+var eventKinds = []string{kindSyscall, kindNetwork, kindFile, kindExec, kindCapability, kindCred, kindShell, kindKprobe}
 
 var (
 	ebpfEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -138,6 +139,7 @@ func newDataPlaneCounters(kind string) dataPlaneCounters {
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" CapabilityMonitor ../../bpf/capability_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" CredMonitor ../../bpf/cred_monitor.c
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" ShellMonitor ../../bpf/shell_monitor.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target amd64,arm64 -cflags "-O2 -g -Wall" GenericKprobe ../../bpf/generic_kprobe.c
 
 type Manager struct {
 	mu                sync.RWMutex
@@ -151,6 +153,7 @@ type Manager struct {
 	capCollection     *ebpf.Collection
 	credCollection    *ebpf.Collection
 	shellCollection   *ebpf.Collection
+	kprobeCollection  *ebpf.Collection
 	syscallLinks      []link.Link
 	networkLinks      []link.Link
 	fileLinks         []link.Link
@@ -168,9 +171,16 @@ type Manager struct {
 	capEventReader     *ringbuf.Reader
 	credEventReader    *ringbuf.Reader
 	shellEventReader   *ringbuf.Reader
-	eventHandlers      []EventHandler
-	running            bool
-	stopCh             chan struct{}
+	kprobeEventReader  *ringbuf.Reader
+	// kprobes holds the user-defined probes, keyed by the attach cookie the
+	// kernel program reads to find its configuration. nextProbeID only ever
+	// increases: reusing an id would let a detached probe's last in-flight
+	// event be attributed to whatever took its place.
+	kprobes       map[uint64]*probeState
+	nextProbeID   uint64
+	eventHandlers []EventHandler
+	running       bool
+	stopCh        chan struct{}
 	// counters holds the per-kind data-plane counters, resolved once at
 	// construction so the ring-buffer hot path never does a label lookup.
 	counters           map[string]dataPlaneCounters
@@ -664,6 +674,20 @@ func (m *Manager) LoadPrograms() error {
 		log.Log.V(0).Info("shell monitor spec unavailable", "error", serr.Error())
 	}
 
+	// The generic kprobe is loaded but attached to nothing: a probe exists
+	// only once a policy names a symbol. Loading up front means the first
+	// attach is a link creation rather than a program load.
+	if kpSpecs, kerr := LoadGenericKprobe(); kerr == nil {
+		applyMapSizing(kpSpecs, map[string]uint32{"kp_events": m.mapSizing.RingBufBytes})
+		if kpColl, cerr := ebpf.NewCollection(kpSpecs); cerr == nil {
+			m.kprobeCollection = kpColl
+		} else {
+			log.Log.V(0).Info("generic kprobe unavailable; user-defined kernel probes disabled", "error", cerr.Error())
+		}
+	} else {
+		log.Log.V(0).Info("generic kprobe spec unavailable", "error", kerr.Error())
+	}
+
 	if execSpecs, eerr := LoadExecMonitor(); eerr == nil {
 		applyMapSizing(execSpecs, map[string]uint32{
 			"exec_allowed": m.mapSizing.ExecAllowed,
@@ -899,6 +923,19 @@ func (m *Manager) setupEventReaders() error {
 		}
 	}
 
+	// Kernel-probe events (best-effort; the reader exists before any probe is
+	// attached so no match is missed between the attach and the first read).
+	if m.kprobeCollection != nil {
+		if kpEventsMap := m.kprobeCollection.Maps["kp_events"]; kpEventsMap != nil {
+			reader, err := ringbuf.NewReader(kpEventsMap)
+			if err != nil {
+				log.Log.V(0).Info("kernel probe event reader unavailable", "error", err.Error())
+			} else {
+				m.kprobeEventReader = reader
+			}
+		}
+	}
+
 	// Exec events (best-effort; nil in degraded mode).
 	if m.execCollection != nil {
 		if execEventsMap := m.execCollection.Maps["exec_events"]; execEventsMap != nil {
@@ -936,6 +973,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	go m.processCapabilityEvents(ctx)
 	go m.processCredEvents(ctx)
 	go m.processShellEvents(ctx)
+	go m.processKernelProbeEvents(ctx)
 
 	return nil
 }
@@ -958,6 +996,7 @@ func (m *Manager) Stop() {
 	for _, r := range []*ringbuf.Reader{
 		m.eventReader, m.networkEventReader, m.fileEventReader,
 		m.execEventReader, m.capEventReader, m.credEventReader, m.shellEventReader,
+		m.kprobeEventReader,
 	} {
 		if r != nil {
 			_ = r.Close()
@@ -977,11 +1016,16 @@ func (m *Manager) Stop() {
 		_ = l.Close()
 		delete(m.shellLinks, path)
 	}
+	for id, st := range m.kprobes {
+		_ = st.link.Close()
+		delete(m.kprobes, id)
+	}
 
 	// Close every collection.
 	for _, c := range []*ebpf.Collection{
 		m.syscallCollection, m.networkCollection, m.fileCollection,
 		m.execCollection, m.capCollection, m.credCollection, m.shellCollection,
+		m.kprobeCollection,
 	} {
 		if c != nil {
 			c.Close()
@@ -1146,6 +1190,16 @@ func (m *Manager) processEvents(ctx context.Context, eventType string) {
 				}
 				rawSample = record.RawSample
 				err = e
+			case kindKprobe:
+				if m.kprobeEventReader == nil {
+					return
+				}
+				record, e := m.kprobeEventReader.Read()
+				if e != nil {
+					continue
+				}
+				rawSample = record.RawSample
+				err = e
 			case kindShell:
 				if m.shellEventReader == nil {
 					return
@@ -1289,6 +1343,22 @@ func (m *Manager) handleEventRecord(ctx context.Context, eventType string, rawSa
 			}
 			return nil
 		})
+	case kindKprobe:
+		event := parseKernelProbeEvent(rawSample)
+		if event == nil {
+			m.counters[kindKprobe].decodeErrors.Inc()
+			return
+		}
+		m.counters[kindKprobe].events.Inc()
+		if event.Signalled() {
+			m.counters[kindKprobe].denials.Inc()
+		}
+		m.notifyHandlers(kindKprobe, func(h EventHandler) error {
+			if kh, ok := h.(KernelProbeEventHandler); ok {
+				return kh.HandleKernelProbeEvent(event)
+			}
+			return nil
+		})
 	case kindShell:
 		event := parseShellEvent(rawSample)
 		if event == nil {
@@ -1364,6 +1434,10 @@ func (m *Manager) processCredEvents(ctx context.Context) {
 
 func (m *Manager) processShellEvents(ctx context.Context) {
 	m.processEvents(ctx, kindShell)
+}
+
+func (m *Manager) processKernelProbeEvents(ctx context.Context) {
+	m.processEvents(ctx, kindKprobe)
 }
 
 // Helper functions for converting between Go and eBPF data structures

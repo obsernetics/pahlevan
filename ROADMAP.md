@@ -68,6 +68,17 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
 - Right-sized BPF maps through `MapSizing`, so the agent's resident memory is a
   deployment choice rather than a compiled-in constant.
 
+### Kernel probes
+- A generic kprobe an operator points at any kernel function by name, with no
+  rebuild. One pre-compiled program serves every probe: each attachment carries
+  an attach cookie holding the probe id, so forty probes are forty links over
+  one program rather than forty copies of it. Up to five arguments are captured
+  and up to four selectors are ANDed against them, or against the calling uid,
+  gid or pid. Actions are report, audit, kill and signal - a kprobe fires
+  alongside the function rather than in place of it, so it cannot refuse the
+  call, and a policy asking it to is refused at load rather than quietly
+  downgraded.
+
 ### Export and integration
 - Formatted delivery to where people look: a Slack incoming webhook, PagerDuty
   Events API v2, and a Go template for everything else. Denials only by default,
@@ -104,6 +115,12 @@ The honest list of what Pahlevan still cannot do. Each is written in Pahlevan's
 own terms rather than as a comparison, and each is a real gap rather than a
 polish item.
 
+- **Planned: Kubernetes audit-log ingestion.** Pahlevan sees what happens on a
+  node and nothing of what happens at the API server, so a `kubectl exec`, a
+  role binding granted, or a secret read through the API is invisible to it.
+  Ingesting the Kubernetes audit stream and correlating it with the node events
+  a policy already produces would close the gap between "somebody did this to
+  the cluster" and "this happened inside the container".
 - **Planned: DNS and L7 parsing.** Destinations inside the cluster are named
   from Services, pods and nodes, which costs no DNS query. Destinations
   *outside* the cluster, which are the ones that matter in an exfiltration,

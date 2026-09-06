@@ -2710,3 +2710,219 @@ func TestVMDenyWithACustomErrno(t *testing.T) {
 	}
 	t.Logf("a denied open with Errno=ENOENT reported: %s", strings.TrimSpace(out))
 }
+
+// TestVMGenericKprobeAttachesToANamedFunction is the whole point of the generic
+// probe: one pre-compiled program, pointed at a kernel function chosen at
+// runtime, with no rebuild.
+//
+// It also proves the attach cookie works. Two probes on two different functions
+// share one program, and each must report its own id - without the cookie the
+// program cannot tell which of its attachments is running, and every probe
+// would need its own copy loaded.
+func TestVMGenericKprobeAttachesToANamedFunction(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadGenericKprobe()
+	if err != nil {
+		t.Fatalf("LoadGenericKprobe: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	prog := coll.Programs["generic_kprobe"]
+	if prog == nil {
+		t.Fatal("the generic_kprobe program is absent from the loaded object")
+	}
+
+	var on uint32 = 1
+	var zero uint32
+	if err := coll.Maps["kp_runtime"].Put(&zero, &on); err != nil {
+		t.Fatalf("enabling the program: %v", err)
+	}
+
+	// Two probes, two functions, one program. Both report every call.
+	probes := []struct {
+		id     uint64
+		symbol string
+	}{
+		{101, "vfs_read"},
+		{102, "vfs_write"},
+	}
+	for _, p := range probes {
+		cfg := KernelProbe{
+			Symbol: p.symbol,
+			Action: EnforcementSpec{Action: ActionAudit},
+		}.marshal()
+		id := p.id
+		if err := coll.Maps["kp_config"].Put(&id, cfg); err != nil {
+			t.Fatalf("configuring probe %d: %v", p.id, err)
+		}
+		l, err := link.Kprobe(p.symbol, prog, &link.KprobeOptions{Cookie: p.id})
+		if err != nil {
+			t.Fatalf("attaching to %s: %v", p.symbol, err)
+		}
+		defer l.Close()
+		t.Logf("attached one pre-compiled program to %s with cookie %d", p.symbol, p.id)
+	}
+
+	rd, err := ringbuf.NewReader(coll.Maps["kp_events"])
+	if err != nil {
+		t.Fatalf("ringbuf.NewReader: %v", err)
+	}
+	defer rd.Close()
+
+	// Generate both kinds of traffic from this process.
+	path := filepath.Join(t.TempDir(), "probe.txt")
+	go func() {
+		for i := 0; i < 200; i++ {
+			_ = os.WriteFile(path, []byte("x"), 0o600)
+			_, _ = os.ReadFile(path)
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	self := uint32(os.Getpid())
+	seen := map[uint64]bool{}
+	rd.SetDeadline(time.Now().Add(25 * time.Second))
+	for len(seen) < 2 {
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseKernelProbeEvent(rec.RawSample)
+		if ev == nil {
+			t.Fatalf("failed to parse a %d-byte probe event", len(rec.RawSample))
+		}
+		if ev.PID != self {
+			continue
+		}
+		if ev.ProbeID != 101 && ev.ProbeID != 102 {
+			t.Fatalf("event carries probe id %d, which was never attached - the attach "+
+				"cookie is not reaching the program", ev.ProbeID)
+		}
+		if !ev.WouldAct() {
+			t.Errorf("an Audit probe did not mark the event as audit-only: flags=%#x", ev.Flags)
+		}
+		seen[ev.ProbeID] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("saw events from probe ids %v, want both 101 and 102; "+
+			"one program serving two attachments is what the cookie exists for", seen)
+	}
+	t.Log("both probes reported under their own id from a single loaded program")
+}
+
+// A selector is what turns "watch this function" into a policy. If selectors
+// were ignored, a probe meant to fire on one condition would fire on every
+// call - and the action on the other side may be a signal.
+func TestVMGenericKprobeSelectorsFilter(t *testing.T) {
+	if os.Getenv("PAHLEVAN_EBPF_VM_TEST") != "1" {
+		t.Skip("set PAHLEVAN_EBPF_VM_TEST=1 to run (VM only)")
+	}
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatalf("RemoveMemlock: %v", err)
+	}
+	spec, err := LoadGenericKprobe()
+	if err != nil {
+		t.Fatalf("LoadGenericKprobe: %v", err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatalf("NewCollection: %v", err)
+	}
+	defer coll.Close()
+
+	var on uint32 = 1
+	var zero uint32
+	if err := coll.Maps["kp_runtime"].Put(&zero, &on); err != nil {
+		t.Fatalf("enabling: %v", err)
+	}
+
+	// A uid that is not ours: nothing this process does can match.
+	const impossibleUID = 31337
+	cfg := KernelProbe{
+		Symbol: "vfs_read",
+		Action: EnforcementSpec{Action: ActionAudit},
+		Selectors: []ProbeSelector{
+			{Source: SourceUID, Op: OpEqual, Value: impossibleUID},
+		},
+	}.marshal()
+	var id uint64 = 201
+	if err := coll.Maps["kp_config"].Put(&id, cfg); err != nil {
+		t.Fatalf("configuring: %v", err)
+	}
+	l, err := link.Kprobe("vfs_read", coll.Programs["generic_kprobe"], &link.KprobeOptions{Cookie: id})
+	if err != nil {
+		t.Fatalf("attaching: %v", err)
+	}
+	defer l.Close()
+
+	rd, err := ringbuf.NewReader(coll.Maps["kp_events"])
+	if err != nil {
+		t.Fatalf("ringbuf.NewReader: %v", err)
+	}
+	defer rd.Close()
+
+	path := filepath.Join(t.TempDir(), "sel.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("writing the probe file: %v", err)
+	}
+	for i := 0; i < 100; i++ {
+		_, _ = os.ReadFile(path)
+	}
+
+	// Nothing from this process should match a uid it does not have.
+	self := uint32(os.Getpid())
+	rd.SetDeadline(time.Now().Add(2 * time.Second))
+	for {
+		rec, err := rd.Read()
+		if err != nil {
+			break
+		}
+		ev := parseKernelProbeEvent(rec.RawSample)
+		if ev != nil && ev.PID == self && ev.ProbeID == id {
+			t.Fatalf("a uid==%d selector matched a process running as uid %d; "+
+				"selectors are not being evaluated", impossibleUID, os.Getuid())
+		}
+	}
+
+	// The same probe with our real uid must match, so the negative result above
+	// is the selector working rather than the probe never firing at all.
+	cfg = KernelProbe{
+		Symbol: "vfs_read",
+		Action: EnforcementSpec{Action: ActionAudit},
+		Selectors: []ProbeSelector{
+			{Source: SourceUID, Op: OpEqual, Value: uint64(os.Getuid())},
+		},
+	}.marshal()
+	if err := coll.Maps["kp_config"].Put(&id, cfg); err != nil {
+		t.Fatalf("reconfiguring: %v", err)
+	}
+	go func() {
+		for i := 0; i < 300; i++ {
+			_, _ = os.ReadFile(path)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	rd.SetDeadline(time.Now().Add(20 * time.Second))
+	for {
+		rec, err := rd.Read()
+		if err != nil {
+			t.Fatal("a uid selector matching our own uid never fired; the probe is not " +
+				"working at all, so the negative case above proves nothing")
+		}
+		ev := parseKernelProbeEvent(rec.RawSample)
+		if ev != nil && ev.PID == self && ev.ProbeID == id {
+			t.Logf("selector uid==%d matched, args[0]=%#x", os.Getuid(), ev.Args[0])
+			return
+		}
+	}
+}
