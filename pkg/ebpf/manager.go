@@ -1,11 +1,12 @@
 package ebpf
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +91,14 @@ var (
 	// Kept out of the denial series deliberately. An Audit rollout produces one
 	// of these for every operation outside the baseline, and folding them into
 	// denials would make a planned dry run fire the same alerts as an outage.
+	// A read that fails is a reader that is not delivering events. Nothing
+	// reported this before: a persistent failure looked exactly like a quiet
+	// node, which is the same blindness pahlevan_ebpf_decode_errors_total
+	// exists to remove for the decode half.
+	ebpfReadErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pahlevan_ebpf_read_errors_total",
+		Help: "Ring buffer reads that failed, by event kind",
+	}, []string{"kind"})
 	ebpfWouldDenyTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pahlevan_ebpf_would_deny_total",
 		Help: "Operations the Audit action reported and allowed, by event kind",
@@ -102,6 +111,7 @@ func init() {
 		ebpfBreakoutsTotal,
 		ebpfEscalationsTotal,
 		ebpfWouldDenyTotal,
+		ebpfReadErrorsTotal,
 	)
 	// Pre-create every child so a kind that has not fired yet reports 0 rather
 	// than being absent. An absent series and a genuinely idle one look the same
@@ -118,7 +128,7 @@ func init() {
 // dataPlaneCounters holds the per-kind children resolved once, so the hot path
 // does not pay for a label lookup on every event.
 type dataPlaneCounters struct {
-	events, denials, decodeErrors, handlerErrors prometheus.Counter
+	events, denials, decodeErrors, handlerErrors, readErrors prometheus.Counter
 }
 
 func newDataPlaneCounters(kind string) dataPlaneCounters {
@@ -126,6 +136,7 @@ func newDataPlaneCounters(kind string) dataPlaneCounters {
 		events:        ebpfEventsTotal.WithLabelValues(kind),
 		denials:       ebpfDenialsTotal.WithLabelValues(kind),
 		decodeErrors:  ebpfDecodeErrorsTotal.WithLabelValues(kind),
+		readErrors:    ebpfReadErrorsTotal.WithLabelValues(kind),
 		handlerErrors: ebpfHandlerErrorsTotal.WithLabelValues(kind),
 	}
 }
@@ -1128,7 +1139,51 @@ type EventRecord struct {
 }
 
 // processEvents handles event processing for different event types
+// readerFor returns the ring-buffer reader for one event kind, or nil when
+// that program is not loaded.
+//
+// The eight readers used to be eight near-identical inline cases inside the
+// loop below, which is how the same "continue on error" bug came to be written
+// eight times.
+func (m *Manager) readerFor(kind string) *ringbuf.Reader {
+	switch kind {
+	case kindSyscall:
+		return m.eventReader
+	case kindNetwork:
+		return m.networkEventReader
+	case kindFile:
+		return m.fileEventReader
+	case kindExec:
+		return m.execEventReader
+	case kindCapability:
+		return m.capEventReader
+	case kindCred:
+		return m.credEventReader
+	case kindShell:
+		return m.shellEventReader
+	case kindKprobe:
+		return m.kprobeEventReader
+	}
+	return nil
+}
+
+// readErrorBackoff is how long a reader waits after an error it does not
+// understand.
+//
+// Short enough that a transient fault costs almost nothing, long enough that a
+// permanent one costs a log line rather than a pinned CPU core.
+const readErrorBackoff = 100 * time.Millisecond
+
 func (m *Manager) processEvents(ctx context.Context, eventType string) {
+	reader := m.readerFor(eventType)
+	if reader == nil {
+		return
+	}
+
+	// Consecutive failures, so a persistent fault is reported once rather than
+	// ten times a second.
+	var consecutive int
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1136,100 +1191,52 @@ func (m *Manager) processEvents(ctx context.Context, eventType string) {
 		case <-m.stopCh:
 			return
 		default:
-			var rawSample []byte
-			var err error
+		}
 
-			switch eventType {
-			case "syscall":
-				if m.eventReader == nil {
-					return
-				}
-				record, e := m.eventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			case "network":
-				if m.networkEventReader == nil {
-					return
-				}
-				record, e := m.networkEventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			case "file":
-				if m.fileEventReader == nil {
-					return
-				}
-				record, e := m.fileEventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			case "capability":
-				if m.capEventReader == nil {
-					return
-				}
-				record, e := m.capEventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			case kindCred:
-				if m.credEventReader == nil {
-					return
-				}
-				record, e := m.credEventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			case kindKprobe:
-				if m.kprobeEventReader == nil {
-					return
-				}
-				record, e := m.kprobeEventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			case kindShell:
-				if m.shellEventReader == nil {
-					return
-				}
-				record, e := m.shellEventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			case "exec":
-				if m.execEventReader == nil {
-					return
-				}
-				record, e := m.execEventReader.Read()
-				if e != nil {
-					continue
-				}
-				rawSample = record.RawSample
-				err = e
-			default:
+		record, err := reader.Read()
+		if err != nil {
+			// A closed reader is Stop() doing its job, not a fault.
+			if errors.Is(err, ringbuf.ErrClosed) || errors.Is(err, os.ErrClosed) {
 				return
 			}
-
-			if err != nil {
+			// A deadline is something a caller set deliberately; go round and
+			// re-check the stop channel.
+			if errors.Is(err, os.ErrDeadlineExceeded) {
 				continue
 			}
 
-			m.handleEventRecord(ctx, eventType, rawSample)
+			// Anything else is a fault this loop does not understand. It used
+			// to `continue`, which meant an error that recurs immediately -
+			// a corrupted ring buffer, an unexpected epoll failure - span the
+			// loop at full speed: one CPU core pinned, silently, while the
+			// agent processed nothing. Count it, say so once, and wait before
+			// trying again.
+			consecutive++
+			if c, ok := m.counters[eventType]; ok {
+				c.readErrors.Inc()
+			}
+			if consecutive == 1 {
+				log.Log.V(0).Info("ring buffer read failed; retrying",
+					"kind", eventType, "error", err.Error())
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.stopCh:
+				return
+			case <-time.After(readErrorBackoff):
+			}
+			continue
 		}
+
+		if consecutive > 0 {
+			log.Log.V(0).Info("ring buffer read recovered",
+				"kind", eventType, "failedReads", consecutive)
+			consecutive = 0
+		}
+
+		m.handleEventRecord(ctx, eventType, record.RawSample)
 	}
 }
 
@@ -1599,11 +1606,7 @@ func parseSyscallEvent(data []byte) *SyscallEvent {
 	// eBPF `pid` is the userspace TGID; expose it as both for now.
 	event.TGID = event.PID
 
-	comm := data[40:56]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
-	}
-	event.Comm = string(comm)
+	event.Comm = internComm(data[40:56])
 
 	for i := 0; i < 6; i++ {
 		event.Args[i] = binary.LittleEndian.Uint64(data[argsOff+i*8 : argsOff+(i+1)*8])
@@ -1611,7 +1614,7 @@ func parseSyscallEvent(data []byte) *SyscallEvent {
 
 	// Until pod attribution (pkg/attribution) resolves cgroup->pod, surface the
 	// cgroup id as the container identifier.
-	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
+	event.ContainerID = containerIDFor(event.CgroupID)
 
 	return event
 }
@@ -1669,7 +1672,7 @@ func parseNetworkEvent(data []byte) *NetworkEvent {
 	event.ParentComm = cut(data[netOffPComm : netOffPComm+16])
 	event.Comm = cut(data[netOffComm:netSize])
 	event.TGID = event.PID
-	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
+	event.ContainerID = containerIDFor(event.CgroupID)
 	return event
 }
 
@@ -1744,7 +1747,7 @@ func parseFileEvent(data []byte) *FileEvent {
 	event.PPID = binary.LittleEndian.Uint32(data[fileOffPPID : fileOffPPID+4])
 	event.ParentComm = cut(data[fileOffPComm : fileOffPComm+16])
 	event.Path = cut(data[fileOffPath:fileSize])
-	event.ContainerID = fmt.Sprintf("cgroup:%d", event.CgroupID)
+	event.ContainerID = containerIDFor(event.CgroupID)
 	return event
 }
 
@@ -1890,16 +1893,13 @@ func parseProcessEvent(data []byte) *ProcessEvent {
 		UID:       binary.LittleEndian.Uint32(data[24:28]),
 		Flags:     binary.LittleEndian.Uint32(data[28:32]),
 	}
-	cut := func(b []byte) string {
-		if i := indexZero(b); i >= 0 {
-			b = b[:i]
-		}
-		return string(b)
-	}
-	ev.Comm = cut(data[execOffComm : execOffComm+16])
-	ev.ParentComm = cut(data[execOffParent : execOffParent+16])
-	ev.Filename = cut(data[execOffFilename : execOffFilename+128])
-	ev.Cwd = cut(data[execOffCwd : execOffCwd+128])
+	// All four repeat across events - a container runs a handful of binaries,
+	// under a handful of names, out of a handful of directories - so they come
+	// from the intern tables rather than being rebuilt per event.
+	ev.Comm = internComm(data[execOffComm : execOffComm+16])
+	ev.ParentComm = internComm(data[execOffParent : execOffParent+16])
+	ev.Filename = internPath(data[execOffFilename : execOffFilename+128])
+	ev.Cwd = internPath(data[execOffCwd : execOffCwd+128])
 
 	// argv, NUL separated exactly as /proc/<pid>/cmdline presents it.
 	ev.ArgsTruncated = data[execOffArgsTrunc] != 0
@@ -1907,29 +1907,40 @@ func parseProcessEvent(data []byte) *ProcessEvent {
 		if n > ArgsMax {
 			n = ArgsMax
 		}
-		raw := data[execOffArgs : execOffArgs+n]
-		for _, field := range bytes.Split(raw, []byte{0}) {
-			if len(field) > 0 {
-				ev.Args = append(ev.Args, string(field))
-			}
+		// Sized from the count the kernel already reports, so one allocation
+		// covers argv rather than the slice growing under append. The arguments
+		// themselves are not interned - they are arbitrary attacker-influenced
+		// input, and a cache keyed on them is a cache an attacker fills.
+		count := int(binary.LittleEndian.Uint32(data[execOffArgsCount : execOffArgsCount+4]))
+		if count <= 0 || count > ArgsMax {
+			count = 8
 		}
+		ev.Args = splitArgs(make([]string, 0, count), data[execOffArgs:execOffArgs+n])
 	}
 
 	// The chain is terminated by the first zero pid, so a shallow lineage does
 	// not report phantom ancestors.
+	// Only pay for the chain when there is one. An exit event carries no
+	// ancestry at all, and pre-sizing unconditionally added 96 bytes to every
+	// one of them.
+	var ancestry []Ancestor
 	for i := 0; i < AncestryDepth; i++ {
 		off := execOffAncestry + i*execAncestorSize
 		pid := binary.LittleEndian.Uint32(data[off : off+4])
 		if pid == 0 {
 			break
 		}
-		ev.Ancestry = append(ev.Ancestry, Ancestor{
+		if ancestry == nil {
+			ancestry = make([]Ancestor, 0, AncestryDepth)
+		}
+		ancestry = append(ancestry, Ancestor{
 			PID:  pid,
-			Comm: cut(data[off+4 : off+20]),
+			Comm: internComm(data[off+4 : off+20]),
 		})
 	}
+	ev.Ancestry = ancestry
 
-	ev.ContainerID = fmt.Sprintf("cgroup:%d", ev.CgroupID)
+	ev.ContainerID = containerIDFor(ev.CgroupID)
 	return ev
 }
 
@@ -2036,17 +2047,9 @@ func parseCapabilityEvent(data []byte) *CapabilityEvent {
 		Flags:          binary.LittleEndian.Uint32(data[capOffPID+8 : capOffPID+12]),
 	}
 	ev.PPID = binary.LittleEndian.Uint32(data[capOffPPID : capOffPPID+4])
-	pcomm := data[capOffPComm : capOffPComm+16]
-	if i := indexZero(pcomm); i >= 0 {
-		pcomm = pcomm[:i]
-	}
-	ev.ParentComm = string(pcomm)
-	comm := data[capOffComm : capOffComm+16]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
-	}
-	ev.Comm = string(comm)
-	ev.ContainerID = fmt.Sprintf("cgroup:%d", ev.CgroupID)
+	ev.ParentComm = internComm(data[capOffPComm : capOffPComm+16])
+	ev.Comm = internComm(data[capOffComm : capOffComm+16])
+	ev.ContainerID = containerIDFor(ev.CgroupID)
 	return ev
 }
 

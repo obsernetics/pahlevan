@@ -124,12 +124,8 @@ func parseCredEvent(data []byte) *CredEvent {
 		NewEUID:   u32(52),
 		Flags:     u32(56),
 	}
-	comm := data[commOff : commOff+16]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
-	}
-	e.Comm = string(comm)
-	e.ContainerID = fmt.Sprintf("cgroup:%d", e.CgroupID)
+	e.Comm = internComm(data[commOff : commOff+16])
+	e.ContainerID = containerIDFor(e.CgroupID)
 	return e
 }
 
