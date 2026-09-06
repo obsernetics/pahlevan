@@ -67,7 +67,7 @@
             <p>
                 What changed in each Pahlevan release, and every artifact you can install:
                 a distroless container image on GHCR, a Helm chart, and a single-file
-                Kubernetes manifest. The current release is <strong>v3.2.0</strong>.
+                Kubernetes manifest. The current release is <strong><!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync--></strong>.
             </p>
             <div class="hero-actions">
                 <a href="#changelog" class="btn btn-primary">Read the changelog</a>
@@ -81,7 +81,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Packages</span>
-                <h2>Three ways to install v3.2.0</h2>
+                <h2>Three ways to install <!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync--></h2>
                 <p>
                     One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
                     <code>pahlevan-operator</code> (the leader-elected Deployment), and the
@@ -103,22 +103,22 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     </div>
                     <p class="qs-note">
                         The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
-                        DaemonSet. Swap <code>latest</code> for <code>v3.2.0</code> to pin a release.
+                        DaemonSet. Swap <code>latest</code> for <code><!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync--></code> to pin a release.
                     </p>
                 </div>
                 <div class="qs-col">
                     <h3>Container image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.2.0</code></pre>
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync--></code></pre>
                     </div>
                     <h3>Verifying the image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.2.0
-docker inspect ghcr.io/obsernetics/pahlevan:v3.2.0
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync-->
+docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync-->
 
 # Digest to pin in air-gapped or regulated environments
 docker inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/obsernetics/pahlevan:v3.2.0</code></pre>
+  ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync--></code></pre>
                     </div>
                 </div>
             </div>
@@ -137,7 +137,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <td>Most recent build of the default branch</td>
                         </tr>
                         <tr>
-                            <th scope="row"><code>v3.2.0</code></th>
+                            <th scope="row"><code><!--pahlevan:sync version-->v3.3.0<!--/pahlevan:sync--></code></th>
                             <td>Immutable release tag, recommended for production</td>
                         </tr>
                         <tr>
@@ -177,10 +177,82 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         <h3 class="release-version">Unreleased</h3>
                         <span class="release-pill">In progress</span>
                     </div>
+                    <p class="release-summary">
+                        Nothing yet.
+                    </p>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
+                        <h3 class="release-version">3.3.0</h3>
+                        <span class="release-date">2026-09-07</span>
+                        <span class="release-pill">Current</span>
+                    </div>
+                    <p class="release-summary">
+                        A kprobe an operator points at any kernel function without a rebuild, and
+                        the kernel tests now run in CI instead of by hand.
+                    </p>
+                    <div class="change-group">
+                        <h4 class="added">Added</h4>
+                        <ul>
+                            <li><strong>A generic kprobe, named at runtime.</strong> One pre-compiled program serves
+                                every probe: each attachment carries an attach cookie holding the probe id, so forty
+                                probes are forty links over one program rather than forty copies of it. Up to five
+                                arguments are captured and up to four selectors are ANDed against them, or against the
+                                calling uid, gid or pid. A kprobe fires alongside the function rather than in place of
+                                it, so it cannot refuse the call, and a policy asking it to is refused at load rather
+                                than quietly downgraded.</li>
+                            <li><strong>The kernel tests run in CI.</strong> Nothing in CI loaded an eBPF program,
+                                because the runner has no bpf LSM, and loading is the step that finds the interesting
+                                failures: three verifier rejections in one week compiled, passed vet, passed the unit
+                                suite, and reached a human only because somebody remembered to run the VM tests by hand.
+                                A change under <code>bpf/</code>, <code>pkg/ebpf/</code> or the harness now boots a guest
+                                with <code>lsm=bpf</code> under KVM and runs all thirty-three through a real verifier,
+                                with a nightly run for breaks arriving from outside those paths. A test asserts the
+                                workflow's path filters cover every file a kernel decides about, so the job cannot go on
+                                reporting success by never running.</li>
+                        </ul>
+                    </div>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
                         <ul>
-                            <li>Refreshed benchmark run to cover the <code>lsm/socket_connect</code> egress and <code>lsm/bprm_check_security</code> exec enforcement paths, which landed after the 2026-08-14 measurement.</li>
+                            <li><strong>The event decode path is 1.67x faster and allocates 62% less</strong>, from
+                                3772ns and 68 allocations to 2255ns and 26 across the eleven decoders. Fixed-width
+                                kernel fields were being turned into fresh strings per event, so a workload doing
+                                nothing unusual produced garbage proportional to its syscall rate. Process names and
+                                paths are interned through bounded tables read without copying the bytes; argv is
+                                deliberately not, being attacker-influenced input that an unbounded table would turn
+                                into a memory-growth primitive.</li>
+                            <li><strong>Three ATT&amp;CK techniques the coverage table was missing</strong>, each
+                                evidenced by the entry's own description: <code>T1552.001</code> on
+                                <code>lsm/file_open</code>, <code>T1548.001</code> on <code>kprobe/commit_creds</code>,
+                                and <code>T1070.003</code> on <code>uretprobe/readline</code>, whose entry already named
+                                <code>history -c</code> as something it captures.</li>
+                            <li>CI lints its own workflows. A workflow with a malformed expression does not fail loudly:
+                                it is reported under the file's path rather than its name, ends in zero seconds, and
+                                every job it was meant to gate simply never appears, which looks exactly like a workflow
+                                that passed.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li><strong>A data race in the container tracker.</strong> Discovery runs from two
+                                goroutines and both take the write lock to update the map, but the container count
+                                logged at the end of discovery was read under no lock at all. It surfaced under
+                                <code>-race</code> on a CI runner and would not reproduce in 150 runs on a workstation,
+                                so the regression test calls discovery concurrently on purpose rather than leaving a
+                                scheduler responsible for finding it again.</li>
+                            <li><strong>A failing ring-buffer reader no longer spins.</strong> All eight readers shared
+                                a loop that, on any error other than a closed reader, continued immediately, so a
+                                persistently failing reader burned a core and filled the log as fast as it could produce
+                                errors. The eight copies are one function; a read error is counted, logged once, and
+                                backed off.</li>
+                            <li><strong>The demo recording claimed seven ATT&amp;CK techniques Pahlevan does not
+                                list</strong>, and attributed two more to the wrong hook. Its coverage table is typed by
+                                hand, because it is a recording, and nothing connected it to the real one. It now prints
+                                what <code>pahlevan coverage</code> prints, row for row, and a test fails if it drifts
+                                again.</li>
                         </ul>
                     </div>
                 </article>
@@ -189,7 +261,6 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.2.0</h3>
                         <span class="release-date">2026-09-06</span>
-                        <span class="release-pill">Current</span>
                     </div>
                     <p class="release-summary">
                         Findings now reach the places people actually look, and every direct
