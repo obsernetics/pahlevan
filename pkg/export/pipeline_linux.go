@@ -24,6 +24,27 @@ type Config struct {
 	// DefaultMaxBackups.
 	FileMaxBackups int
 
+	// SlackWebhookURL enables the Slack notifier when non-empty.
+	//
+	// Distinct from WebhookURL: that one POSTs the raw event envelope for a
+	// collector to parse, this one posts a formatted message for a person to
+	// read. Both can be on at once.
+	SlackWebhookURL string
+	// PagerDutyRoutingKey enables the PagerDuty notifier when non-empty.
+	PagerDutyRoutingKey string
+	// PagerDutySeverity is critical, error, warning or info. Empty means error.
+	PagerDutySeverity string
+	// NotifyTemplateURL and NotifyTemplate enable the templated notifier, for
+	// every destination that is not Slack or PagerDuty. Both are required.
+	NotifyTemplateURL string
+	NotifyTemplate    string
+	// NotifyAllEvents delivers observations to the notifiers as well as
+	// denials. Off by default: an observation stream is not an alert stream.
+	NotifyAllEvents bool
+	// NotifyDedupeWindow suppresses a repeat of an identical finding. Zero uses
+	// DefaultDedupeWindow; negative disables deduplication.
+	NotifyDedupeWindow time.Duration
+
 	// WebhookURL enables the webhook sink when non-empty.
 	WebhookURL string
 	// WebhookTimeout bounds a single POST. Zero uses DefaultWebhookTimeout.
@@ -89,7 +110,8 @@ type Config struct {
 // Enabled reports whether any sink is configured.
 func (c Config) Enabled() bool {
 	return c.Stdout || c.FilePath != "" || c.WebhookURL != "" ||
-		c.OTLPEndpoint != "" || len(c.Tee) > 0
+		c.OTLPEndpoint != "" || len(c.Tee) > 0 ||
+		c.SlackWebhookURL != "" || c.PagerDutyRoutingKey != "" || c.NotifyTemplateURL != ""
 }
 
 // Tee is a Sink that fans one event out to several Enqueuers.
@@ -205,6 +227,56 @@ func New(cfg Config) (*Pipeline, error) {
 		sinks = append(sinks, s)
 		built = append(built, s)
 	}
+	// The notifiers are Exporters like everything else, so they ride the same
+	// bounded queue and drop counting rather than tapping the stream
+	// separately. They filter to denials themselves - the pipeline's own
+	// DenialsOnly governs what reaches every sink, and a deployment exporting
+	// all events to a file still wants only denials in its chat channel.
+	notifyOpts := NotifyOptions{
+		Timeout:      cfg.WebhookTimeout,
+		Source:       cfg.Source,
+		AllEvents:    cfg.NotifyAllEvents,
+		DedupeWindow: cfg.NotifyDedupeWindow,
+	}
+	if cfg.SlackWebhookURL != "" {
+		o := notifyOpts
+		o.URL = cfg.SlackWebhookURL
+		s, err := NewSlackNotifier(o)
+		if err != nil {
+			closeBuilt()
+			return nil, err
+		}
+		sinks = append(sinks, s)
+		built = append(built, s)
+	}
+	if cfg.PagerDutyRoutingKey != "" {
+		s, err := NewPagerDutyNotifier(PagerDutyOptions{
+			NotifyOptions: notifyOpts,
+			RoutingKey:    cfg.PagerDutyRoutingKey,
+			Severity:      cfg.PagerDutySeverity,
+		})
+		if err != nil {
+			closeBuilt()
+			return nil, err
+		}
+		sinks = append(sinks, s)
+		built = append(built, s)
+	}
+	if cfg.NotifyTemplateURL != "" {
+		o := notifyOpts
+		o.URL = cfg.NotifyTemplateURL
+		s, err := NewTemplateNotifier(TemplateOptions{
+			NotifyOptions: o,
+			Template:      cfg.NotifyTemplate,
+		})
+		if err != nil {
+			closeBuilt()
+			return nil, err
+		}
+		sinks = append(sinks, s)
+		built = append(built, s)
+	}
+
 	exporter := Exporter(NewMulti(sinks...))
 	queue := NewQueue(exporter, QueueOptions{
 		Capacity:      cfg.QueueCapacity,

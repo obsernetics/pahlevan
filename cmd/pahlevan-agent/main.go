@@ -94,6 +94,13 @@ func main() {
 		podName              string
 		traceShells          bool
 		grpcInsecure         bool
+		slackWebhook         string
+		pagerDutyKey         string
+		pagerDutySeverity    string
+		notifyTemplateURL    string
+		notifyTemplate       string
+		notifyAllEvents      bool
+		notifyDedupe         time.Duration
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -147,6 +154,24 @@ func main() {
 	flag.StringVar(&podNamespace, "pod-namespace", os.Getenv("PAHLEVAN_POD_NAMESPACE"),
 		"This agent pod's namespace, from the downward API. Used as an OpenTelemetry "+
 			"resource attribute so metrics, traces and logs correlate in Grafana.")
+	flag.StringVar(&slackWebhook, "notify-slack-webhook", os.Getenv("PAHLEVAN_SLACK_WEBHOOK"),
+		"Slack incoming-webhook URL. Posts a formatted message per batch of denials, "+
+			"grouped and deduplicated, rather than the raw event envelope --export-webhook sends.")
+	flag.StringVar(&pagerDutyKey, "notify-pagerduty-key", os.Getenv("PAHLEVAN_PAGERDUTY_KEY"),
+		"PagerDuty Events API v2 routing key. Raises one incident per distinct finding, "+
+			"keyed so the same problem re-triggers rather than opening another.")
+	flag.StringVar(&pagerDutySeverity, "notify-pagerduty-severity", "error",
+		"PagerDuty severity: critical, error, warning or info.")
+	flag.StringVar(&notifyTemplateURL, "notify-template-url", "",
+		"Destination for the templated notifier, for anything that is not Slack or PagerDuty.")
+	flag.StringVar(&notifyTemplate, "notify-template", "",
+		"Go text/template rendered into the body POSTed to --notify-template-url. "+
+			"Helpers: summary, workload, subject, json, truncate, upper, lower, join.")
+	flag.BoolVar(&notifyAllEvents, "notify-all-events", false,
+		"Send observations to the notifiers as well as denials. Off by default: a channel "+
+			"receiving one message per file open is a channel that gets muted.")
+	flag.DurationVar(&notifyDedupe, "notify-dedupe-window", export.DefaultDedupeWindow,
+		"Suppress a repeat of an identical finding for this long. Negative disables it.")
 	flag.BoolVar(&traceShells, "trace-shell-commands", false,
 		"Capture commands typed at interactive shell prompts inside governed containers, "+
 			"via a uretprobe on readline. Off by default: recording what a person types is a "+
@@ -310,13 +335,20 @@ func main() {
 			d, _ := netResolver.Lookup(ip, port)
 			return d.String(), string(d.Kind), d.PortName
 		},
-		OTLPInsecure:  otlpInsecure,
-		OTLPResource:  otelResource,
-		QueueCapacity: 8192,
-		BatchSize:     256,
-		FlushInterval: time.Second,
-		DenialsOnly:   exportDenialsOnly,
-		Source:        nodeName,
+		SlackWebhookURL:     slackWebhook,
+		PagerDutyRoutingKey: pagerDutyKey,
+		PagerDutySeverity:   pagerDutySeverity,
+		NotifyTemplateURL:   notifyTemplateURL,
+		NotifyTemplate:      notifyTemplate,
+		NotifyAllEvents:     notifyAllEvents,
+		NotifyDedupeWindow:  notifyDedupe,
+		OTLPInsecure:        otlpInsecure,
+		OTLPResource:        otelResource,
+		QueueCapacity:       8192,
+		BatchSize:           256,
+		FlushInterval:       time.Second,
+		DenialsOnly:         exportDenialsOnly,
+		Source:              nodeName,
 		Attribution: func(id uint64) (export.KubernetesRef, bool) {
 			ref, ok := attrResolver.Lookup(id)
 			if !ok {
@@ -345,6 +377,8 @@ func main() {
 		ebpfManager.AddEventHandler(exportPipeline.Handler)
 		setupLog.Info("event export enabled", "file", exportFile,
 			"webhook", exportWebhook != "", "otlp", otlpEndpoint,
+			"slack", slackWebhook != "", "pagerduty", pagerDutyKey != "",
+			"template", notifyTemplateURL != "",
 			"denialsOnly", exportDenialsOnly)
 	}
 

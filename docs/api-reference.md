@@ -363,6 +363,34 @@ envelope (`pahlevan.io/v1alpha1`):
 | OTLP log records | `--otlp-endpoint` | Reaches Loki through the same collector as the metrics and traces. |
 | gRPC stream | `--grpc-bind-address` | `pahlevan.v1alpha1.EventService`; server-side filtering. Requires TLS, mTLS or a bearer token: a plaintext, unauthenticated listener refuses to start unless `--grpc-insecure` is passed deliberately. |
 
+Those four carry the envelope, which is the right shape for a collector and the
+wrong shape for a person. For getting a denial in front of somebody who can act
+on it there are three more, which send formatted messages rather than JSON:
+
+| Route | Flag | Notes |
+|---|---|---|
+| Slack | `--notify-slack-webhook` | One Block Kit message per batch, with a fallback text so a phone notification says something useful. |
+| PagerDuty | `--notify-pagerduty-key` | Events API v2. One incident per distinct finding, keyed so the same problem re-triggers rather than opening another. `--notify-pagerduty-severity` sets critical/error/warning/info. |
+| Anything else | `--notify-template-url` + `--notify-template` | A Go `text/template` rendered into the POST body: Teams, Discord, Opsgenie, an internal ticket API. Helpers: `summary`, `workload`, `subject`, `json`, `truncate`, `upper`, `lower`, `join`. |
+
+All three send **denials only** by default, because an observation stream is not
+an alert stream and a channel receiving one message per file open gets muted
+within the hour. `--notify-all-events` opts in.
+
+All three **deduplicate by finding** over `--notify-dedupe-window` (five minutes
+by default, negative to disable). A finding is the workload, the kind of
+operation and the subject - deliberately not the pid or the timestamp, which are
+exactly what make two occurrences of one problem look different. It keys on the
+owning workload rather than the pod, so a Deployment rolling out does not
+produce one message per replica for a single misconfiguration.
+
+A template that fails to parse is a startup error naming the mistake, not an
+error logged once per batch while notifications silently never arrive:
+
+```bash
+--notify-template-url=https://example.webhook.office.com/... --notify-template='{"text":{{ .Summary | json }}}'
+```
+
 The envelope is defined in `pkg/export/event.go` and mirrored on the wire by
 `api/v1alpha1/events.proto`; the two are asserted to agree in
 `pkg/grpcapi/convert_test.go`.

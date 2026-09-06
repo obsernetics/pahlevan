@@ -69,6 +69,9 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
   deployment choice rather than a compiled-in constant.
 
 ### Export and integration
+- Formatted delivery to where people look: a Slack incoming webhook, PagerDuty
+  Events API v2, and a Go template for everything else. Denials only by default,
+  deduplicated per finding over a window, and grouped one message per batch.
 - A gRPC streaming event API, which requires TLS, mTLS or a bearer token: it
   refuses to start plaintext and unauthenticated unless told to with
   `--grpc-insecure`.
@@ -101,11 +104,6 @@ The honest list of what Pahlevan still cannot do. Each is written in Pahlevan's
 own terms rather than as a comparison, and each is a real gap rather than a
 polish item.
 
-- **Planned: formatted delivery of findings.** OTLP, a file and an HTTP webhook
-  all exist, and OTLP reaches anything a collector exports to. What is missing
-  is the formatted, per-destination half: a Slack message, a PagerDuty
-  incident, a template you fill in yourself. Getting a denial into a human's
-  chat client is still something you build.
 - **Planned: DNS and L7 parsing.** Destinations inside the cluster are named
   from Services, pods and nodes, which costs no DNS query. Destinations
   *outside* the cluster, which are the ones that matter in an exfiltration,
