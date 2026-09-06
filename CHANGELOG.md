@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A data race in the container tracker.** `Start` runs discovery from two
+  goroutines - the pod watch and the periodic refresh - and both reach
+  `updateContainer`, which takes the write lock, so the map itself was safe.
+  The container count logged at the end of discovery was read under no lock at
+  all, racing with those writes. It surfaced on a CI runner under `-race` and
+  would not reproduce in 150 runs on a workstation, so the regression test
+  calls discovery concurrently on purpose rather than relying on a scheduler to
+  find it again.
+
 ## [3.2.0] - 2026-09-06
 
 ### Added
