@@ -25,7 +25,11 @@ CLOUD_IMG_URL="https://cloud-images.ubuntu.com/${UBUNTU_RELEASE}/current/${CLOUD
 BASE_IMG="${CACHE_DIR}/${CLOUD_IMG_NAME}"
 DISK_IMG="${CACHE_DIR}/disk.qcow2"
 SEED_ISO="${CACHE_DIR}/seed.iso"
-DISK_SIZE="20G"
+# Virtual size, not allocated size: the qcow2 is sparse and grows to whatever
+# the guest actually writes. Overridable because a CI runner has far less free
+# disk than a workstation and qemu-img refuses a size the filesystem cannot
+# hold.
+DISK_SIZE="${PAHLEVAN_VM_DISK:-20G}"
 
 # --- SSH -----------------------------------------------------------------
 # Default 2223 (2222 is a common default and may be taken by another local VM);
@@ -88,6 +92,13 @@ vm_is_running() {
 # Can we SSH in right now?
 vm_ssh_ready() {
   vm_ssh -o ConnectTimeout=3 -o BatchMode=yes true 2>/dev/null
+}
+
+# Is KVM usable by this user? qemu's own failure for a missing or unreadable
+# /dev/kvm is "failed to initialize kvm: Permission denied" buried in a serial
+# log, which is a bad way to learn that a CI runner needs a udev rule.
+vm_kvm_ready() {
+  [[ -c /dev/kvm ]] && [[ -r /dev/kvm ]] && [[ -w /dev/kvm ]]
 }
 
 log() { printf '\033[1;34m[vm]\033[0m %s\n' "$*" >&2; }

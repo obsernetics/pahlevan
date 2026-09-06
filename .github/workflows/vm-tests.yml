@@ -1,0 +1,135 @@
+name: Kernel tests
+
+# The unit suite, -race, gofmt, coverage and an arm64 cross-build all run on
+# every pull request. None of them load a single eBPF program: the host runner
+# has no bpf LSM and loading is the step that finds the interesting failures.
+#
+# Three verifier rejections in one week reached a human only because somebody
+# remembered to run `make vm-test` by hand - "R0 has unknown scalar value
+# should have been in [-4095, 0]", from BPF_NEG losing bounds, from the
+# compiler deleting a clamp it could prove dead, and from an int zero-extending
+# where a long was needed. Every one of those compiles, passes vet, passes the
+# unit suite, and fails the instant a kernel tries to load it.
+#
+# So this boots a real kernel with lsm=bpf and runs the programs through it.
+# It is slower than the other jobs and does not gate every pull request, only
+# the ones that touch the code a kernel would reject.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'bpf/**'
+      - 'pkg/ebpf/**'
+      - 'hack/vm/**'
+      - '.github/workflows/vm-tests.yml'
+      - 'Makefile'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'bpf/**'
+      - 'pkg/ebpf/**'
+      - 'hack/vm/**'
+      - '.github/workflows/vm-tests.yml'
+      - 'Makefile'
+  # Nightly, so a kernel update on the cloud image that breaks a program is
+  # found by the schedule rather than by the next unrelated pull request.
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      run:
+        description: 'Test regex passed to go test -run'
+        required: false
+        default: 'TestVM'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    name: Load and enforce on a real kernel
+    # Pinned rather than ubuntu-latest: the harness boots a noble cloud image
+    # and the host qemu has to be new enough to run it. A silent runner-image
+    # bump is not a thing to debug through a serial log.
+    runs-on: ubuntu-24.04
+    # The scheduled run would otherwise fire on every fork that has Actions on,
+    # fail for reasons the fork cannot fix, and mail its owner nightly.
+    if: github.event_name != 'schedule' || github.repository == 'obsernetics/pahlevan'
+    timeout-minutes: 60
+    env:
+      # /mnt is the runner's large scratch disk. The default cache location is
+      # in the repo, which lives on the root filesystem with far less room than
+      # a provisioned guest needs.
+      PAHLEVAN_VM_CACHE: /mnt/vmcache
+      # 20G of *virtual* disk is fine on a workstation; on a runner qemu-img
+      # would be sizing against a filesystem that cannot back it.
+      PAHLEVAN_VM_DISK: 12G
+      PAHLEVAN_VM_MEM: 6144
+      PAHLEVAN_VM_CPUS: 4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # vm-test ships the tree to the guest with `git archive HEAD`, which
+          # needs real history rather than a tarball export.
+          fetch-depth: 1
+
+      - name: Install QEMU and cloud-init tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils cloud-image-utils
+
+      # The runner user is not in the kvm group, so /dev/kvm exists and is
+      # unreadable. Without this every boot falls back to emulation, which for
+      # a kernel boot plus 33 tests is the difference between minutes and
+      # never finishing.
+      - name: Grant access to /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Prepare the cache directory
+        run: |
+          sudo mkdir -p "$PAHLEVAN_VM_CACHE"
+          sudo chown "$(id -u):$(id -g)" "$PAHLEVAN_VM_CACHE"
+          df -h /mnt /
+
+      # Only the base cloud image, which is 600MB and identical between runs.
+      # The provisioned disk is not cached: it is several gigabytes, it embeds
+      # a guest SSH key, and rebuilding it is what proves the harness still
+      # works from nothing.
+      - name: Cache the Ubuntu cloud image
+        uses: actions/cache@v4
+        with:
+          path: /mnt/vmcache/noble-server-cloudimg-amd64.img
+          # Monthly, because the "current" image the harness downloads moves
+          # and a cache pinned forever would test an ever older guest.
+          key: vm-base-noble-${{ github.workflow }}-2026-09
+
+      - name: Boot the VM and confirm the bpf LSM is active
+        run: |
+          ./hack/vm/up.sh
+          ./hack/vm/run.sh 'uname -r; cat /proc/cmdline; cat /sys/kernel/security/lsm'
+
+      - name: Run the kernel tests
+        run: make vm-test VM_RUN='${{ github.event.inputs.run || ''TestVM'' }}'
+
+      # The serial log is the only record of a guest that failed to boot or
+      # panicked, and it is gone with the runner.
+      - name: Serial log
+        if: failure()
+        run: tail -n 200 "$PAHLEVAN_VM_CACHE/vm-serial.log" || true
+
+      - name: Shut the VM down
+        if: always()
+        run: ./hack/vm/down.sh || true

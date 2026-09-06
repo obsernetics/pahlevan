@@ -107,6 +107,12 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
 - Unit tests, `-race`, gofmt, coverage, an arm64 cross-build, CodeQL, Trivy and
   govulncheck all run in CI on every pull request, and a multi-arch image is
   built and pushed to GHCR.
+- The kernel tests run in CI. A pull request touching `bpf/`, `pkg/ebpf/` or
+  the VM harness boots a guest with `lsm=bpf` under KVM and loads all seven
+  programs through a real verifier, and a nightly run catches a break arriving
+  from outside those paths. A test asserts the workflow's path filters cover
+  every file a kernel decides about, so the job cannot go on reporting success
+  by never running.
 - A commit-msg hook that rejects assistant attribution trailers.
 
 ## Near term
@@ -144,10 +150,6 @@ polish item.
   trust on first use. A workload already compromised when learning starts has
   its malicious behaviour baselined. Deny lists and exceptions let an operator
   correct the edges, but nothing requires anyone to look first.
-- **Planned: automate the VM eBPF tests.** The unit suite, `-race`, gofmt,
-  coverage and an arm64 cross-build all run in CI. The kernel tests need a VM
-  with `lsm=bpf` and are still run by hand, which means a verifier rejection
-  reaches CI only if somebody remembers.
 - **Planned: load the arm64 objects on an arm64 kernel.** Both objects are
   built, and a test asserts they expose the same programs and maps. What none
   of that proves is that an arm64 verifier accepts them: the VM harness is

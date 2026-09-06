@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A generic kprobe an operator points at any kernel function by name**, with
+  no rebuild. One pre-compiled program serves every probe: each attachment
+  carries a `bpf_get_attach_cookie` holding the probe id, so forty probes are
+  forty links over one program rather than forty copies of it. Up to five
+  arguments are captured and up to four selectors are ANDed against them, or
+  against the calling uid, gid or pid. Actions are report, audit, kill and
+  signal - a kprobe fires alongside the function rather than in place of it, so
+  it cannot refuse the call, and a policy asking it to is refused at load
+  rather than quietly downgraded.
+- **The kernel tests run in CI.** They needed a VM with `lsm=bpf` and were run
+  by hand, which meant a verifier rejection reached a human only if somebody
+  remembered. Three did, in one week, and every one of them compiles, passes
+  vet and passes the unit suite. A pull request touching `bpf/`, `pkg/ebpf/` or
+  the VM harness now boots a guest under KVM and loads all seven programs
+  through a real verifier, and a nightly run catches a break that arrives from
+  outside those paths. A test asserts the workflow's path filters cover every
+  file a kernel decides about, so the job cannot go on reporting success by
+  never running.
+
 ### Changed
+
+- **The event decode path is 1.67x faster and allocates 62% less**: 3772ns and
+  68 allocations to 2255ns and 26 across the eleven decoders, measured by the
+  benchmarks in `pkg/ebpf`. Fixed-width kernel fields were being turned into
+  fresh strings per event, so a workload doing nothing unusual produced garbage
+  proportional to its syscall rate. Process names and paths are now interned
+  through bounded tables read without copying the bytes, and the per-event
+  container id is derived rather than formatted. Argv is deliberately not
+  interned: it is attacker-influenced, and an unbounded table keyed on it is a
+  memory-growth primitive.
+- `hack/vm/env.sh` takes `PAHLEVAN_VM_DISK`, and `up.sh` checks `/dev/kvm` is
+  usable before booting rather than failing inside qemu with an accelerator
+  error buried in a serial log.
 
 - **Three ATT&CK techniques the coverage table was missing**, each evidenced by
   the entry's own description: `T1552.001` (Credentials In Files) on
@@ -19,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already named `history -c` as something it captures.
 
 ### Fixed
+
+- **A failing ring-buffer reader no longer spins.** All eight readers shared a
+  loop that, on any error other than a closed reader, continued immediately -
+  so a persistently failing reader burned a core and filled the log at the rate
+  it could produce errors. The eight copies are one function; a read error is
+  counted on `pahlevan_ebpf_read_errors_total`, logged once, and backed off
+  100ms. The loop still exits promptly on stop.
 
 - **The demo GIF claimed seven ATT&CK techniques Pahlevan does not list**, and
   attributed two more to the wrong hook. The coverage table in the recording is
