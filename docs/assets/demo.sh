@@ -159,13 +159,14 @@ pahlevan() {
       ;;
     "coverage"*)
       echo "${DIM}PROGRAM                        ATT&CK${R}"
-      echo "lsm/file_open                  T1005 T1552.001 T1083"
-      echo "lsm/socket_connect             T1041 T1071"
-      echo "lsm/bprm_check_security        T1059 T1543 T1036"
-      echo "lsm/capable                    T1548 T1611"
-      echo "kprobe/commit_creds            ${B}T1068${R} T1548.001"
-      echo "uretprobe/readline             ${B}T1059.004${R} T1070.003"
-      echo "tracepoint/sys_enter           T1106 T1620"
+      echo "lsm/file_open                  T1005 T1552.001 T1565.001"
+      echo "lsm/socket_connect             T1071 T1041"
+      echo "lsm/bprm_check_security        T1059 T1611"
+      echo "lsm/capable                    T1548"
+      echo "${B}tracepoint/sys_enter${R}           T1106"
+      echo "${B}kprobe/commit_creds${R}            T1068 T1548.001"
+      echo "${B}uretprobe/readline${R}             T1059.004 T1070.003"
+      echo "${GRY}the last three need no BPF LSM${R}"
       ;;
     "notify "*|"notify")
       echo "  ${MAG}#security-alerts${R}  ${DIM}via incoming webhook${R}"

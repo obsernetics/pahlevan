@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Three ATT&CK techniques the coverage table was missing**, each evidenced by
+  the entry's own description: `T1552.001` (Credentials In Files) on
+  `lsm/file_open`, the on-point technique for a per-path open monitor in a
+  cluster where a service-account token is a file; `T1548.001` (Setuid and
+  Setgid) on `kprobe/commit_creds`, whose entry already explained that it
+  separates a setuid binary's credential change from an unexplained one; and
+  `T1070.003` (Clear Command History) on `uretprobe/readline`, whose entry
+  already named `history -c` as something it captures.
+
 ### Fixed
+
+- **The demo GIF claimed seven ATT&CK techniques Pahlevan does not list**, and
+  attributed two more to the wrong hook. The coverage table in the recording is
+  typed by hand, because it is a recording, and nothing connected it to
+  `pkg/coverage`. A technique shown in the GIF is a claim about what Pahlevan's
+  data is evidence for, and the GIF is the first thing anyone sees. The
+  recording now prints what `pahlevan coverage` prints, row for row, and a test
+  fails if it ever shows a technique the table does not have, attributes one to
+  the wrong hook, or drops a detector.
 
 - **A data race in the container tracker.** `Start` runs discovery from two
   goroutines - the pod watch and the periodic refresh - and both reach
