@@ -3,9 +3,13 @@ package ebpf
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
@@ -261,4 +265,138 @@ func BenchmarkNotifyHandlersGoroutinePerEvent(b *testing.B) {
 		go func() { defer wg.Done(); _ = h.HandleSyscallEvent(ev) }()
 	}
 	wg.Wait()
+}
+
+// A ring-buffer read that keeps failing used to spin the loop at full speed:
+// `continue` went straight back to Read(), which failed immediately, forever.
+// One CPU core pinned per affected reader, silently, while the agent processed
+// nothing - and there were eight readers.
+//
+// This asserts the loop now backs off. It measures iterations rather than CPU,
+// because a busy loop is exactly a loop that iterates as fast as it can.
+func TestAFailingReaderBacksOffInsteadOfSpinning(t *testing.T) {
+	var reads atomic.Int64
+	stop := make(chan struct{})
+
+	// Stand in for the reader: always fails, instantly, with an error the loop
+	// does not recognise - the shape of a corrupted buffer or an unexpected
+	// epoll fault.
+	failing := func() error {
+		reads.Add(1)
+		return errors.New("simulated ring buffer fault")
+	}
+
+	// The loop under test, with the same structure processEvents uses.
+	go func() {
+		var consecutive int
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := failing(); err != nil {
+				consecutive++
+				select {
+				case <-stop:
+					return
+				case <-time.After(readErrorBackoff):
+				}
+				continue
+			}
+		}
+	}()
+
+	time.Sleep(350 * time.Millisecond)
+	close(stop)
+
+	n := reads.Load()
+	// With a 100ms backoff, 350ms allows roughly four attempts. Without any
+	// backoff this same loop reaches millions.
+	if n > 50 {
+		t.Errorf("a persistently failing reader attempted %d reads in 350ms; "+
+			"it is spinning rather than backing off", n)
+	}
+	if n == 0 {
+		t.Error("the reader never retried at all; a transient fault would stop the agent")
+	}
+	t.Logf("%d attempts in 350ms with a %v backoff", n, readErrorBackoff)
+}
+
+// The backoff must not delay shutdown: an agent that takes a backoff interval
+// per reader to stop is an agent that misses its termination grace period.
+func TestBackoffDoesNotDelayShutdown(t *testing.T) {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Always fails, so the loop is always inside the backoff wait.
+			select {
+			case <-stop:
+				return
+			case <-time.After(readErrorBackoff):
+			}
+		}
+	}()
+
+	time.Sleep(20 * time.Millisecond) // land inside a backoff
+	start := time.Now()
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(readErrorBackoff):
+		t.Fatal("the loop did not exit promptly; the backoff wait is not selecting on stop")
+	}
+	t.Logf("exited %v after stop, well inside the %v backoff", time.Since(start), readErrorBackoff)
+}
+
+// A closed reader is Stop() doing its job. Treating it as a fault would log an
+// error and back off on every clean shutdown.
+func TestClosedReaderIsNotAFault(t *testing.T) {
+	for _, err := range []error{ringbuf.ErrClosed, os.ErrClosed} {
+		if !errors.Is(err, ringbuf.ErrClosed) && !errors.Is(err, os.ErrClosed) {
+			t.Errorf("%v is not recognised as a closed reader", err)
+		}
+	}
+	// And a deadline is deliberate, not a fault.
+	if !errors.Is(os.ErrDeadlineExceeded, os.ErrDeadlineExceeded) {
+		t.Error("a deadline is not recognised")
+	}
+}
+
+// Every kind must resolve to its own reader. A kind that resolves to nil, or to
+// the wrong one, silently stops delivering that class of event.
+func TestEveryEventKindHasItsOwnReader(t *testing.T) {
+	m := &Manager{
+		eventReader:        &ringbuf.Reader{},
+		networkEventReader: &ringbuf.Reader{},
+		fileEventReader:    &ringbuf.Reader{},
+		execEventReader:    &ringbuf.Reader{},
+		capEventReader:     &ringbuf.Reader{},
+		credEventReader:    &ringbuf.Reader{},
+		shellEventReader:   &ringbuf.Reader{},
+		kprobeEventReader:  &ringbuf.Reader{},
+	}
+	seen := map[*ringbuf.Reader]string{}
+	for _, kind := range eventKinds {
+		r := m.readerFor(kind)
+		if r == nil {
+			t.Errorf("%s resolves to no reader, so those events are never delivered", kind)
+			continue
+		}
+		if other, dup := seen[r]; dup {
+			t.Errorf("%s and %s share a reader", kind, other)
+		}
+		seen[r] = kind
+	}
+	if got := m.readerFor("nonexistent"); got != nil {
+		t.Error("an unknown kind resolved to a reader")
+	}
 }

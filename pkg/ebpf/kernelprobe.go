@@ -505,12 +505,8 @@ func parseKernelProbeEvent(data []byte) *KernelProbeEvent {
 	for i := 0; i < KernelProbeArgs; i++ {
 		e.Args[i] = binary.LittleEndian.Uint64(data[argsOff+i*8 : argsOff+(i+1)*8])
 	}
-	comm := data[commOff : commOff+16]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
-	}
-	e.Comm = string(comm)
-	e.ContainerID = fmt.Sprintf("cgroup:%d", e.CgroupID)
+	e.Comm = internComm(data[commOff : commOff+16])
+	e.ContainerID = containerIDFor(e.CgroupID)
 	return e
 }
 

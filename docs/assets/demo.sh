@@ -24,8 +24,25 @@
 #     DENIED in-kernel: parent sh not in the process filter -> exit status 126
 #
 # The seccomp figure is arithmetic on the real amd64 table:
-# pkg/seccomp.KnownSyscallCount() is 373, and Generate() allows the learned set
-# plus a 12-call safety baseline.
+# pkg/seccomp.KnownSyscallCount() is 373, and GenerateWithOverrides() allows the
+# learned set plus a 12-call safety baseline.
+#
+# The newer hooks replayed here come from their own VM tests, which is where
+# their exact behaviour is asserted:
+#
+#   TestVMCredMonitorCatchesAnUnexplainedEscalation - kprobe/commit_creds sees
+#     privilege gained with no execve underway, which is what separates an
+#     exploit from sudo doing its job.
+#   TestVMSyscallArgumentsAreCaptured - a syscall event carries its six
+#     arguments, so ptrace(PTRACE_ATTACH, 1) is distinguishable from
+#     ptrace(PTRACE_TRACEME).
+#   TestVMAuditActionReportsWithoutDenying - Audit reports what would have been
+#     refused, allows it, and does not learn it.
+#   TestVMGenericKprobeAttachesToANamedFunction - one program attached to a
+#     function named at runtime, identified by its attach cookie.
+#
+# The shell line comes from bpf/shell_monitor.c's uretprobe on readline, which
+# sees builtins that produce no exec, no open and no connect.
 #
 # It defines mock `kubectl` / `pahlevan` shims so the recorded terminal shows the
 # same commands an operator would actually type. `pahlevan` is the real CLI name
@@ -53,6 +70,21 @@ kubectl() {
           echo "${DIM}\$ $*${R}"
           echo "PermissionError: [Errno 1] ${RED}Operation not permitted${R}: '/etc/shadow'"
           echo "$AGENT ${RED}DENIED${R} lsm/file_open      EPERM  read  path=/etc/shadow"
+          ;;
+        *PTRACE_ATTACH*|*ptrace*)
+          echo "${DIM}\$ $*${R}"
+          echo "PermissionError: [Errno 1] ${RED}Operation not permitted${R}"
+          echo "$AGENT ${YEL}WATCHED${R} sys_enter          ptrace(${B}PTRACE_ATTACH${R}, pid=1) ${GRY}argument, not just the number${R}"
+          echo "$AGENT ${RED}DENIED${R} lsm/capable        EPERM  CAP_SYS_PTRACE"
+          ;;
+        *setresuid*|*escalate*)
+          echo "${DIM}\$ $*${R}"
+          echo "${RED}Killed${R}"
+          echo "$AGENT ${RED}KILLED${R} kprobe/commit_creds  euid 1000->0  ${B}no execve underway${R}"
+          ;;
+        *history*|*export\ *|*cd\ /root*)
+          echo "${DIM}\$ $*${R}"
+          echo "$AGENT ${YEL}RECORDED${R} uretprobe/readline  ${B}$*${R} ${GRY}shell builtin: no exec, no open, no connect${R}"
           ;;
         *passwd*)
           echo "${DIM}\$ $*${R}"
@@ -96,12 +128,12 @@ pahlevan() {
   case "$1 $2" in
     "status --watch")
       local pct
-      for pct in 0 15 32 48 63 79 90 100; do
+      for pct in 0 28 55 79 100; do
         local filled=$(( pct / 5 )); local empty=$(( 20 - filled )); local bar=""
         local i; for ((i=0;i<filled;i++)); do bar+="#"; done
         for ((i=0;i<empty;i++)); do bar+="-"; done
         printf "\r  ${CYN}phase=Learning${R}  [%s] %3d%%  syscalls, opens, execs, egress, caps" "$bar" "$pct"
-        sleep 0.3
+        sleep 0.16
       done
       printf "\n"
       echo "  ${GRN}learned 118 files, 1 exec, 6 destinations, 1 capability${R}  ${DIM}over 1509 requests${R}"
@@ -119,9 +151,31 @@ pahlevan() {
       echo "12:04:12  capability  ${RED}denied${R}    app-7c9b4    CAP_SYS_ADMIN"
       echo "12:04:12  exec        ${RED}denied${R}    app-7c9b4    /tmp/xmrig"
       echo "12:04:13  exec        ${RED}denied${R}    app-7c9b4    /usr/bin/psql ${DIM}(process filter)${R}"
+      echo "12:04:14  syscall     ${YEL}watched${R}   app-7c9b4    ptrace(PTRACE_ATTACH, pid=1)"
+      echo "12:04:14  cred        ${RED}killed${R}    app-7c9b4    euid 1000->0, no execve underway"
+      echo "12:04:15  shell       ${YEL}recorded${R}  app-7c9b4    history -c"
       echo ""
-      echo "  ${GRY}same events reach Loki as OTLP log records, sharing the resource${R}"
-      echo "  ${GRY}the metrics and traces carry, so Grafana joins them without a hand-written query${R}"
+      echo "  ${GRY}the same events reach Slack and PagerDuty as formatted findings,${R}"
+      echo "  ${GRY}and Loki as OTLP records sharing the resource the metrics carry${R}"
+      ;;
+    "coverage"*)
+      echo "${DIM}PROGRAM                        ATT&CK${R}"
+      echo "lsm/file_open                  T1005 T1552.001 T1083"
+      echo "lsm/socket_connect             T1041 T1071"
+      echo "lsm/bprm_check_security        T1059 T1543 T1036"
+      echo "lsm/capable                    T1548 T1611"
+      echo "kprobe/commit_creds            ${B}T1068${R} T1548.001"
+      echo "uretprobe/readline             ${B}T1059.004${R} T1070.003"
+      echo "tracepoint/sys_enter           T1106 T1620"
+      ;;
+    "notify "*|"notify")
+      echo "  ${MAG}#security-alerts${R}  ${DIM}via incoming webhook${R}"
+      echo "  ${B}Pahlevan denied 6 operations on node-1${R}"
+      echo "  ${GRY}Deployment/app in prod${R}"
+      echo "  DENIED read of /etc/shadow by python3"
+      echo "  ${GRY}Deployment/app in prod${R}"
+      echo "  DENIED exec of /tmp/xmrig by sh -> python3"
+      echo "  ${DIM}and 4 more in this batch${R}"
       ;;
     "attack-surface report"*)
       echo "${DIM}Workload            RISK  PORTS  WRITABLE  CAPS  SYSCALLS${R}"
@@ -134,6 +188,24 @@ pahlevan() {
 }
 
 # legit access performed by the real workload -> allowed under enforcement
+# A side-by-side of what the workload did during learning against what the same
+# operations do under enforcement. This is the whole model on one screen.
+compare_view() {
+  printf '%s\n' "${B}  LEARNED (50m window)              ENFORCING${R}"
+  printf '%s\n' "${GRY}  ─────────────────────────────    ─────────────────────────────${R}"
+  printf '  %-31s %s\n' "open /srv/www/*"        "open /srv/www/*            ${GRN}ok${R}"
+  printf '  %-31s %s\n' "open /etc/mime.types"   "open /etc/mime.types       ${GRN}ok${R}"
+  printf '  %-31s %s\n' "connect 10.0.1.7:5432"  "connect 10.0.1.7:5432      ${GRN}ok${R}"
+  printf '  %-31s %s\n' "exec python3"           "exec python3               ${GRN}ok${R}"
+  printf '  %-31s %s\n' "61 of 373 syscalls"     "${GRY}─────────────────────────────${R}"
+  printf '  %-31s %s\n' ""                       "open /etc/shadow        ${RED}EPERM${R}"
+  printf '  %-31s %s\n' ""                       "exec /tmp/xmrig         ${RED}EPERM${R}"
+  printf '  %-31s %s\n' ""                       "connect 203.0.113.7:4444 ${RED}EPERM${R}"
+  printf '  %-31s %s\n' ""                       "commit_creds euid->0   ${RED}KILLED${R}"
+  echo
+  printf '%s\n' "${GRY}  1509 requests served, 0 failed. No rule was written.${R}"
+}
+
 allow_probe() {
   echo "${GRY}# the workload keeps doing what it did during learning${R}"
   echo "${DIM}\$ curl -s -o /dev/null -w '%{http_code}' http://app.default.svc/health${R}"

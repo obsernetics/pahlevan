@@ -87,18 +87,14 @@ func parseShellEvent(data []byte) *ShellEvent {
 		UID:       u32(24),
 		Flags:     u32(28),
 	}
-	comm := data[commOff:lineOff]
-	if i := indexZero(comm); i >= 0 {
-		comm = comm[:i]
-	}
-	e.Comm = string(comm)
+	e.Comm = internComm(data[commOff:lineOff])
 
 	line := data[lineOff : lineOff+shellLineLen]
 	if i := indexZero(line); i >= 0 {
 		line = line[:i]
 	}
 	e.Line = strings.TrimRight(string(line), "\r\n")
-	e.ContainerID = fmt.Sprintf("cgroup:%d", e.CgroupID)
+	e.ContainerID = containerIDFor(e.CgroupID)
 	return e
 }
 
