@@ -67,7 +67,7 @@
             <p>
                 What changed in each Pahlevan release, and every artifact you can install:
                 a distroless container image on GHCR, a Helm chart, and a single-file
-                Kubernetes manifest. The current release is <strong>v3.1.0</strong>.
+                Kubernetes manifest. The current release is <strong>v3.2.0</strong>.
             </p>
             <div class="hero-actions">
                 <a href="#changelog" class="btn btn-primary">Read the changelog</a>
@@ -81,7 +81,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Packages</span>
-                <h2>Three ways to install v3.1.0</h2>
+                <h2>Three ways to install v3.2.0</h2>
                 <p>
                     One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
                     <code>pahlevan-operator</code> (the leader-elected Deployment), and the
@@ -103,22 +103,22 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     </div>
                     <p class="qs-note">
                         The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
-                        DaemonSet. Swap <code>latest</code> for <code>v3.1.0</code> to pin a release.
+                        DaemonSet. Swap <code>latest</code> for <code>v3.2.0</code> to pin a release.
                     </p>
                 </div>
                 <div class="qs-col">
                     <h3>Container image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.1.0</code></pre>
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.2.0</code></pre>
                     </div>
                     <h3>Verifying the image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.1.0
-docker inspect ghcr.io/obsernetics/pahlevan:v3.1.0
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.2.0
+docker inspect ghcr.io/obsernetics/pahlevan:v3.2.0
 
 # Digest to pin in air-gapped or regulated environments
 docker inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/obsernetics/pahlevan:v3.1.0</code></pre>
+  ghcr.io/obsernetics/pahlevan:v3.2.0</code></pre>
                     </div>
                 </div>
             </div>
@@ -137,7 +137,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <td>Most recent build of the default branch</td>
                         </tr>
                         <tr>
-                            <th scope="row"><code>v3.1.0</code></th>
+                            <th scope="row"><code>v3.2.0</code></th>
                             <td>Immutable release tag, recommended for production</td>
                         </tr>
                         <tr>
@@ -187,9 +187,53 @@ docker inspect --format '{{index .RepoDigests 0}}' \
 
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.2.0</h3>
+                        <span class="release-date">2026-09-06</span>
+                        <span class="release-pill">Current</span>
+                    </div>
+                    <p class="release-summary">
+                        Findings now reach the places people actually look, and every direct
+                        dependency is current.
+                    </p>
+                    <div class="change-group">
+                        <h4 class="added">Added</h4>
+                        <ul>
+                            <li><strong>Formatted delivery of findings.</strong> A file, a webhook, OTLP and the gRPC
+                                stream all carry the event envelope, which is the right shape for a collector and the
+                                wrong shape for a person. Three sinks now carry formatted messages instead:
+                                <strong>Slack</strong> (one Block Kit message per batch, with the fallback text set so a
+                                push notification says something useful), <strong>PagerDuty</strong> (one incident per
+                                distinct finding rather than per batch, keyed so the same problem re-triggers rather
+                                than opening another), and <strong>a Go template</strong> for everything else, parsed at
+                                startup so a syntax error names the mistake instead of being logged once per batch while
+                                nothing arrives.</li>
+                            <li>All three send denials only unless <code>--notify-all-events</code> is set, and
+                                deduplicate per finding keyed on the owning <em>workload</em> rather than the pod, so a
+                                rollout does not send one message per replica for a single misconfiguration.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li>Every direct dependency is current: OpenTelemetry 1.46.0, grpc 1.83.2, testify 1.12.1,
+                                and the Kubernetes stack to 0.37.0 with controller-runtime 0.25.0. Both declare the Go
+                                version the module already requires, so unlike the 0.36 move this needed no toolchain
+                                change and broke no API.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li>The 3.1.0 release was merged but never tagged, so the release, its image tags and the
+                                chart never published. Tagged and verified.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.1.0</h3>
                         <span class="release-date">2026-09-01</span>
-                        <span class="release-pill">Current</span>
                     </div>
                     <p class="release-summary">
                         A monthly maintenance release: a new capability, a large jump in test

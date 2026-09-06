@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-09-06
+
+### Added
+
+- **Formatted delivery of findings**, closing the item that had been first on
+  the Near term list since 3.0.0. A file, an HTTP webhook, OTLP and the gRPC
+  stream all carry the event envelope, which is the right shape for a collector
+  and the wrong shape for a person. Three sinks now carry formatted messages
+  instead, all ordinary Exporters so they ride the existing bounded queue and
+  drop counting:
+  - **Slack** (`--notify-slack-webhook`): one Block Kit message per batch, with
+    the fallback text set, because without it a push notification says
+    "attachment".
+  - **PagerDuty** (`--notify-pagerduty-key`, `--notify-pagerduty-severity`):
+    one incident per distinct finding rather than per batch, keyed so the same
+    problem re-triggers the same incident instead of opening another. The
+    incident's source is the workload, not the node.
+  - **A Go template** (`--notify-template-url`, `--notify-template`) for
+    everything else. Parsed at startup, so a syntax error names the mistake
+    rather than being logged once per batch while nothing arrives.
+
+  All three send denials only unless `--notify-all-events` is set, and
+  deduplicate per finding over `--notify-dedupe-window`, keyed on the owning
+  workload rather than the pod so a rollout does not send one message per
+  replica for a single misconfiguration.
+
+### Changed
+
+- **Every direct dependency is current.** The OpenTelemetry family to 1.46.0
+  (log and its exporters to 0.22.0), grpc to 1.83.2, testify to 1.12.1,
+  prometheus/client_model to 0.6.3, ginkgo and gomega, and the Kubernetes stack
+  to 0.37.0 with controller-runtime 0.25.0. Both k8s 0.37 and
+  controller-runtime 0.25 declare the Go version the module already requires, so
+  unlike the 0.36 move this needed no toolchain change and broke no API.
+
+### Fixed
+
+- **The v3.1.0 release was merged but never tagged.** The tag push failed and
+  the release, its image tags and the chart never published. Tagged and
+  verified.
+
 ## [3.1.0] - 2026-09-01
 
 ### Added
