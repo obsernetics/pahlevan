@@ -41,7 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory-growth primitive.
 - `hack/vm/env.sh` takes `PAHLEVAN_VM_DISK`, and `up.sh` checks `/dev/kvm` is
   usable before booting rather than failing inside qemu with an accelerator
-  error buried in a serial log.
+  error buried in a serial log. The `vm-test` target honours
+  `PAHLEVAN_VM_CACHE` instead of hardcoding `.vmcache`, which worked only for
+  as long as nobody set the variable.
 - **CI lints the workflows.** A workflow with a malformed `${{ }}` expression
   does not fail loudly: GitHub reports the run under the file's path instead of
   its name, ends it in zero seconds, and every job it was supposed to gate

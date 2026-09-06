@@ -14,6 +14,7 @@ package vm
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -288,5 +289,43 @@ func BenchmarkMatchesGlobDoubleStar(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = matchesGlob("**/*.c", "bpf/net/enforce.c")
+	}
+}
+
+// The Makefile and env.sh both decide where the harness keeps its artifacts,
+// and they have to agree. Hardcoding .vmcache in the vm-test recipe worked for
+// as long as nobody set the variable, and broke the first time CI put the
+// cache on the runner's scratch disk:
+//
+//	fatal: could not open '.vmcache/src.tar' for writing: No such file or directory
+//
+// The VM had booted, the bpf LSM was active, and not one program was loaded.
+// Asserted through `make -n` rather than by grepping the Makefile for a
+// string, so it tests the recipe make actually expands.
+func TestVMTestHonoursTheCacheLocation(t *testing.T) {
+	const elsewhere = "/tmp/pahlevan-vm-cache-probe"
+
+	out, err := exec.Command("make", "-n", "-C", repoRoot, "vm-test").CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n vm-test: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), ".vmcache/src.tar") {
+		t.Errorf("the default recipe does not use .vmcache; it reads:\n%s", out)
+	}
+
+	cmd := exec.Command("make", "-n", "-C", repoRoot, "vm-test")
+	cmd.Env = append(os.Environ(), "PAHLEVAN_VM_CACHE="+elsewhere)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n vm-test with PAHLEVAN_VM_CACHE: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, elsewhere+"/src.tar") {
+		t.Errorf("PAHLEVAN_VM_CACHE=%s did not move the source tarball; the recipe reads:\n%s", elsewhere, got)
+	}
+	// The literal must be gone, not merely joined by another path that also
+	// happens to be present.
+	if strings.Contains(got, ".vmcache/") {
+		t.Errorf("PAHLEVAN_VM_CACHE was set and the recipe still writes to .vmcache/:\n%s", got)
 	}
 }
