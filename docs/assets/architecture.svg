@@ -41,10 +41,19 @@
   <line x1="440" y1="152" x2="514" y2="152" class="edge" marker-end="url(#arw)"/>
   <text x="447" y="144" class="lbl">reconciles</text>
 
-  <!-- ===== vertical connector: control plane <-> node ===== -->
-  <line x1="480" y1="216" x2="480" y2="292" class="edge" marker-end="url(#arw)"/>
-  <text x="496" y="258" class="lbl">desired policy &#8595;</text>
-  <text x="496" y="276" class="lbl">learning / status &#8593;</text>
+  <!-- ===== control plane <-> node =====
+       Two arrows, each anchored to a box. This used to be one vertical line
+       starting in the gap between the CRD and Operator cards and ending on the
+       node group's border, touching neither, with a single arrowhead and two
+       labels claiming it went both ways. -->
+
+  <!-- Operator -> Agent: the desired policy going down to the node. -->
+  <path d="M600,200 V248 H200 V332" class="edge" marker-end="url(#arw)"/>
+  <text x="212" y="241" class="lbl">desired policy &#8595;</text>
+
+  <!-- Agent -> Operator: what the node learned, and its status, coming back. -->
+  <path d="M280,340 V272 H680 V208" class="edge" marker-end="url(#arw)"/>
+  <text x="470" y="290" class="lbl">learning / status &#8593;</text>
 
   <!-- ===== Node group ===== -->
   <rect x="40" y="300" width="880" height="270" rx="14" class="grp"/>
