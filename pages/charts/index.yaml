@@ -5,11 +5,42 @@ entries:
       category: Security
       images: |
         - name: pahlevan
+          image: ghcr.io/obsernetics/pahlevan:v3.3.0
+      licenses: Apache-2.0
+    apiVersion: v2
+    appVersion: v3.3.0
+    created: "2026-09-07T00:32:32.700734664+02:00"
+    description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
+    digest: 74017d70355326c84b845a751c759339aa89b1d18de416b3b6ba9757a42ed279
+    home: https://github.com/obsernetics/pahlevan
+    keywords:
+    - security
+    - ebpf
+    - kubernetes
+    - operator
+    - monitoring
+    - attack-surface
+    - syscall-monitoring
+    kubeVersion: '>=1.24.0'
+    maintainers:
+    - email: team@obsernetics.com
+      name: Obsernetics Team
+    name: pahlevan-operator
+    sources:
+    - https://github.com/obsernetics/pahlevan
+    type: application
+    urls:
+    - https://obsernetics.github.io/pahlevan/charts/pahlevan-operator-3.3.0.tgz
+    version: 3.3.0
+  - annotations:
+      category: Security
+      images: |
+        - name: pahlevan
           image: ghcr.io/obsernetics/pahlevan:v3.2.0
       licenses: Apache-2.0
     apiVersion: v2
     appVersion: v3.2.0
-    created: "2026-09-06T20:14:47.676469329+02:00"
+    created: "2026-09-07T00:32:32.700191307+02:00"
     description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
     digest: 39db94f8a01788d6c6ce0ee1aa1bb49e4a2b7f000f61568e87379e14d4eb0ff9
     home: https://github.com/obsernetics/pahlevan
@@ -40,7 +71,7 @@ entries:
       licenses: Apache-2.0
     apiVersion: v2
     appVersion: v3.1.0
-    created: "2026-09-06T20:14:47.675859161+02:00"
+    created: "2026-09-07T00:32:32.69962464+02:00"
     description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
     digest: 1b58f9238c16ba893dfd6e16a506a5565f3584a75521ae95d2b1476d987e58c5
     home: https://github.com/obsernetics/pahlevan
@@ -71,7 +102,7 @@ entries:
       licenses: Apache-2.0
     apiVersion: v2
     appVersion: v3.0.0
-    created: "2026-09-06T20:14:47.675109982+02:00"
+    created: "2026-09-07T00:32:32.699062443+02:00"
     description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
     digest: a2ca3e4bfd6eaf82648e2fa2b6163c693b821d09312b74f8db7cfce4ccdc7875
     home: https://github.com/obsernetics/pahlevan
@@ -102,7 +133,7 @@ entries:
       licenses: Apache-2.0
     apiVersion: v2
     appVersion: v2.0.0
-    created: "2026-09-06T20:14:47.674429173+02:00"
+    created: "2026-09-07T00:32:32.698484326+02:00"
     description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
     digest: 0f5f8ace8b4e1b06c7c149542b042affedafecd68e80f3c9c0c1498a0af06c03
     home: https://github.com/obsernetics/pahlevan
@@ -135,7 +166,7 @@ entries:
       licenses: Apache-2.0
     apiVersion: v2
     appVersion: v1.0.0
-    created: "2026-09-06T20:14:47.673290769+02:00"
+    created: "2026-09-07T00:32:32.697835699+02:00"
     description: A Helm chart for Pahlevan eBPF-based Kubernetes Security Operator
     digest: 80dfdcc1513c010690da6a5c80b8630a121a075dcc49960d2326b708c08746bf
     home: https://github.com/obsernetics/pahlevan
@@ -158,4 +189,4 @@ entries:
     urls:
     - https://obsernetics.github.io/pahlevan/charts/pahlevan-operator-1.0.0.tgz
     version: 1.0.0
-generated: "2026-09-06T20:14:47.672500419+02:00"
+generated: "2026-09-07T00:32:32.697085419+02:00"
