@@ -64,7 +64,6 @@ kubectl() {
       shift
       while [ "$1" != "--" ] && [ $# -gt 0 ]; do shift; done
       shift
-      echo "${GRY}# attacker shell inside the app pod${R}"
       case "$*" in
         *shadow*)
           echo "${DIM}\$ $*${R}"
@@ -207,7 +206,6 @@ compare_view() {
 }
 
 allow_probe() {
-  echo "${GRY}# the workload keeps doing what it did during learning${R}"
   echo "${DIM}\$ curl -s -o /dev/null -w '%{http_code}' http://app.default.svc/health${R}"
   echo "200"
   echo "$AGENT ${GRN}ALLOW${R}  lsm/file_open      path=/srv/health"
