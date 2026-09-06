@@ -122,7 +122,7 @@ jobs:
           ./hack/vm/run.sh 'uname -r; cat /proc/cmdline; cat /sys/kernel/security/lsm'
 
       - name: Run the kernel tests
-        run: make vm-test VM_RUN='${{ github.event.inputs.run || ''TestVM'' }}'
+        run: make vm-test VM_RUN="${{ github.event.inputs.run || 'TestVM' }}"
 
       # The serial log is the only record of a guest that failed to boot or
       # panicked, and it is gone with the runner.

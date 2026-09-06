@@ -70,6 +70,19 @@ jobs:
     - name: Coverage summary
       run: go tool cover -func=coverage.out | tail -1
 
+    # A workflow with a malformed expression does not fail loudly: GitHub
+    # reports the run under the file's path instead of its name, ends it in
+    # zero seconds, and every job it was supposed to gate simply never appears.
+    # That is indistinguishable from a workflow that passed, which is how a
+    # broken `${{ ... }}` reached main once already.
+    - name: Lint the workflows
+      # Installed at a pinned version through the Go toolchain this job
+      # already has, rather than by piping an unpinned installer script from
+      # the network into a shell.
+      run: |
+        go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        "$(go env GOPATH)/bin/actionlint" -color
+
     # arm64 is a supported target claim, so prove it still compiles.
     - name: Cross-compile arm64
       run: GOOS=linux GOARCH=arm64 go build ./...
