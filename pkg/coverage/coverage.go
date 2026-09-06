@@ -60,6 +60,7 @@ var Table = []Entry{
 			"entries so a learned read never grants a write.",
 		Techniques: []Technique{
 			{ID: "T1005", Name: "Data from Local System"},
+			{ID: "T1552.001", Name: "Unsecured Credentials: Credentials In Files"},
 			{ID: "T1565.001", Name: "Data Manipulation: Stored Data Manipulation"},
 		},
 	},
@@ -121,6 +122,7 @@ var Table = []Entry{
 			"case.",
 		Techniques: []Technique{
 			{ID: "T1068", Name: "Exploitation for Privilege Escalation"},
+			{ID: "T1548.001", Name: "Abuse Elevation Control Mechanism: Setuid and Setgid"},
 		},
 	},
 	{
@@ -132,6 +134,7 @@ var Table = []Entry{
 			"that produce no exec, no open and no connect.",
 		Techniques: []Technique{
 			{ID: "T1059.004", Name: "Command and Scripting Interpreter: Unix Shell"},
+			{ID: "T1070.003", Name: "Indicator Removal: Clear Command History"},
 		},
 	},
 }
