@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-09-07
+
+### Fixed
+
+- **A data race in `Manager.SetAction`.** It read the four eBPF collection
+  pointer fields directly to decide which hooks to skip, with no lock held,
+  while `Load` only ever writes them under the manager's mutex. A policy
+  transition landing while the agent is loading or reloading its eBPF objects
+  raced on those reads; confirmed with `-race` against a concurrent reload and
+  fixed by having `SetAction` go through the four per-hook setters, which
+  already take the read lock, rather than reading the fields itself. A
+  regression test reproduces the race on purpose rather than relying on a
+  scheduler to find it again.
+
+### Changed
+
+- Batched five open Dependabot GitHub Actions bumps onto one PR
+  (`actions/cache` to v6, `actions/configure-pages` to v6,
+  `actions/upload-pages-artifact` to v5, `actions/deploy-pages` to v5,
+  `softprops/action-gh-release` to v3) rather than merging one at a time.
+
 ## [3.3.0] - 2026-09-07
 
 ### Added
