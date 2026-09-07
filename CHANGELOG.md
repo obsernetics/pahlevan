@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The released `install.yaml` pinned nothing.** It is the file attached to
+  every release, and `docs/packages.md` points at
+  `releases/download/<version>/install.yaml` as the immutable tag recommended
+  for production. It shipped `image: ghcr.io/obsernetics/pahlevan:latest`, so
+  that path pulled a tag that moves on every merge to main. The generator now
+  stamps the release version into the manifest; `deploy/base` keeps `:latest`
+  on purpose, because it is a kustomize base and an overlay sets its own tag.
+- Nothing regenerated or verified `install.yaml` in CI, so it could drift from
+  the `deploy/base` and `config/crd` sources it claims to be generated from.
+  `hack/install` now fails if it has drifted, if it does not pin the version the
+  Makefile declares, if the kustomize base grows a hardcoded version, or if the
+  docs send readers to a different release than the manifest deploys.
+
 ## [3.3.1] - 2026-09-07
 
 ### Fixed
