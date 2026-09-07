@@ -109,7 +109,7 @@ jobs:
       # a guest SSH key, and rebuilding it is what proves the harness still
       # works from nothing.
       - name: Cache the Ubuntu cloud image
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /mnt/vmcache/noble-server-cloudimg-amd64.img
           # Monthly, because the "current" image the harness downloads moves
