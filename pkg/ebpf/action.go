@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -239,13 +240,25 @@ type bpfMap interface {
 	Delete(key any) error
 }
 
+// errHookNotLoaded marks the "this hook is not loaded" error the per-hook
+// setters return, so SetAction can tell it apart from a real write failure
+// with errors.Is instead of re-reading the collection fields itself. Reading
+// them a second time outside the setters' own locking is exactly what used to
+// make SetAction race with Load: the fields are only ever safe to read under
+// m.mu, and SetAction held no lock of its own.
+var errHookNotLoaded = errors.New("hook not loaded")
+
+func errNotLoaded(hook string) error {
+	return fmt.Errorf("the %s monitor is not loaded (bpf LSM unavailable?): %w", hook, errHookNotLoaded)
+}
+
 // SetFileAction sets what happens when a governed cgroup opens a path outside
 // its learned set.
 func (m *Manager) SetFileAction(cgroupID uint64, spec EnforcementSpec) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.fileCollection == nil {
-		return fmt.Errorf("the file monitor is not loaded (bpf LSM unavailable?)")
+		return errNotLoaded("file")
 	}
 	return setActionOn(m.fileCollection.Maps["file_mode"], "file_mode", cgroupID, spec)
 }
@@ -256,7 +269,7 @@ func (m *Manager) SetNetworkAction(cgroupID uint64, spec EnforcementSpec) error 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.networkCollection == nil {
-		return fmt.Errorf("the network monitor is not loaded (bpf LSM unavailable?)")
+		return errNotLoaded("network")
 	}
 	return setActionOn(m.networkCollection.Maps["network_mode"], "network_mode", cgroupID, spec)
 }
@@ -267,7 +280,7 @@ func (m *Manager) SetExecAction(cgroupID uint64, spec EnforcementSpec) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.execCollection == nil {
-		return fmt.Errorf("the exec monitor is not loaded (bpf LSM unavailable?)")
+		return errNotLoaded("exec")
 	}
 	return setActionOn(m.execCollection.Maps["exec_mode"], "exec_mode", cgroupID, spec)
 }
@@ -278,7 +291,7 @@ func (m *Manager) SetCapabilityAction(cgroupID uint64, spec EnforcementSpec) err
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.capCollection == nil {
-		return fmt.Errorf("the capability monitor is not loaded (bpf LSM unavailable?)")
+		return errNotLoaded("capability")
 	}
 	return setActionOn(m.capCollection.Maps["cap_mode"], "cap_mode", cgroupID, spec)
 }
@@ -291,6 +304,14 @@ func (m *Manager) SetCapabilityAction(cgroupID uint64, spec EnforcementSpec) err
 // without the BPF LSM and a policy transition there should configure what it
 // can. The returned error names every hook that failed, so a partial
 // application is visible rather than silent.
+//
+// Each hook's loaded-or-not check happens inside its own setter, under m.mu.
+// SetAction deliberately holds no lock of its own and never reads the
+// collection fields directly: doing either here, ahead of calling the
+// setters, raced with Load (which takes m.mu.Lock to install them), and
+// re-taking the same RWMutex for reading here as well as inside the setter it
+// calls would recursively RLock it, which self-deadlocks the moment a writer
+// is queued in between the two.
 func (m *Manager) SetAction(cgroupID uint64, spec EnforcementSpec) error {
 	if err := spec.Validate(); err != nil {
 		return err
@@ -299,17 +320,16 @@ func (m *Manager) SetAction(cgroupID uint64, spec EnforcementSpec) error {
 	for _, h := range []struct {
 		name string
 		set  func(uint64, EnforcementSpec) error
-		on   bool
 	}{
-		{"file", m.SetFileAction, m.fileCollection != nil},
-		{"network", m.SetNetworkAction, m.networkCollection != nil},
-		{"exec", m.SetExecAction, m.execCollection != nil},
-		{"capability", m.SetCapabilityAction, m.capCollection != nil},
+		{"file", m.SetFileAction},
+		{"network", m.SetNetworkAction},
+		{"exec", m.SetExecAction},
+		{"capability", m.SetCapabilityAction},
 	} {
-		if !h.on {
-			continue
-		}
 		if err := h.set(cgroupID, spec); err != nil {
+			if errors.Is(err, errHookNotLoaded) {
+				continue
+			}
 			failed = append(failed, h.name+": "+err.Error())
 		}
 	}
