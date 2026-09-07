@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-09-07
+
+3.3.1 was merged but never tagged, so it was never published and nothing
+could install it. Its changes are released here.
+
+### Changed
+
+- Batched five open Dependabot GitHub Actions bumps onto one PR
+  (`actions/cache` to v6, `actions/configure-pages` to v6,
+  `actions/upload-pages-artifact` to v5, `actions/deploy-pages` to v5,
+  `softprops/action-gh-release` to v3) rather than merging one at a time.
+
 ### Fixed
 
 - **The released `install.yaml` pinned nothing.** It is the file attached to
@@ -22,10 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Makefile declares, if the kustomize base grows a hardcoded version, or if the
   docs send readers to a different release than the manifest deploys.
 
-## [3.3.1] - 2026-09-07
-
-### Fixed
-
 - **A data race in `Manager.SetAction`.** It read the four eBPF collection
   pointer fields directly to decide which hooks to skip, with no lock held,
   while `Load` only ever writes them under the manager's mutex. A policy
@@ -35,13 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already take the read lock, rather than reading the fields itself. A
   regression test reproduces the race on purpose rather than relying on a
   scheduler to find it again.
-
-### Changed
-
-- Batched five open Dependabot GitHub Actions bumps onto one PR
-  (`actions/cache` to v6, `actions/configure-pages` to v6,
-  `actions/upload-pages-artifact` to v5, `actions/deploy-pages` to v5,
-  `softprops/action-gh-release` to v3) rather than merging one at a time.
 
 ## [3.3.0] - 2026-09-07
 
