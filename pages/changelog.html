@@ -67,7 +67,7 @@
             <p>
                 What changed in each Pahlevan release, and every artifact you can install:
                 a distroless container image on GHCR, a Helm chart, and a single-file
-                Kubernetes manifest. The current release is <strong><!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync--></strong>.
+                Kubernetes manifest. The current release is <strong><!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync--></strong>.
             </p>
             <div class="hero-actions">
                 <a href="#changelog" class="btn btn-primary">Read the changelog</a>
@@ -81,7 +81,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Packages</span>
-                <h2>Three ways to install <!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync--></h2>
+                <h2>Three ways to install <!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync--></h2>
                 <p>
                     One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
                     <code>pahlevan-operator</code> (the leader-elected Deployment), and the
@@ -103,22 +103,22 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     </div>
                     <p class="qs-note">
                         The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
-                        DaemonSet. Swap <code>latest</code> for <code><!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync--></code> to pin a release.
+                        DaemonSet. Swap <code>latest</code> for <code><!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync--></code> to pin a release.
                     </p>
                 </div>
                 <div class="qs-col">
                     <h3>Container image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync--></code></pre>
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync--></code></pre>
                     </div>
                     <h3>Verifying the image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync-->
-docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync-->
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync-->
+docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync-->
 
 # Digest to pin in air-gapped or regulated environments
 docker inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync--></code></pre>
+  ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync--></code></pre>
                     </div>
                 </div>
             </div>
@@ -137,7 +137,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <td>Most recent build of the default branch</td>
                         </tr>
                         <tr>
-                            <th scope="row"><code><!--pahlevan:sync version-->v3.3.1<!--/pahlevan:sync--></code></th>
+                            <th scope="row"><code><!--pahlevan:sync version-->v3.3.2<!--/pahlevan:sync--></code></th>
                             <td>Immutable release tag, recommended for production</td>
                         </tr>
                         <tr>
@@ -184,17 +184,23 @@ docker inspect --format '{{index .RepoDigests 0}}' \
 
                 <article class="release">
                     <div class="release-head">
-                        <h3 class="release-version">3.3.1</h3>
+                        <h3 class="release-version">3.3.2</h3>
                         <span class="release-date">2026-09-07</span>
                         <span class="release-pill">Current</span>
                     </div>
                     <p class="release-summary">
-                        A data race in the enforcement action setter, and five GitHub Actions
-                        dependency bumps batched onto one change.
+                        The manifest attached to a release now pins that release. 3.3.1 was merged
+                        but never tagged, so it never published; its changes ship here.
                     </p>
                     <div class="change-group">
                         <h4 class="fixed">Fixed</h4>
                         <ul>
+                            <li><strong>The released <code>install.yaml</code> pinned nothing.</strong> It is the file
+                                attached to every release, and the install docs point at it as the immutable tag
+                                recommended for production, but it shipped <code>pahlevan:latest</code>, so that path
+                                pulled a tag that moves on every merge. The generator stamps the release version in
+                                now, and a test fails if the manifest drifts from its sources, stops pinning, or
+                                disagrees with the version the docs send readers to.</li>
                             <li><strong>A data race in <code>Manager.SetAction</code>.</strong> It read the four eBPF
                                 collection pointer fields directly to decide which hooks to skip, with no lock held,
                                 while loading only ever writes them under the manager's mutex. A policy transition
