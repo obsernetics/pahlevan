@@ -4,7 +4,7 @@
 # Variables
 BINARY_NAME=pahlevan-operator
 CONTAINER_NAME=pahlevan/operator
-VERSION?=v3.3.2
+VERSION?=v3.3.3
 BUILD_DIR=bin
 BPF_DIR=bpf
 PKG_DIR=pkg/ebpf

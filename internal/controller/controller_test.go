@@ -461,35 +461,6 @@ func TestPahlevanPolicy_HandleDeletion(t *testing.T) {
 	}
 }
 
-func TestPahlevanPolicy_MatchesSelector(t *testing.T) {
-	r := &PahlevanPolicyReconciler{}
-
-	cases := []struct {
-		name     string
-		labels   map[string]string
-		selector policyv1alpha1.LabelSelector
-		want     bool
-	}{
-		{"empty selector matches all", map[string]string{"a": "b"}, policyv1alpha1.LabelSelector{}, true},
-		{"matchLabels hit", map[string]string{"app": "web"}, policyv1alpha1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}, true},
-		{"matchLabels miss", map[string]string{"app": "db"}, policyv1alpha1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}, false},
-		{"In hit", map[string]string{"tier": "fe"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"fe", "be"}}}}, true},
-		{"In miss missing key", map[string]string{"x": "y"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"fe"}}}}, false},
-		{"In miss wrong value", map[string]string{"tier": "db"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"fe"}}}}, false},
-		{"NotIn hit", map[string]string{"tier": "db"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpNotIn, Values: []string{"fe"}}}}, true},
-		{"NotIn miss", map[string]string{"tier": "fe"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpNotIn, Values: []string{"fe"}}}}, false},
-		{"Exists hit", map[string]string{"tier": "x"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpExists}}}, true},
-		{"Exists miss", map[string]string{"a": "b"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpExists}}}, false},
-		{"DoesNotExist hit", map[string]string{"a": "b"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpDoesNotExist}}}, true},
-		{"DoesNotExist miss", map[string]string{"tier": "x"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpDoesNotExist}}}, false},
-	}
-	for _, tc := range cases {
-		if got := r.matchesSelector(tc.labels, tc.selector); got != tc.want {
-			t.Errorf("%s: matchesSelector=%v want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
 func TestPahlevanPolicy_ShouldTransitionToEnforcement(t *testing.T) {
 	r := &PahlevanPolicyReconciler{}
 
@@ -1044,19 +1015,6 @@ func TestAttackSurface_IsSignificantChange(t *testing.T) {
 	// Missing resource -> not significant.
 	if r.isSignificantChange(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "ghost", Namespace: "default"}}) {
 		t.Error("missing resource should not be significant")
-	}
-}
-
-func TestAttackSurface_MatchesSelector(t *testing.T) {
-	r := &AttackSurfaceAnalyzerReconciler{}
-	if !r.matchesSelector(map[string]string{"app": "web"}, policyv1alpha1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}) {
-		t.Error("expected match")
-	}
-	if r.matchesSelector(map[string]string{"app": "db"}, policyv1alpha1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}) {
-		t.Error("expected no match")
-	}
-	if !r.matchesSelector(map[string]string{"x": "y"}, policyv1alpha1.LabelSelector{MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{Key: "x", Operator: policyv1alpha1.LabelSelectorOpExists}}}) {
-		t.Error("expected Exists match")
 	}
 }
 

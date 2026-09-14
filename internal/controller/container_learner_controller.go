@@ -245,56 +245,7 @@ func (r *ContainerLearnerReconciler) findApplicablePolicies(ctx context.Context,
 
 func (r *ContainerLearnerReconciler) policyAppliesToPod(policy *policyv1alpha1.PahlevanPolicy, pod *corev1.Pod) bool {
 	// Check if policy selector matches pod labels
-	return r.matchesSelector(pod.Labels, policy.Spec.Selector)
-}
-
-func (r *ContainerLearnerReconciler) matchesSelector(labels map[string]string, selector policyv1alpha1.LabelSelector) bool {
-	// Check matchLabels
-	for key, value := range selector.MatchLabels {
-		if labels[key] != value {
-			return false
-		}
-	}
-
-	// Check matchExpressions
-	for _, expr := range selector.MatchExpressions {
-		labelValue, exists := labels[expr.Key]
-
-		switch expr.Operator {
-		case policyv1alpha1.LabelSelectorOpIn:
-			if !exists {
-				return false
-			}
-			found := false
-			for _, value := range expr.Values {
-				if labelValue == value {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return false
-			}
-		case policyv1alpha1.LabelSelectorOpNotIn:
-			if exists {
-				for _, value := range expr.Values {
-					if labelValue == value {
-						return false
-					}
-				}
-			}
-		case policyv1alpha1.LabelSelectorOpExists:
-			if !exists {
-				return false
-			}
-		case policyv1alpha1.LabelSelectorOpDoesNotExist:
-			if exists {
-				return false
-			}
-		}
-	}
-
-	return true
+	return matchesSelector(pod.Labels, policy.Spec.Selector)
 }
 
 func (r *ContainerLearnerReconciler) startLearningForContainer(

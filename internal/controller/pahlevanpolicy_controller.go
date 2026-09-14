@@ -404,7 +404,7 @@ func (r *PahlevanPolicyReconciler) discoverTargetWorkloads(ctx context.Context, 
 	}
 
 	for _, deployment := range deployments.Items {
-		if r.matchesSelector(deployment.Labels, policy.Spec.Selector) {
+		if matchesSelector(deployment.Labels, policy.Spec.Selector) {
 			workloads = append(workloads, &deployment)
 		}
 	}
@@ -418,7 +418,7 @@ func (r *PahlevanPolicyReconciler) discoverTargetWorkloads(ctx context.Context, 
 	}
 
 	for _, sts := range statefulSets.Items {
-		if r.matchesSelector(sts.Labels, policy.Spec.Selector) {
+		if matchesSelector(sts.Labels, policy.Spec.Selector) {
 			workloads = append(workloads, &sts)
 		}
 	}
@@ -432,7 +432,7 @@ func (r *PahlevanPolicyReconciler) discoverTargetWorkloads(ctx context.Context, 
 	}
 
 	for _, ds := range daemonSets.Items {
-		if r.matchesSelector(ds.Labels, policy.Spec.Selector) {
+		if matchesSelector(ds.Labels, policy.Spec.Selector) {
 			workloads = append(workloads, &ds)
 		}
 	}
@@ -491,55 +491,6 @@ func (r *PahlevanPolicyReconciler) getWorkloadContainers(ctx context.Context, wo
 	}
 
 	return containers, nil
-}
-
-func (r *PahlevanPolicyReconciler) matchesSelector(labels map[string]string, selector policyv1alpha1.LabelSelector) bool {
-	// Check matchLabels
-	for key, value := range selector.MatchLabels {
-		if labels[key] != value {
-			return false
-		}
-	}
-
-	// Check matchExpressions
-	for _, expr := range selector.MatchExpressions {
-		labelValue, exists := labels[expr.Key]
-
-		switch expr.Operator {
-		case policyv1alpha1.LabelSelectorOpIn:
-			if !exists {
-				return false
-			}
-			found := false
-			for _, value := range expr.Values {
-				if labelValue == value {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return false
-			}
-		case policyv1alpha1.LabelSelectorOpNotIn:
-			if exists {
-				for _, value := range expr.Values {
-					if labelValue == value {
-						return false
-					}
-				}
-			}
-		case policyv1alpha1.LabelSelectorOpExists:
-			if !exists {
-				return false
-			}
-		case policyv1alpha1.LabelSelectorOpDoesNotExist:
-			if exists {
-				return false
-			}
-		}
-	}
-
-	return true
 }
 
 func (r *PahlevanPolicyReconciler) shouldTransitionToEnforcement(policy *policyv1alpha1.PahlevanPolicy) bool {

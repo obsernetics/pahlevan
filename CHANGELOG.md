@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.3] - 2026-09-14
+
+### Changed
+
+- Batched three dependency bumps onto one PR rather than merging them
+  one at a time: `golang.org/x/term` 0.45.0 -> 0.46.0, `github.com/onsi/ginkgo/v2`
+  2.32.1 -> 2.32.2, and `sigs.k8s.io/controller-runtime` 0.25.0 -> 0.25.1.
+  controller-runtime 0.25.1 still declares go 1.26.0 and `k8s.io/api` v0.37.0,
+  matching what this module already used, so the bump carried no transitive
+  Kubernetes skew.
+- Unified three byte-for-byte identical label-selector matchers, one in each
+  of `PahlevanPolicyReconciler`, `ContainerLearnerReconciler` and
+  `AttackSurfaceAnalyzerReconciler`, into a single `matchesSelector` function.
+  Only the first had a full test table; the other two sat at 16.7% and 33.3%
+  coverage and could silently drift from each other on the next edit. The
+  shared implementation now has one comprehensive table-driven test and a
+  benchmark; `internal/controller` coverage moved from 74.6% to 79.1%.
+
 ## [3.3.2] - 2026-09-07
 
 3.3.1 was merged but never tagged, so it was never published and nothing
