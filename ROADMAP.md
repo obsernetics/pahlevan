@@ -287,10 +287,18 @@ polish item.
 - **Planned: re-measure the footprint.** BPF map preallocation, which dominated
   an early 327 MiB figure, is 37.7 MiB across all seven programs on Linux 6.8.
   End-to-end agent memory has not been measured since, so no figure is quoted.
-- **Planned: more tracing.** The OpenTelemetry pipeline is real - exporters for
-  metrics, traces and logs, one shared resource, a deployable collector - but
-  very little of the codebase calls `StartSpan`, so a trace shows the reconcile
-  boundaries and almost nothing inside them.
+- **Done in the tree: tracing that shows something.** Spans now cover policy
+  reconcile and its phase handlers, the learning window and its close, profile
+  generation, eBPF load and attach per program, map sizing, and enforcement
+  mode changes, with failures recorded as errors rather than only logged. The
+  per-event hot path is deliberately untraced - a span per eBPF event would
+  cost more than the monitoring it describes - and a test enforces that rather
+  than a comment. Three things that implied a capability they did not have were
+  deleted: a second hand-rolled tracer whose spans went into a map nothing read
+  and nothing pruned, a `Traces` field that handed every exporter an empty
+  slice forever, and a `TracerProvider` built with zero span processors that
+  reported tracing as enabled. Still uninstrumented:
+  `internal/learner.SyscallLearner` itself.
 - **Planned: graduate the API past `v1alpha1`**, with a conversion path, once
   the CRD shape has stopped moving.
 

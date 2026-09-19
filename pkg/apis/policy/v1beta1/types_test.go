@@ -104,11 +104,17 @@ func fullPahlevanPolicy() *PahlevanPolicy {
 					Protocols: []string{"TCP"},
 					Ports:     []NetworkPort{{Port: i32(443), StartPort: i32(8000), EndPort: i32(8100), Protocol: "TCP"}},
 					Peers: []NetworkPeer{{
-						IPBlock:           &IPBlock{CIDR: "10.0.0.1/32", Except: []string{"10.0.0.2/32"}},
-						NamespaceSelector: &LabelSelector{MatchLabels: map[string]string{"env": "prod"}},
-						PodSelector: &LabelSelector{
+						IPBlock: &IPBlock{CIDR: "10.0.0.1/32", Except: []string{"10.0.0.2/32"}},
+						NamespaceSelector: &LabelSelector{
+							MatchLabels: map[string]string{"env": "prod"},
 							MatchExpressions: []LabelSelectorRequirement{{
-								Key: "app", Operator: LabelSelectorOpExists,
+								Key: "team", Operator: LabelSelectorOpIn, Values: []string{"payments"},
+							}},
+						},
+						PodSelector: &LabelSelector{
+							MatchLabels: map[string]string{"app": "api"},
+							MatchExpressions: []LabelSelectorRequirement{{
+								Key: "app", Operator: LabelSelectorOpIn, Values: []string{"api"},
 							}},
 						},
 					}},
@@ -117,8 +123,22 @@ func fullPahlevanPolicy() *PahlevanPolicy {
 				IngressRules: []NetworkRule{{
 					Protocols: []string{"UDP"},
 					Ports:     []NetworkPort{{Port: i32(53), StartPort: i32(1), EndPort: i32(2), Protocol: "UDP"}},
-					Peers:     []NetworkPeer{{IPBlock: &IPBlock{CIDR: "10.1.0.1/32", Except: []string{"10.1.0.2/32"}}}},
-					Action:    PolicyActionAudit,
+					Peers: []NetworkPeer{{
+						IPBlock: &IPBlock{CIDR: "10.1.0.1/32", Except: []string{"10.1.0.2/32"}},
+						NamespaceSelector: &LabelSelector{
+							MatchLabels: map[string]string{"env": "prod"},
+							MatchExpressions: []LabelSelectorRequirement{{
+								Key: "team", Operator: LabelSelectorOpExists, Values: []string{"payments"},
+							}},
+						},
+						PodSelector: &LabelSelector{
+							MatchLabels: map[string]string{"app": "web"},
+							MatchExpressions: []LabelSelectorRequirement{{
+								Key: "app", Operator: LabelSelectorOpIn, Values: []string{"web"},
+							}},
+						},
+					}},
+					Action: PolicyActionAudit,
 				}},
 				DefaultAction: PolicyActionDeny,
 				AllowLoopback: true,
@@ -236,7 +256,7 @@ func fullContainerProfile() *ContainerProfile {
 		},
 		Status: ContainerProfileStatus{
 			Phase:                      ProfilePhaseEnforcing,
-			LearnedSyscalls:            []int64{0, 1, 2},
+			LearnedSyscalls:            []int64{1, 2, 3},
 			LearnedFiles:               []string{"/etc/nginx/nginx.conf"},
 			LearnedNetworkDestinations: []string{"10.0.0.1:443"},
 			LearnedExecutables:         []string{"/usr/sbin/nginx"},
@@ -389,7 +409,7 @@ func TestDeepCopyIsEqualAndIndependent(t *testing.T) {
 				c.Status.Seccomp.AllowedSyscalls = 0
 			},
 			check: func(t *testing.T) {
-				assert.Equal(t, int64(0), profile.Status.LearnedSyscalls[0])
+				assert.Equal(t, int64(1), profile.Status.LearnedSyscalls[0])
 				assert.Equal(t, int32(40), profile.Status.Seccomp.AllowedSyscalls)
 			},
 		},
