@@ -176,7 +176,7 @@ pahlevan() {
       for frame in overview policies workloads events coverage; do
         printf '\033[H\033[2J'
         cat "${DEMO_CONSOLE}/${frame}.ansi"
-        sleep 2.4
+        sleep 3
       done
       printf '\033[?1049l'
       ;;
