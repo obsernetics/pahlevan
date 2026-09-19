@@ -19,10 +19,7 @@ import (
 // generatedPages lists every HTML file this generator produces.
 func generatedPages(t *testing.T) map[string]string {
 	t.Helper()
-	site, err := Build(repoRoot)
-	if err != nil {
-		t.Fatalf("building the site: %v", err)
-	}
+	site := repoSite(t)
 	out := map[string]string{}
 	for path, data := range site.Files {
 		if strings.HasSuffix(path, ".html") {
@@ -79,6 +76,7 @@ func checkBalanced(doc string) string {
 }
 
 func TestGeneratedPagesAreWellFormed(t *testing.T) {
+	t.Parallel()
 	for path, doc := range generatedPages(t) {
 		if problem := checkBalanced(doc); problem != "" {
 			t.Errorf("%s is not well-formed: %s", path, problem)
@@ -90,6 +88,7 @@ func TestGeneratedPagesAreWellFormed(t *testing.T) {
 }
 
 func TestGeneratedPagesCarryTheSiteChrome(t *testing.T) {
+	t.Parallel()
 	for path, doc := range generatedPages(t) {
 		if path == changelogOut {
 			// Hand-written, and only its release region is generated.
@@ -117,6 +116,7 @@ func TestGeneratedPagesCarryTheSiteChrome(t *testing.T) {
 // renderer's promises: the only scripts on a generated page are the two the
 // layout loads, and neither comes from a markdown file.
 func TestNoScriptComesFromMarkdown(t *testing.T) {
+	t.Parallel()
 	allowed := map[string]bool{
 		"https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js":               true,
 		"https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js": true,
@@ -152,10 +152,8 @@ func TestNoScriptComesFromMarkdown(t *testing.T) {
 // A link to a page that does not exist is a 404 a reader finds, not a build
 // that fails, so it has to be checked here.
 func TestEveryInternalLinkResolves(t *testing.T) {
-	site, err := Build(repoRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Parallel()
+	site := repoSite(t)
 	published := map[string]bool{}
 	for p := range site.Files {
 		published[p] = true
@@ -272,6 +270,7 @@ func between(s, open, closing string) string {
 // A page whose markup this generator produced has to survive being written and
 // read back byte for byte, or -check would report drift on every run.
 func TestWriteThenCheckIsClean(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	site, err := Build(root)
 	if err != nil {
@@ -296,6 +295,7 @@ func TestWriteThenCheckIsClean(t *testing.T) {
 // -check has to fail when a document changes and nobody regenerates. This is
 // the review gate.
 func TestEditingADocumentMakesCheckFail(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	path := filepath.Join(root, docsDir, "architecture.md")
 	data, err := os.ReadFile(path)
@@ -321,6 +321,7 @@ func TestEditingADocumentMakesCheckFail(t *testing.T) {
 
 // The same gate for the changelog: the 3.3.3 failure, at the generator level.
 func TestAddingAReleaseMakesCheckFail(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	path := filepath.Join(root, changelogSrc)
 	data, err := os.ReadFile(path)

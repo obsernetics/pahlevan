@@ -7,157 +7,415 @@ on:
   pull_request:
     branches: [ main ]
 
+# A second push to the same branch used to leave the first one running: two
+# 13-minute pipelines competing for the same runners, and the older one's
+# result meaningless the moment it finished. Tags are their own ref, so a
+# release run can never be cancelled by a later push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   GO_VERSION: "1.26.7"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Pinned by version AND by digest: the tarball is fetched from the release
+  # page rather than compiled, so the checksum is what makes that safe.
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+  # Nothing in this module reads debug.ReadBuildInfo's VCS stamps - the version
+  # string comes from -ldflags in the Dockerfile - so stamping only costs a git
+  # invocation per main package, and it is the one thing that can fail on the
+  # shallow clones below.
+  GOFLAGS: "-buildvcs=false"
 
 jobs:
+  # Everything below used to run on every commit, including commits that only
+  # touched prose. A README fix cost the full 13-minute pipeline.
+  #
+  # This is a job rather than a workflow-level `paths-ignore:` on purpose. A
+  # path-filtered workflow does not run at all, so its required status check
+  # never reports and a branch-protected pull request waits for it forever.
+  # Filtering here keeps the "CI" gate below reporting on every commit while
+  # the expensive jobs skip.
+  #
+  # It asks the API instead of using a path-filter action so that it needs no
+  # checkout at all: ~5 seconds, against the ~25 seconds a clone of this
+  # repository's 254MB of history costs.
+  changes:
+    name: Detect what changed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Classify the changed paths
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -uo pipefail
+
+          # Every unknown answers "run everything". Skipping the pipeline
+          # because a lookup failed is how an unbuildable commit reaches main.
+          run_everything() {
+            echo "$1"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # A tag push publishes an image and a release, whatever it touched.
+          if [ "${REF_TYPE}" = "tag" ]; then
+            run_everything "Tag push: building and publishing regardless of the diff."
+          fi
+
+          case "${EVENT_NAME}" in
+            pull_request)
+              files="$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/files" \
+                --jq '.[].filename')" \
+                || run_everything "Could not list the pull request's files."
+              ;;
+            push)
+              # The first push to a new branch has an all-zero "before".
+              case "${BEFORE_SHA}" in
+                ""|0000000000000000000000000000000000000000)
+                  run_everything "No previous commit to compare against."
+                  ;;
+              esac
+              files="$(gh api "repos/${REPO}/compare/${BEFORE_SHA}...${HEAD_SHA}" \
+                --jq '.files[]?.filename')" \
+                || run_everything "Could not compare ${BEFORE_SHA}...${HEAD_SHA}."
+              ;;
+            *)
+              run_everything "Event ${EVENT_NAME} is not filtered."
+              ;;
+          esac
+
+          [ -n "${files}" ] || run_everything "Empty diff; not guessing."
+
+          echo "Changed files:"
+          printf '%s\n' "${files}" | sed 's/^/  /'
+
+          # Prose only: nothing here can change a compiled binary or the
+          # image. hack/ is Go and .github/workflows/ is what actionlint
+          # reads, so neither is listed.
+          #
+          # docs/, pages/ and CHANGELOG.md ARE listed even though
+          # hack/sitegen and hack/pagesync read them in their tests. That gap
+          # is closed in pages.yml, which triggers on exactly those paths and
+          # runs `go test ./hack/...` there - the docs-shaped tests run in the
+          # docs-shaped workflow instead of dragging the whole Go suite,
+          # the race detector and a two-architecture image build along with a
+          # typo fix. Keep the two lists in step.
+          if printf '%s\n' "${files}" \
+            | grep -qvE '^(docs/|pages/|\.github/ISSUE_TEMPLATE/|[^/]+\.md$|LICENSE$|CODEOWNERS$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "Result: code changed, running the full pipeline."
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "Result: documentation only, skipping the compile and test jobs."
+          fi
+
+  # The five jobs below were one serial job that took ~6m20s. They share no
+  # state, so running them concurrently turns that sum into its largest term.
+  # They all restore the same cache, keyed identically by ./.github/actions/go-setup.
+
   build:
     name: Build
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
-    - name: Checkout
-      uses: actions/checkout@v7
+      # Only the working tree is needed. Full history on this repository is
+      # 254MB; depth 1 is a few hundred KB.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
 
-    - name: Setup Go
-      uses: actions/setup-go@v7
-      with:
-        go-version: ${{ env.GO_VERSION }}
+      - name: Setup Go
+        uses: ./.github/actions/go-setup
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
-    - name: Cache Go modules
-      uses: actions/cache@v6
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-mod-
+      # `go build ./...` rather than just the three commands: it is what makes
+      # this job a trustworthy gate for push-image, and the extra packages are
+      # nearly free once their dependencies are compiled.
+      - name: Compile every package
+        run: go build ./...
 
-    - name: Cache Go build
-      uses: actions/cache@v6
-      with:
-        path: ~/.cache/go-build
-        key: ${{ runner.os }}-go-build-${{ hashFiles('**/*.go') }}
-        restore-keys: |
-          ${{ runner.os }}-go-build-
+      # The eBPF Go bindings and their embedded objects are committed, so no
+      # clang/bpf2go codegen is needed here. Regenerate out-of-band with
+      # `make ebpf`.
+      - name: Build binaries
+        run: |
+          go build -o bin/pahlevan-agent ./cmd/pahlevan-agent
+          go build -o bin/pahlevan-operator ./cmd/pahlevan-operator
+          go build -o bin/pahlevan ./cmd/pahlevan
 
-    # The eBPF Go bindings and their embedded objects are committed, so no
-    # clang/bpf2go codegen is needed here. Regenerate out-of-band with `make ebpf`.
-    - name: Build binaries
-      run: |
-        go build -o bin/pahlevan-agent ./cmd/pahlevan-agent
-        go build -o bin/pahlevan-operator ./cmd/pahlevan-operator
-        go build -o bin/pahlevan ./cmd/pahlevan
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries
+          path: bin/
 
-    # The build alone never caught a regression. Vet, test, race, and format are
-    # what actually gate quality, so they run here rather than only locally.
-    - name: Vet
-      run: go vet ./...
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
 
-    - name: Test
-      run: go test -count=1 -coverprofile=coverage.out ./...
+      - name: Setup Go
+        uses: ./.github/actions/go-setup
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
-    - name: Test (race)
-      run: go test -count=1 -race ./...
+      # -p is left at its default, which is GOMAXPROCS, which is the hosted
+      # runner's 4 vCPUs. Forcing it higher does not help: 40 test packages
+      # against 4 cores is already saturated, and each extra concurrent package
+      # brings its own compile and its own envtest-shaped memory, so the run
+      # gets slower and flakier rather than faster.
+      - name: Test
+        run: go test -count=1 -coverprofile=coverage.out ./...
 
-    - name: Check formatting
-      run: |
-        # Piped into xargs rather than substituted into gofmt's arguments: the
-        # unquoted substitution split on whitespace, so a path containing a
-        # space would have been checked as two files that do not exist.
-        unformatted=$(git ls-files '*.go' | grep -v zz_generated | xargs -r gofmt -l)
-        if [ -n "$unformatted" ]; then
-          echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
-        fi
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
 
-    - name: Coverage summary
-      run: go tool cover -func=coverage.out | tail -1
+  test-race:
+    name: Test (race)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
 
-    # A workflow with a malformed expression does not fail loudly: GitHub
-    # reports the run under the file's path instead of its name, ends it in
-    # zero seconds, and every job it was supposed to gate simply never appears.
-    # That is indistinguishable from a workflow that passed, which is how a
-    # broken `${{ ... }}` reached main once already.
-    - name: Lint the workflows
-      # Installed at a pinned version through the Go toolchain this job
-      # already has, rather than by piping an unpinned installer script from
-      # the network into a shell.
-      run: |
-        go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-        "$(go env GOPATH)/bin/actionlint" -color
+      - name: Setup Go
+        uses: ./.github/actions/go-setup
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
-    # arm64 is a supported target claim, so prove it still compiles.
-    - name: Cross-compile arm64
-      run: GOOS=linux GOARCH=arm64 go build ./...
+      # The longest of the Go jobs at ~2m45s. On its own runner that is now
+      # spent in parallel with the other four rather than added to them.
+      - name: Test (race)
+        run: go test -count=1 -race ./...
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v7
-      with:
-        name: binaries
-        path: bin/
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: ./.github/actions/go-setup
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # The build alone never caught a regression. Vet, test, race, and format
+      # are what actually gate quality.
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          # Piped into xargs rather than substituted into gofmt's arguments:
+          # the unquoted substitution split on whitespace, so a path containing
+          # a space would have been checked as two files that do not exist.
+          unformatted=$(git ls-files '*.go' | grep -v zz_generated | xargs -r gofmt -l)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+
+      # A workflow with a malformed expression does not fail loudly: GitHub
+      # reports the run under the file's path instead of its name, ends it in
+      # zero seconds, and every job it was supposed to gate simply never
+      # appears. That is indistinguishable from a workflow that passed, which
+      # is how a broken `${{ ... }}` reached main once already.
+      #
+      # `go install actionlint@v1.7.12` compiled the tool from source on every
+      # run. Measured cold, that is 15s on a 12-core machine and proportionally
+      # worse on a 4-vCPU runner; the release tarball takes 0.3s. It is not
+      # cached either, because an actions/cache restore plus save round-trip
+      # costs several seconds more than simply downloading it again. The
+      # version and the SHA-256 are both pinned in `env:` above, so this is
+      # still a fixed artifact and not an unpinned installer piped into a
+      # shell.
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL --retry 3 -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          # Unpacked into RUNNER_TEMP rather than /usr/local/bin: no sudo, and
+          # nothing is left behind on a self-hosted runner.
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" --version
+
+      - name: Lint the workflows
+        run: |
+          "${RUNNER_TEMP}/actionlint" -color
+
+      # The "CI" gate below is the single check branch protection requires, so
+      # a bug that makes it pass while a job is red would be invisible. These
+      # cases feed the gate's own script contrived job results and assert the
+      # exit codes, on every run, for about a second.
+      - name: Prove the CI gate fails when a dependency fails
+        run: bash .github/actions/require-success/selftest.sh
+
+  cross-compile:
+    name: Cross-compile arm64
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: ./.github/actions/go-setup
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # arm64 is a supported target claim, so prove it still compiles. It costs
+      # ~80s because the arm64 objects are a separate build cache from the
+      # amd64 ones every other job warms - which is exactly why it belongs on
+      # its own runner instead of at the end of the serial chain.
+      - name: Cross-compile arm64
+        run: GOOS=linux GOARCH=arm64 go build ./...
 
   push-image:
     name: Push to GHCR
     runs-on: ubuntu-latest
+    # Was `needs: build` on the whole monolith, so the image waited out the
+    # tests, the race detector and the arm64 build - about five minutes - even
+    # though it recompiles everything inside Docker anyway.
+    #
+    # The dependency is not dropped entirely. The Dockerfile does compile from
+    # source today, so a broken commit could not produce a pushed image even
+    # with no `needs:` at all - but that is a property of a file another team
+    # owns, and it would disappear the day the Dockerfile starts COPYing
+    # prebuilt binaries. Depending on `build` states the guarantee here, costs
+    # about a minute of latency, and saves a ~6-minute two-architecture Docker
+    # build on every commit that does not compile.
+    #
+    # `build` is skipped on a documentation-only change, which skips this job
+    # too: republishing a byte-identical image for a README fix is pure cost.
     needs: build
     permissions:
       contents: read
       packages: write
     steps:
-    - name: Checkout
-      uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # The build context is the working tree; .dockerignore excludes .git
+          # entirely, so history would be fetched only to be thrown away.
+          fetch-depth: 1
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
-    - name: Log in to GHCR
-      uses: docker/login-action@v4
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Extract metadata (tags, labels)
-      id: meta
-      uses: docker/metadata-action@v6
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          # {{branch}} is only non-empty on a push to a branch. On a tag push
-          # and on a pull_request it expands to nothing, producing the invalid
-          # tag ":-<sha>" and failing the whole build. Gating on ref_type alone
-          # was not enough: a pull_request has ref_type 'branch' but no branch
-          # name, so the PR case still broke. Everything that is not a branch
-          # push gets the plain sha- prefix.
-          type=sha,prefix={{branch}}-,enable=${{ github.event_name == 'push' && github.ref_type == 'branch' }}
-          type=sha,prefix=sha-,enable=${{ !(github.event_name == 'push' && github.ref_type == 'branch') }}
-          type=raw,value=latest,enable={{is_default_branch}}
-          # Version tags (v3.0.0) publish 3.0.0, 3.0, 3 and the raw tag name.
-          type=ref,event=tag
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=semver,pattern={{major}}
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            # {{branch}} is only non-empty on a push to a branch. On a tag push
+            # and on a pull_request it expands to nothing, producing the invalid
+            # tag ":-<sha>" and failing the whole build. Gating on ref_type alone
+            # was not enough: a pull_request has ref_type 'branch' but no branch
+            # name, so the PR case still broke. Everything that is not a branch
+            # push gets the plain sha- prefix.
+            type=sha,prefix={{branch}}-,enable=${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+            type=sha,prefix=sha-,enable=${{ !(github.event_name == 'push' && github.ref_type == 'branch') }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            # Version tags (v3.0.0) publish 3.0.0, 3.0, 3 and the raw tag name.
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
 
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v7
-      with:
-        context: .
-        push: true
-        # arm64 is a supported target: the agent ships per-arch BPF objects.
-        platforms: linux/amd64,linux/arm64
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        build-args: |
-          VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
-          COMMIT=${{ github.sha }}
-          DATE=${{ github.event.head_commit.timestamp }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          # arm64 is a supported target: the agent ships per-arch BPF objects.
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache in the Actions cache service. mode=max stores the
+          # intermediate builder stages too, so `go mod download` is reused
+          # across runs instead of re-fetching the module graph twice (once per
+          # architecture) on every build.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ github.event.head_commit.timestamp }}
+
+  # One status check for branch protection to require, instead of six that
+  # would each have to be listed and kept in sync as jobs are added or renamed.
+  #
+  # `if: always()` is what lets it report at all when a dependency is red - and
+  # it is also why the job cannot just be empty: an always() job with no steps
+  # passes. The action it calls fails unless every result is success or
+  # skipped, and .github/actions/require-success/selftest.sh proves it.
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [changes, build, test, test-race, lint, cross-compile, push-image]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Require every job to have succeeded
+        uses: ./.github/actions/require-success
+        with:
+          needs: ${{ toJSON(needs) }}
 
   release:
     name: Create Release
@@ -170,15 +428,18 @@ jobs:
     permissions:
       contents: write
     steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Was fetch-depth: 0. Nothing here reads git history: the only file
+          # published is the committed install.yaml, and generate_release_notes
+          # is computed by the GitHub API from the tag, not from a local log.
+          fetch-depth: 1
 
-    - name: Publish release with install.yaml
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ github.ref_name }}
-        name: ${{ github.ref_name }}
-        generate_release_notes: true
-        files: install.yaml
+      - name: Publish release with install.yaml
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: install.yaml

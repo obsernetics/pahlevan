@@ -20,6 +20,10 @@ type ring struct {
 	start   int // index of the oldest element
 	size    int // number of elements held
 	dropped uint64
+	// gen counts mutations. It is what lets a cached filter result tell
+	// "nothing has arrived since I scanned" from "the ring has turned over",
+	// without comparing the contents of four thousand events.
+	gen uint64
 }
 
 func newRing(capacity int) *ring {
@@ -31,6 +35,7 @@ func newRing(capacity int) *ring {
 
 // push appends an event, evicting the oldest if the buffer is full.
 func (r *ring) push(e export.Event) {
+	r.gen++
 	if r.size < len(r.buf) {
 		r.buf[(r.start+r.size)%len(r.buf)] = e
 		r.size++
@@ -92,6 +97,7 @@ func (r *ring) last(n int) []export.Event {
 // reset empties the buffer, keeping its capacity and the dropped count. The
 // count survives because it describes the session, not the current contents.
 func (r *ring) reset() {
+	r.gen++
 	r.start = 0
 	r.size = 0
 }

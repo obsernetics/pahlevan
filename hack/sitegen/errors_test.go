@@ -11,6 +11,7 @@ import (
 // a generator that kept going would publish something wrong rather than stop.
 
 func TestAnEmptyDocsDirectoryIsAnError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, docsDir), 0o755); err != nil {
 		t.Fatal(err)
@@ -22,12 +23,14 @@ func TestAnEmptyDocsDirectoryIsAnError(t *testing.T) {
 }
 
 func TestAMissingDocsDirectoryIsAnError(t *testing.T) {
+	t.Parallel()
 	if _, err := LoadDocs(t.TempDir()); err == nil {
 		t.Fatal("a missing docs/ was accepted")
 	}
 }
 
 func TestAMissingChangelogIsAnError(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	if err := os.Remove(filepath.Join(root, changelogSrc)); err != nil {
 		t.Fatal(err)
@@ -38,6 +41,7 @@ func TestAMissingChangelogIsAnError(t *testing.T) {
 }
 
 func TestAChangelogWithNoReleasesIsAnError(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	if err := os.WriteFile(filepath.Join(root, changelogSrc), []byte("# Changelog\n\nNothing here.\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -50,6 +54,7 @@ func TestAChangelogWithNoReleasesIsAnError(t *testing.T) {
 // If the markers are deleted from the page, the articles have nowhere to go.
 // Carrying on would leave whatever was last committed published for ever.
 func TestAChangelogPageWithNoRegionIsAnError(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	page, err := os.ReadFile(filepath.Join(root, changelogOut))
 	if err != nil {
@@ -67,6 +72,7 @@ func TestAChangelogPageWithNoRegionIsAnError(t *testing.T) {
 // A document embedding a diagram that is not in the repository would publish a
 // page with a broken image, and the page would still return 200.
 func TestAMissingDiagramIsAnError(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	if err := os.Remove(filepath.Join(root, docsDir, "assets", "architecture.svg")); err != nil {
 		t.Fatal(err)
@@ -79,6 +85,7 @@ func TestAMissingDiagramIsAnError(t *testing.T) {
 // Every page needs a meta description: it is what a search result shows, and
 // an empty one shows a scrape of the navigation instead.
 func TestADocumentWithNoLedeStillDescribesItself(t *testing.T) {
+	t.Parallel()
 	page := &Page{Title: "A topic"}
 	got := metaDescription(page)
 	if !strings.Contains(got, "A topic") {
@@ -87,6 +94,7 @@ func TestADocumentWithNoLedeStillDescribesItself(t *testing.T) {
 }
 
 func TestCollapseProse(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ in, want string }{
 		{"a\nb   c", "a b c"},
 		{"<p>one</p>\n<p>two</p>", "<p>one</p> <p>two</p>"},
@@ -103,6 +111,7 @@ func TestCollapseProse(t *testing.T) {
 }
 
 func TestUnwrapParagraph(t *testing.T) {
+	t.Parallel()
 	if got := unwrapParagraph("<p>text</p>\n"); got != "text" {
 		t.Errorf("got %q", got)
 	}
@@ -121,6 +130,7 @@ func TestUnwrapParagraph(t *testing.T) {
 // attribute. A quote in one would close the attribute and spill the rest of
 // the sentence into the markup.
 func TestLayoutEscapesItsValues(t *testing.T) {
+	t.Parallel()
 	l := newLayout(`A "quoted" <title>`, `An & ampersand`, "docs/x.html", "docs/x.md", "<p>body</p>")
 	out, err := l.render()
 	if err != nil {
@@ -143,6 +153,7 @@ func TestLayoutEscapesItsValues(t *testing.T) {
 
 // -write has to create the directory the first time.
 func TestWriteCreatesTheOutputDirectory(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	if err := os.RemoveAll(filepath.Join(root, docsOut)); err != nil {
 		t.Fatal(err)

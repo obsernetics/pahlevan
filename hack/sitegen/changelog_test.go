@@ -102,6 +102,7 @@ func realChangelogPage(t *testing.T) string {
 }
 
 func TestEveryReleaseHasAnArticleAndTheNewestIsCurrent(t *testing.T) {
+	t.Parallel()
 	if c := auditReleases(realReleases(t), realChangelogPage(t)); len(c) > 0 {
 		t.Errorf("the changelog page disagrees with CHANGELOG.md:\n  %s\n\nrun: go run ./hack/sitegen -write",
 			strings.Join(c, "\n  "))
@@ -111,6 +112,7 @@ func TestEveryReleaseHasAnArticleAndTheNewestIsCurrent(t *testing.T) {
 // The proof that the test above is worth having: break the page the way 3.3.3
 // broke it and confirm the audit fails.
 func TestRemovingAnArticleIsCaught(t *testing.T) {
+	t.Parallel()
 	releases := realReleases(t)
 	page := realChangelogPage(t)
 
@@ -141,6 +143,7 @@ func TestRemovingAnArticleIsCaught(t *testing.T) {
 }
 
 func TestAnInventedReleaseIsCaught(t *testing.T) {
+	t.Parallel()
 	page := strings.Replace(realChangelogPage(t),
 		`<h3 class="release-version">1.0.0</h3>`,
 		`<h3 class="release-version">9.9.9</h3>`, 1)
@@ -151,6 +154,7 @@ func TestAnInventedReleaseIsCaught(t *testing.T) {
 }
 
 func TestTheCurrentBadgeOnTheWrongReleaseIsCaught(t *testing.T) {
+	t.Parallel()
 	page := realChangelogPage(t)
 	moved := strings.Replace(page, `<span class="release-pill">Current</span>`+"\n", "", 1)
 	moved = strings.Replace(moved,
@@ -180,6 +184,7 @@ func removeArticle(t *testing.T, page, version string) string {
 }
 
 func TestParseChangelogReadsEveryRelease(t *testing.T) {
+	t.Parallel()
 	releases := realReleases(t)
 	if len(releases) < 2 {
 		t.Fatalf("parsed %d sections from CHANGELOG.md", len(releases))
@@ -218,6 +223,7 @@ func TestParseChangelogReadsEveryRelease(t *testing.T) {
 }
 
 func TestReleaseMarkupMatchesTheSite(t *testing.T) {
+	t.Parallel()
 	articles := RenderReleases(realReleases(t))
 	for _, want := range []string{
 		`<article class="release">`,
@@ -244,6 +250,7 @@ func TestReleaseMarkupMatchesTheSite(t *testing.T) {
 
 // The bug that made the whole page scroll sideways.
 func TestACodeBlockInAReleaseNoteKeepsItsLines(t *testing.T) {
+	t.Parallel()
 	articles := RenderReleases(realReleases(t))
 	if !strings.Contains(articles, "<pre>") {
 		t.Skip("no release note currently carries a code block")
@@ -258,6 +265,7 @@ func TestACodeBlockInAReleaseNoteKeepsItsLines(t *testing.T) {
 }
 
 func TestSpliceNeedsItsRegion(t *testing.T) {
+	t.Parallel()
 	if _, err := SpliceReleases([]byte("<html><body>no markers</body></html>"), "x"); err == nil {
 		t.Error("splicing into a page with no generated region should be an error, not a silent no-op that leaves last month's articles published")
 	}
@@ -275,6 +283,7 @@ func TestSpliceNeedsItsRegion(t *testing.T) {
 }
 
 func TestAnEmptyUnreleasedSectionIsNotPublished(t *testing.T) {
+	t.Parallel()
 	articles := RenderReleases([]release{
 		{Version: unreleased},
 		{Version: "1.0.0", Date: "2026-01-01", Groups: []changeGroup{{Kind: "Added", Items: []string{"A thing."}}}},

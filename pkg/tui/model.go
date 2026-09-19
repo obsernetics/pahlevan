@@ -62,6 +62,41 @@ func (v View) String() string {
 	return "unknown"
 }
 
+// abbrev is the three-letter form of a view's name, for the tab strip on a
+// terminal too narrow for words. Numbers alone would be shorter still, but a
+// number does not tell somebody who has just opened the console what is on
+// the screen they are looking at.
+func (v View) abbrev() string {
+	switch v {
+	case ViewOverview:
+		return "ovr"
+	case ViewPolicies:
+		return "pol"
+	case ViewProfiles:
+		return "prf"
+	case ViewWorkloads:
+		return "wkl"
+	case ViewEvents:
+		return "evt"
+	case ViewSurface:
+		return "atk"
+	case ViewCoverage:
+		return "cov"
+	case ViewHelp:
+		return "hlp"
+	}
+	return "?"
+}
+
+// short is the tab label when the full name does not fit. Only the attack
+// surface has a name long enough to need one.
+func (v View) short() string {
+	if v == ViewSurface {
+		return "surface"
+	}
+	return v.String()
+}
+
 // Messages delivered to Update.
 type (
 	// EventMsg carries one event from the source.
@@ -92,6 +127,16 @@ type Workload struct {
 	Denials    int
 	LastSeen   time.Time
 	DeniedWhat []string // most recent denial descriptions, bounded
+}
+
+// Display names the workload the way a person reads it. The Kind is in Key
+// because the key has to be unique across namespaces and kinds; in a column
+// competing for width it is noise that pushes the name out.
+func (w *Workload) Display() string {
+	if w.Namespace == "" || w.Name == "" {
+		return w.Key
+	}
+	return w.Namespace + "/" + w.Name
 }
 
 // deniedWhatCap bounds the per-workload denial list. The list is a hint for
@@ -142,16 +187,24 @@ type Model struct {
 	// Widgets. The table is reused across views rather than one per view:
 	// every view sets its own columns and its own window of rows, and seven
 	// live tables would be seven viewports to keep in sync on a resize.
-	tbl    table.Model
-	detail viewport.Model
-	input  textinput.Model
-	help   help.Model
-	spin   spinner.Model
-	prog   progress.Model
-	keys   keyMap
+	tbl table.Model
+	// tblCols is the column layout the table currently holds, kept so a frame
+	// that changes nothing does not make the widget re-render every row.
+	tblCols []table.Column
+	detail  viewport.Model
+	input   textinput.Model
+	help    help.Model
+	spin    spinner.Model
+	prog    progress.Model
+	keys    keyMap
 
 	filtering bool
 	spinning  bool
+
+	// The last filter scan, kept so one frame scans the ring once.
+	matched     []export.Event
+	matchNeedle string
+	matchGen    uint64
 
 	width, height int
 	started       time.Time
@@ -453,7 +506,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// quit the program.
 	if m.filtering {
 		switch {
-		case key.Matches(msg, m.keys.Quit) && msg.Type == tea.KeyCtrlC:
+		// ctrl+c still quits, because it is what a person reaches for when
+		// they want out and it is not a character anybody means to type.
+		case msg.Type == tea.KeyCtrlC:
 			m.quitting = true
 			return m, tea.Quit
 		case msg.Type == tea.KeyEnter:
@@ -667,7 +722,7 @@ func (m *Model) rowCount() int {
 	case ViewWorkloads:
 		return len(m.filteredWorkloads())
 	case ViewEvents:
-		return len(m.filteredEvents())
+		return m.eventRowCount()
 	case ViewSurface:
 		return len(m.filteredSurfaces())
 	case ViewCoverage:
@@ -689,38 +744,43 @@ func (m *Model) filterText() string { return m.input.Value() }
 
 // filteredEvents returns the events matching the filter, oldest first.
 //
-// Callers that only draw a window should use filteredWindow: this copies the
-// whole ring, and a redraw happens per event, so on a busy node it is the
-// dominant cost in the console.
+// The result is cached against the filter and the ring's generation. One frame
+// asks for it three times - to count the rows, to size the window and to draw
+// it - and a rescan of four thousand events per ask, at the event rate, was
+// most of what the console did with its CPU.
+//
+// Callers that only draw a window should still use filteredWindow: unfiltered,
+// that reads the ring's tail without copying the rest of it.
 func (m *Model) filteredEvents() []export.Event {
-	all := m.events.slice()
 	needle := strings.ToLower(m.filterText())
 	if needle == "" {
-		return all
+		return m.events.slice()
 	}
-	out := all[:0:0]
-	for _, e := range all {
+	if m.matchNeedle == needle && m.matchGen == m.events.gen && m.matched != nil {
+		return m.matched
+	}
+	out := make([]export.Event, 0, 64)
+	for i := 0; i < m.events.len(); i++ {
+		e, ok := m.events.at(i)
+		if !ok {
+			break
+		}
 		if strings.Contains(strings.ToLower(eventHaystack(e)), needle) {
 			out = append(out, e)
 		}
 	}
+	m.matchNeedle, m.matchGen, m.matched = needle, m.events.gen, out
 	return out
 }
 
-// filteredWindow returns at most n of the newest matching events.
-//
-// Unfiltered, this reads the tail of the ring directly instead of copying all
-// of it: at the default capacity a full copy was 413KB and 330us per frame,
-// once per event, which is a lot of work to render twenty lines.
-func (m *Model) filteredWindow(n int) []export.Event {
+// eventRowCount counts the rows the events view has without building them.
+// Unfiltered that is the ring's length, which costs nothing; the status bar
+// asks for it on every frame.
+func (m *Model) eventRowCount() int {
 	if m.filterText() == "" {
-		return m.events.last(n)
+		return m.events.len()
 	}
-	all := m.filteredEvents()
-	if len(all) > n {
-		return all[len(all)-n:]
-	}
-	return all
+	return len(m.filteredEvents())
 }
 
 func (m *Model) filteredWorkloads() []*Workload {

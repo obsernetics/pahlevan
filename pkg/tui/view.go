@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,45 +32,65 @@ func (m *Model) View() string {
 
 // headerRow draws the product name and the tabs.
 //
-// It steps down through three labellings rather than letting the tabs run off
-// the edge: a tab strip that is cut short at a narrow width hides the views
-// that exist, and "which screens are there" is the one thing a header has to
-// answer.
+// It steps down through progressively shorter labellings rather than letting
+// the tabs run off the edge: a tab strip cut short at a narrow width hides the
+// views that exist, and "which screens are there" is the one thing a header
+// has to answer.
 func (m *Model) headerRow(w int) string {
 	name := styleHeader.Render("pahlevan")
-	for _, level := range []int{0, 1, 2} {
-		tabs := m.tabs(level)
-		line := name + " " + tabs
+	attempts := []struct {
+		level   int
+		product bool
+	}{
+		{tabsFull, true}, {tabsFull, false},
+		{tabsShort, true}, {tabsShort, false},
+		{tabsAbbrev, true}, {tabsAbbrev, false},
+		{tabsNumbers, false}, {tabsCurrent, false},
+	}
+	var line string
+	for _, a := range attempts {
+		line = m.tabs(a.level)
+		if a.product {
+			line = name + " " + line
+		}
 		if lipgloss.Width(line) <= w {
 			return line
 		}
-		if level == 2 {
-			// Even the shortest labelling does not fit, so drop the product
-			// name before dropping the tabs.
-			return tabs
-		}
 	}
-	return name
+	return line
 }
+
+// Tab labellings, widest first.
+const (
+	tabsFull = iota
+	tabsShort
+	tabsAbbrev
+	tabsNumbers
+	tabsCurrent
+)
 
 func (m *Model) tabs(level int) string {
 	out := make([]string, 0, len(views)+1)
 	for i, v := range views {
 		var label string
 		switch level {
-		case 0:
+		case tabsFull:
 			label = fmt.Sprintf("%d %s", i+1, v)
-		case 1:
+		case tabsShort:
+			label = fmt.Sprintf("%d %s", i+1, v.short())
+		case tabsAbbrev:
+			label = fmt.Sprintf("%d %s", i+1, v.abbrev())
+		case tabsNumbers:
 			if v == m.view {
-				label = fmt.Sprintf("%d %s", i+1, v)
+				label = fmt.Sprintf("%d %s", i+1, v.abbrev())
 			} else {
-				label = fmt.Sprintf("%d", i+1)
+				label = strconv.Itoa(i + 1)
 			}
 		default:
 			if v != m.view {
 				continue
 			}
-			label = fmt.Sprintf("%d/%d %s", i+1, len(views), v)
+			label = fmt.Sprintf("%d/%d %s", i+1, len(views), v.short())
 		}
 		if v == m.view {
 			out = append(out, styleTabOn.Render(label))
@@ -76,8 +98,11 @@ func (m *Model) tabs(level int) string {
 			out = append(out, styleTabOff.Render(label))
 		}
 	}
-	if level == 0 {
+	if level <= tabsAbbrev {
 		hint := "? help"
+		if level == tabsAbbrev {
+			hint = "? hlp"
+		}
 		if m.view == ViewHelp {
 			out = append(out, styleTabOn.Render(hint))
 		} else {
@@ -116,6 +141,12 @@ func (m *Model) statusRow(w int) string {
 	parts := make([]string, 0, 8)
 	if m.paused {
 		parts = append(parts, styleWarn.Render("PAUSED"))
+	}
+	// Where the cursor is in the list. Without it a long table scrolled to
+	// the middle gives no clue whether there are three more rows or three
+	// hundred.
+	if n := m.rowCount(); n > 0 {
+		parts = append(parts, styleDim.Render(fmt.Sprintf("row %d/%d", m.cursor()+1, n)))
 	}
 	parts = append(parts, fmt.Sprintf("%d events", m.total))
 	if m.denied > 0 {
@@ -161,15 +192,26 @@ func (m *Model) tableBlock(specs []colSpec, rowsFn func(start, end int) []table.
 	if w < 1 || h < 1 {
 		return ""
 	}
-	// The rows go before the columns, every time. The widget is shared across
-	// views, and it re-renders its rows against the current columns the moment
-	// either is set: leaving a ten-column profile row in place while setting
-	// the seven columns of another view indexes off the end of the column
-	// slice and takes the program down.
-	m.tbl.SetRows(nil)
-	m.tbl.SetColumns(fitColumns(w, specs))
-	m.tbl.SetWidth(w)
-	m.tbl.SetHeight(h)
+	// Every setter on the table re-renders its rows, so each one that can be
+	// skipped is a full pass over the visible screen that is not paid for. On
+	// a tailing event view nothing but the rows changes from frame to frame.
+	//
+	// The rows are cleared before the columns are replaced, and that order
+	// matters: the widget is shared across views and re-renders against the
+	// current columns the moment either is set, so leaving a ten-column
+	// profile row in place while setting another view's seven columns indexes
+	// off the end of the column slice and takes the program down.
+	if cols := fitColumns(w, specs); !slices.Equal(m.tblCols, cols) {
+		m.tbl.SetRows(nil)
+		m.tbl.SetColumns(cols)
+		m.tblCols = cols
+	}
+	if m.tbl.Width() != w {
+		m.tbl.SetWidth(w)
+	}
+	if m.tbl.Height() != h-1 {
+		m.tbl.SetHeight(h)
+	}
 
 	rowsH := max(0, h-1)
 	total := m.rowCount()
@@ -185,7 +227,9 @@ func (m *Model) tableBlock(specs []colSpec, rowsFn func(start, end int) []table.
 	}
 
 	m.tbl.SetRows(rowsFn(start, end))
-	m.tbl.SetCursor(m.cursor() - start)
+	if want := m.cursor() - start; m.tbl.Cursor() != want {
+		m.tbl.SetCursor(want)
+	}
 	return fit(m.tbl.View(), w, h)
 }
 

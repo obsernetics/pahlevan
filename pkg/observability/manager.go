@@ -61,6 +61,13 @@ type Manager struct {
 	dashboards    map[string]*Dashboard
 	alertRules    map[string]*AlertRule
 	stopCh        chan struct{}
+	// flushTimeout overrides shutdownTimeout for this manager. Zero means the
+	// production constant. It exists so a test can prove the flush is bounded
+	// without waiting out the full five seconds of OTLP retries against an
+	// unreachable collector - the property under test is "Shutdown returns at
+	// its deadline instead of hanging", which does not depend on how long that
+	// deadline is.
+	flushTimeout time.Duration
 }
 
 // Config defines observability configuration
@@ -796,6 +803,14 @@ func (m *Manager) Start(ctx context.Context) error {
 // Losing the last batch of spans is much cheaper than that.
 const shutdownTimeout = 5 * time.Second
 
+// shutdownDeadline is the bound this manager applies to the final flush.
+func (m *Manager) shutdownDeadline() time.Duration {
+	if m.flushTimeout > 0 {
+		return m.flushTimeout
+	}
+	return shutdownTimeout
+}
+
 // Shutdown flushes and stops every provider.
 //
 // Each provider is shut down even if an earlier one failed, and the errors are
@@ -805,7 +820,7 @@ const shutdownTimeout = 5 * time.Second
 func (m *Manager) Shutdown() error {
 	close(m.stopCh)
 
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), m.shutdownDeadline())
 	defer cancel()
 
 	var errs []string

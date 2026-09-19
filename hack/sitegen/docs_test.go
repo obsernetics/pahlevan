@@ -4,11 +4,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // repoRoot is the repository, from this package's directory.
 const repoRoot = "../.."
+
+// builtSite caches the one genuinely expensive fixture in this package:
+// rendering the whole repository's site. Build only reads root and the tests
+// below only read site.Files, so the five tests that each rebuilt it were
+// paying five times for identical bytes - most of this package's -race
+// runtime. Tests that need a site they can modify build their own from a
+// temp-dir copy of the repo and are unaffected.
+var builtSite = sync.OnceValues(func() (*Site, error) { return Build(repoRoot) })
+
+// repoSite returns the shared render of the real repository. The result is
+// shared across tests, so callers must treat it as read-only.
+func repoSite(t *testing.T) *Site {
+	t.Helper()
+	site, err := builtSite()
+	if err != nil {
+		t.Fatalf("building the site: %v", err)
+	}
+	return site
+}
 
 // docsOnDisk lists the real documents, so these tests describe the repository
 // rather than a copy of it. Hardcoding the list is how a new document gets
@@ -32,6 +52,7 @@ func docsOnDisk(t *testing.T) []string {
 }
 
 func TestEveryDocumentIsPublishedAndIndexed(t *testing.T) {
+	t.Parallel()
 	index, err := os.ReadFile(filepath.Join(repoRoot, docsOut, "index.html"))
 	if err != nil {
 		t.Fatalf("reading the documentation index: %v", err)
@@ -53,6 +74,7 @@ func TestEveryDocumentIsPublishedAndIndexed(t *testing.T) {
 }
 
 func TestThePublishedPagesHaveASource(t *testing.T) {
+	t.Parallel()
 	// The other direction: a page for a document that no longer exists is a
 	// page describing something that was removed, still served and still
 	// linked to.
@@ -80,6 +102,7 @@ func TestThePublishedPagesHaveASource(t *testing.T) {
 // Adding a document has to be enough. If it is not, the next person to write
 // one will find out months later that nobody could read it.
 func TestANewDocumentIsPublishedWithNoOtherChange(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	if err := os.WriteFile(filepath.Join(root, docsDir, "brand-new-topic.md"),
 		[]byte("# A brand new topic\n\nThe opening paragraph.\n\n## A section\n\nBody.\n"), 0o644); err != nil {
@@ -107,6 +130,7 @@ func TestANewDocumentIsPublishedWithNoOtherChange(t *testing.T) {
 
 // Deleting a document has to unpublish it.
 func TestADeletedDocumentTakesItsPageWithIt(t *testing.T) {
+	t.Parallel()
 	root := scratchRepo(t)
 	if err := os.Remove(filepath.Join(root, docsDir, "architecture.md")); err != nil {
 		t.Fatal(err)
@@ -139,10 +163,8 @@ func TestADeletedDocumentTakesItsPageWithIt(t *testing.T) {
 
 // A diagram a document embeds has to be published with it.
 func TestEmbeddedDiagramsArePublished(t *testing.T) {
-	site, err := Build(repoRoot)
-	if err != nil {
-		t.Fatalf("building the site: %v", err)
-	}
+	t.Parallel()
+	site := repoSite(t)
 	want := docsOut + "/assets/architecture.svg"
 	data, ok := site.Files[want]
 	if !ok {
@@ -161,11 +183,9 @@ func TestEmbeddedDiagramsArePublished(t *testing.T) {
 // The repository's own site has to be current. This is the test that fails in
 // review when somebody edits a document and does not regenerate.
 func TestTheGeneratedSiteIsUpToDate(t *testing.T) {
-	site, err := Build(repoRoot)
-	if err != nil {
-		t.Fatalf("building the site: %v", err)
-	}
-	stale, err := Apply(repoRoot, site, false)
+	t.Parallel()
+	// Apply in check mode (write=false) only reads, so the shared site is safe.
+	stale, err := Apply(repoRoot, repoSite(t), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +196,7 @@ func TestTheGeneratedSiteIsUpToDate(t *testing.T) {
 }
 
 func TestOrderedPutsTheStartingPointsFirst(t *testing.T) {
+	t.Parallel()
 	docs := []Doc{
 		{Slug: "zebra"}, {Slug: "architecture"}, {Slug: "aardvark"}, {Slug: "quick-start"},
 	}

@@ -582,3 +582,73 @@ func BenchmarkWorkloadKey(b *testing.B) {
 		_ = workloadKey(e)
 	}
 }
+
+func TestTheEventListIsNewestFirstAndBuildsOnlyItsWindow(t *testing.T) {
+	// The stream is a tail: the line that just arrived is the one being
+	// looked at. Oldest-first would slide every row under the cursor down one
+	// place per event, which on a busy node makes the cursor meaningless.
+	m := sized(New(Options{Capacity: 128}), 200, 40)
+	m.view = ViewEvents
+	for i := 0; i < 20; i++ {
+		e := ev(export.EventTypeFile, false, fmt.Sprintf("p%02d", i), "prod", "Deployment", "api")
+		e.File.Path = fmt.Sprintf("/etc/file-%02d", i)
+		feed(m, e)
+	}
+
+	win := m.eventWindow(0, 3)
+	if len(win) != 3 {
+		t.Fatalf("the window holds %d events, want 3", len(win))
+	}
+	for i, want := range []string{"/etc/file-19", "/etc/file-18", "/etc/file-17"} {
+		if got := win[i].File.Path; got != want {
+			t.Errorf("row %d is %s, want %s", i, got, want)
+		}
+	}
+	// A window past the end is bounded by what is held, not by the request.
+	if got := len(m.eventWindow(18, 40)); got != 2 {
+		t.Errorf("a window past the end returned %d events, want the 2 that remain", got)
+	}
+	if got := m.eventWindow(5, 5); got != nil {
+		t.Errorf("an empty window returned %v", got)
+	}
+
+	// The same ordering under a filter, which reads the cached match list.
+	m.input.SetValue("file-1")
+	if got := m.rowCount(); got != 10 {
+		t.Fatalf("%d rows match the filter, want 10", got)
+	}
+	if got := m.eventWindow(0, 1)[0].File.Path; got != "/etc/file-19" {
+		t.Errorf("the filtered list starts at %s, want the newest match", got)
+	}
+}
+
+func TestTheFilterScanIsCachedUntilTheRingChanges(t *testing.T) {
+	// One frame asks for the matches three times: to count the rows, to size
+	// the window and to draw it. Rescanning the ring for each, at the event
+	// rate, was most of what the console did with its CPU.
+	m := sized(New(Options{Capacity: 64}), 120, 30)
+	m.view = ViewEvents
+	for i := 0; i < 20; i++ {
+		feed(m, ev(export.EventTypeFile, false, fmt.Sprintf("p%02d", i), "prod", "Deployment", "api"))
+	}
+	m.input.SetValue("shadow")
+
+	first := m.filteredEvents()
+	if len(first) != 20 {
+		t.Fatalf("%d events matched, want 20", len(first))
+	}
+	if second := m.filteredEvents(); &second[0] != &first[0] {
+		t.Error("a second call rescanned the ring instead of reusing the scan")
+	}
+	// A new event invalidates it, or the list would freeze while the stream
+	// kept running - the exact failure that makes a console untrustworthy.
+	feed(m, ev(export.EventTypeFile, false, "new", "prod", "Deployment", "api"))
+	if got := len(m.filteredEvents()); got != 21 {
+		t.Errorf("after one more event the filter matches %d, want 21", got)
+	}
+	// So does clearing the retained events.
+	press(m, "c")
+	if got := len(m.filteredEvents()); got != 0 {
+		t.Errorf("after clearing, the filter matches %d, want 0", got)
+	}
+}

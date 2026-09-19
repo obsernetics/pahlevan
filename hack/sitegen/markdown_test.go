@@ -24,6 +24,7 @@ func siblingSlugs() map[string]bool {
 }
 
 func TestMarkdownGolden(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"kitchen-sink", "sync-markers"} {
 		t.Run(name, func(t *testing.T) {
 			src, err := os.ReadFile(filepath.Join("testdata", name+".md"))
@@ -63,6 +64,7 @@ func TestMarkdownGolden(t *testing.T) {
 // The individual conversions the golden file covers, called out so a failure
 // says which one broke rather than printing a whole document.
 func TestMarkdownConversions(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile(filepath.Join("testdata", "kitchen-sink.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +124,7 @@ func TestMarkdownConversions(t *testing.T) {
 // The markers are plumbing between two generators. Published as written they
 // would put an HTML comment in the middle of a command a reader copies.
 func TestSyncMarkersArePublishedAsTheirValue(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile(filepath.Join("testdata", "sync-markers.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -142,6 +145,7 @@ func TestSyncMarkersArePublishedAsTheirValue(t *testing.T) {
 // people are rewriting these documents. The renderer, not a reviewer, is what
 // has to stop it reaching the site.
 func TestMarkupInMarkdownNeverReachesThePage(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile(filepath.Join("testdata", "unsafe.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +166,7 @@ func TestMarkupInMarkdownNeverReachesThePage(t *testing.T) {
 }
 
 func TestRejectScript(t *testing.T) {
+	t.Parallel()
 	if err := rejectScript("<p>ordinary text</p>"); err != nil {
 		t.Errorf("ordinary markup was rejected: %v", err)
 	}
@@ -173,6 +178,7 @@ func TestRejectScript(t *testing.T) {
 }
 
 func TestLinkRewriting(t *testing.T) {
+	t.Parallel()
 	rw := &linkRewriter{base: docsDir, siblings: siblingSlugs(), assets: map[string]bool{}}
 	cases := []struct {
 		in, want string
@@ -203,6 +209,7 @@ func TestLinkRewriting(t *testing.T) {
 // A document with no H1 would publish a page whose header is empty and whose
 // browser tab says only "Pahlevan - ".
 func TestADocumentWithNoTitleIsAnError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, docsDir), 0o755); err != nil {
 		t.Fatal(err)
@@ -216,6 +223,7 @@ func TestADocumentWithNoTitleIsAnError(t *testing.T) {
 }
 
 func TestSummarise(t *testing.T) {
+	t.Parallel()
 	if got := summarise("short text", 100); got != "short text" {
 		t.Errorf("short text was changed: %q", got)
 	}

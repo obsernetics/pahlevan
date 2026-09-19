@@ -1,0 +1,38 @@
+name: Set up Go
+description: >
+  Installs the pinned Go toolchain and restores the module and build caches.
+  Every Go job in the pipeline calls this so they all produce the same cache
+  key - five parallel jobs with five slightly different key recipes would each
+  download the module graph from scratch, which is the 30-60s per job this
+  exists to avoid.
+
+inputs:
+  go-version:
+    description: The exact Go toolchain version to install.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # actions/setup-go caches ~/go/pkg/mod AND ~/.cache/go-build itself, and
+    # keys them on the Go version plus the hash of the dependency file. That
+    # replaces two hand-rolled actions/cache steps that used to cost ~15s of
+    # restore and ~12s of save per run:
+    #
+    #   * the module cache was keyed on hashFiles('**/go.sum') without the Go
+    #     version, so a toolchain bump silently reused objects built by the old
+    #     compiler.
+    #   * the build cache was keyed on hashFiles('**/*.go'). Every commit that
+    #     touches any Go file changes that hash, so the key NEVER hit exactly;
+    #     it always fell back to a restore-key and then always uploaded a fresh
+    #     ~200MB entry at the end of the job. That upload is pure cost, and it
+    #     evicted the module cache out of the repository's 10GB cache budget.
+    #
+    # Keying on go.sum instead means the cache is written once per dependency
+    # change rather than once per commit.
+    - name: Install Go and restore the shared caches
+      uses: actions/setup-go@v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: true
+        cache-dependency-path: go.sum

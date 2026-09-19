@@ -71,11 +71,11 @@ func defaultKeys() keyMap {
 		),
 		Enter: key.NewBinding(
 			key.WithKeys("enter"),
-			key.WithHelp("enter", "open the detail pane"),
+			key.WithHelp("enter", "open the detail"),
 		),
 		Back: key.NewBinding(
 			key.WithKeys("esc"),
-			key.WithHelp("esc", "clear the filter, or leave the detail pane"),
+			key.WithHelp("esc", "back, or clear the filter"),
 		),
 		Filter: key.NewBinding(
 			key.WithKeys("/"),
@@ -83,15 +83,15 @@ func defaultKeys() keyMap {
 		),
 		Pause: key.NewBinding(
 			key.WithKeys(" "),
-			key.WithHelp("space", "pause the event list (counters keep running)"),
+			key.WithHelp("space", "pause the event list"),
 		),
 		Clear: key.NewBinding(
 			key.WithKeys("c"),
-			key.WithHelp("c", "clear the retained events"),
+			key.WithHelp("c", "clear the event list"),
 		),
 		Refresh: key.NewBinding(
 			key.WithKeys("r"),
-			key.WithHelp("r", "re-read the cluster now"),
+			key.WithHelp("r", "re-read the cluster"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),
@@ -111,11 +111,14 @@ func (k keyMap) ShortHelp() []key.Binding {
 }
 
 // FullHelp is the help screen, grouped by what the keys are for.
+//
+// Three columns rather than four: the help widget drops a whole column that
+// does not fit rather than wrapping it, and on an eighty-column terminal a
+// fourth column is exactly what goes missing - along with the quit key.
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.NextView, k.PrevView, k.Jump, k.Help},
 		{k.Up, k.Down, k.PageUp, k.PageDown, k.Top, k.Bottom},
-		{k.Enter, k.Back, k.Filter, k.Pause},
-		{k.Clear, k.Refresh, k.Quit},
+		{k.Enter, k.Back, k.Filter, k.Pause, k.Clear, k.Refresh, k.Quit},
 	}
 }

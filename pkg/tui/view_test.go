@@ -345,28 +345,6 @@ func TestFitForcesTheExactBlockSize(t *testing.T) {
 	}
 }
 
-func TestPadToAlwaysReturnsExactlyTheRequestedLines(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   string
-		n    int
-	}{
-		{"shorter than the box", "one\ntwo", 6},
-		{"a single line in a tall box", "only", 20},
-		{"exactly the box", "a\nb\nc", 3},
-		{"longer than the box is cut", "a\nb\nc\nd\ne\nf\ng", 3},
-		{"empty input still fills the box", "", 4},
-		{"a one line box", "a\nb\nc", 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := padTo(tc.in, tc.n)
-			if lines := strings.Split(got, "\n"); len(lines) != tc.n {
-				t.Errorf("padTo returned %d lines, want %d", len(lines), tc.n)
-			}
-		})
-	}
-}
-
 func TestDescribeEventNamesTheOperationForEveryEventType(t *testing.T) {
 	// The description is shared by the event list and the per-workload denial
 	// list, so an event type it does not understand shows up as a blank line

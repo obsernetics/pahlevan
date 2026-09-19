@@ -46,9 +46,34 @@ func (m *Model) overviewBody(w, h int) string {
 	return fit(top+"\n"+rest, w, h)
 }
 
+// card is one overview tile. The rows are kept as label and value rather than
+// as finished lines because the value is right-aligned against the card's
+// width, and the width is not known until the layout has counted how many
+// cards fit across the terminal.
 type card struct {
 	title string
-	lines []string
+	rows  []cardRow
+}
+
+type cardRow struct {
+	label string
+	value string
+	style lipgloss.Style
+}
+
+// render lays one row out in w columns: the label on the left, the value hard
+// against the right edge, so a column of numbers reads as a column.
+func (r cardRow) render(w int) string {
+	if r.label == "" {
+		return truncate(r.style.Render(r.value), w)
+	}
+	value := truncate(r.value, w)
+	label := truncate(r.label, max(0, w-lipgloss.Width(value)-1))
+	gap := w - lipgloss.Width(label) - lipgloss.Width(value)
+	if gap < 1 {
+		gap = 1
+	}
+	return styleLabel.Render(label) + strings.Repeat(" ", gap) + r.style.Render(value)
 }
 
 // cardMin is the narrowest a card can be and still read as a label and a
@@ -65,7 +90,7 @@ func (m *Model) cardsBlock(cards []card, w, h int) string {
 
 	inner := 0
 	for _, c := range cards {
-		inner = max(inner, len(c.lines))
+		inner = max(inner, len(c.rows))
 	}
 	cardH := inner + 1
 	if m.bordered() {
@@ -87,8 +112,11 @@ func (m *Model) cardsBlock(cards []card, w, h int) string {
 				width = w - cw*(end-start-1) // the remainder, so the row fills
 			}
 			iw, ih := m.boxInner(width, cardH)
-			body := strings.Join(cards[i].lines, "\n")
-			cells = append(cells, m.box(cards[i].title, fit(body, iw, ih), width, cardH, false))
+			lines := make([]string, 0, len(cards[i].rows))
+			for _, r := range cards[i].rows {
+				lines = append(lines, r.render(iw))
+			}
+			cells = append(cells, m.box(cards[i].title, fit(strings.Join(lines, "\n"), iw, ih), width, cardH, false))
 		}
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cells...))
 		height += cardH
@@ -98,30 +126,32 @@ func (m *Model) cardsBlock(cards []card, w, h int) string {
 
 func (m *Model) policyCard() card {
 	if m.cluster == nil {
-		return card{title: "policies", lines: []string{styleDim.Render("no cluster")}}
+		return card{title: "policies", rows: []cardRow{note(styleDim, "no cluster")}}
 	}
 	if m.policies.err != nil {
-		return card{title: "policies", lines: []string{styleErr.Render(truncate(m.policies.err.Error(), 40))}}
+		return card{title: "policies", rows: []cardRow{note(styleErr, "unreadable")}}
 	}
 	byPhase := map[string]int{}
 	for _, p := range m.policies.items {
 		byPhase[displayPhase(p.Phase)]++
 	}
-	lines := []string{stat("total", len(m.policies.items), styleValue)}
-	for _, phase := range []string{"Learning", "Transition", "Enforcing", "Failed", "RollingBack"} {
+	rows := []cardRow{count("total", len(m.policies.items), styleValue)}
+	// Only the phases that are actually present. A column of zeroes pushes
+	// the phase that matters off a card four lines tall.
+	for _, phase := range []string{"Learning", "Transition", "Enforcing", "Failed", "RollingBack", "Pending"} {
 		if n := byPhase[phase]; n > 0 {
-			lines = append(lines, stat(strings.ToLower(phase), n, phaseStyle(phase)))
+			rows = append(rows, count(strings.ToLower(phase), n, phaseStyle(phase)))
 		}
 	}
-	return card{title: "policies", lines: lines}
+	return card{title: "policies", rows: rows}
 }
 
 func (m *Model) containerCard() card {
 	if m.cluster == nil {
-		return card{title: "containers", lines: []string{styleDim.Render("no cluster")}}
+		return card{title: "containers", rows: []cardRow{note(styleDim, "no cluster")}}
 	}
 	if m.profiles.err != nil {
-		return card{title: "containers", lines: []string{styleErr.Render(truncate(m.profiles.err.Error(), 40))}}
+		return card{title: "containers", rows: []cardRow{note(styleErr, "unreadable")}}
 	}
 	var learning, enforcing int
 	for _, p := range m.profiles.items {
@@ -132,10 +162,10 @@ func (m *Model) containerCard() card {
 			learning++
 		}
 	}
-	return card{title: "containers", lines: []string{
-		stat("profiles", len(m.profiles.items), styleValue),
-		stat("learning", learning, styleWarn),
-		stat("enforcing", enforcing, styleAllow),
+	return card{title: "containers", rows: []cardRow{
+		count("profiles", len(m.profiles.items), styleValue),
+		count("learning", learning, styleWarn),
+		count("enforcing", enforcing, styleAllow),
 	}}
 }
 
@@ -154,32 +184,40 @@ func (m *Model) denialCard() card {
 	if m.denied > 0 || fromCluster > 0 {
 		style = styleDeny
 	}
-	lines := []string{
-		stat("on this stream", int(m.denied), style),
-		stat("workloads hit", noisy, style),
+	rows := []cardRow{
+		count("this stream", int(m.denied), style),
+		count("workloads hit", noisy, style),
 	}
 	if m.cluster != nil {
-		lines = append(lines, stat("policy counters", int(fromCluster), style))
+		rows = append(rows, count("policies", int(fromCluster), style))
 	}
-	return card{title: "denials", lines: lines}
+	return card{title: "denials", rows: rows}
 }
 
 func (m *Model) streamCard() card {
-	lines := []string{
-		stat("events", int(m.total), styleValue),
-		stat("workloads", len(m.order), styleValue),
+	rows := []cardRow{
+		count("events", int(m.total), styleValue),
+		count("workloads", len(m.order), styleValue),
 	}
 	switch {
 	case m.err != nil:
-		lines = append(lines, styleErr.Render(truncate(m.err.Error(), 40)))
+		rows = append(rows, note(styleErr, truncate(m.err.Error(), 40)))
 	case m.ended:
-		lines = append(lines, styleWarn.Render("stream ended"))
+		rows = append(rows, note(styleWarn, "stream ended"))
 	case m.paused:
-		lines = append(lines, styleWarn.Render("paused"))
+		rows = append(rows, note(styleWarn, "paused"))
 	default:
-		lines = append(lines, styleDim.Render("live"))
+		rows = append(rows, note(styleAllow, "live"))
 	}
-	return card{title: "stream", lines: lines}
+	return card{title: "stream", rows: rows}
+}
+
+func count(label string, n int, style lipgloss.Style) cardRow {
+	return cardRow{label: label, value: strconv.Itoa(n), style: style}
+}
+
+func note(style lipgloss.Style, text string) cardRow {
+	return cardRow{value: text, style: style}
 }
 
 // learningBlock shows the progress of anything still learning. It is bounded
@@ -196,13 +234,20 @@ func (m *Model) learningBlock(w, h int) string {
 
 	var lines []string
 	for _, p := range m.policies.items {
-		if !p.Learning {
+		if !p.Learning || len(lines) >= ih {
 			continue
 		}
-		if len(lines) >= ih {
-			break
-		}
 		lines = append(lines, m.progressLine(p.Key(), p.Progress, iw))
+	}
+	// Containers still learning, under the policies that cover them. A policy
+	// can read Enforcing while a container that joined late is still building
+	// its baseline, and that container is the one about to be denied.
+	for _, p := range m.profiles.items {
+		if p.Phase == "Enforcing" || len(lines) >= ih {
+			continue
+		}
+		lines = append(lines, styleDim.Render(truncate("  "+p.Key()+" - learning, "+
+			strconv.Itoa(p.Learned())+" operations seen so far", iw)))
 	}
 	if len(lines) == 0 {
 		switch {
@@ -232,16 +277,12 @@ func (m *Model) progressLine(label string, percent, w int) string {
 	return name + " " + m.prog.ViewAs(float64(percent)/100) + suffix
 }
 
-func stat(label string, n int, style lipgloss.Style) string {
-	return styleLabel.Render(padRight(label, 15)) + style.Render(strconv.Itoa(n))
-}
-
 // ---------------------------------------------------------------- policies
 
 func (m *Model) policiesBody(w, h int) string {
 	specs := []colSpec{
 		{title: "NAMESPACE", min: 9, max: 22, weight: 2, prio: 3},
-		{title: "POLICY", min: 8, max: 34, weight: 3, prio: 0},
+		{title: "POLICY", min: 10, max: 34, weight: 3, prio: 0},
 		{title: "PHASE", min: 9, weight: 0, prio: 1},
 		{title: "MODE", min: 10, weight: 0, prio: 4},
 		{title: "LEARNING", min: 8, weight: 0, prio: 5},
@@ -316,7 +357,7 @@ func (m *Model) policyDetail(w int) string {
 func (m *Model) profilesBody(w, h int) string {
 	specs := []colSpec{
 		{title: "NAMESPACE", min: 9, max: 20, weight: 2, prio: 4},
-		{title: "PROFILE", min: 8, max: 34, weight: 3, prio: 0},
+		{title: "PROFILE", min: 12, max: 34, weight: 3, prio: 0},
 		{title: "NODE", min: 6, max: 18, weight: 2, prio: 6},
 		{title: "PHASE", min: 9, weight: 0, prio: 1},
 		{title: "SYSCALL", min: 7, weight: 0, prio: 2},
@@ -388,7 +429,7 @@ func (m *Model) profileDetail(w int) string {
 
 func (m *Model) workloadsBody(w, h int) string {
 	specs := []colSpec{
-		{title: "WORKLOAD", min: 10, max: 56, weight: 4, prio: 0},
+		{title: "WORKLOAD", min: 14, max: 56, weight: 4, prio: 0},
 		{title: "NODE", min: 6, max: 18, weight: 2, prio: 7},
 		{title: "FILE", min: 5, weight: 0, prio: 2},
 		{title: "NET", min: 4, weight: 0, prio: 3},
@@ -402,7 +443,7 @@ func (m *Model) workloadsBody(w, h int) string {
 		out := make([]table.Row, 0, end-start)
 		for _, wl := range items[start:end] {
 			out = append(out, table.Row{
-				wl.Key, orDash(wl.Node),
+				wl.Display(), orDash(wl.Node),
 				strconv.Itoa(wl.Files), strconv.Itoa(wl.Network), strconv.Itoa(wl.Execs),
 				strconv.Itoa(wl.Caps), strconv.Itoa(wl.Syscalls), strconv.Itoa(wl.Denials),
 			})
@@ -470,7 +511,7 @@ func (m *Model) eventsBody(w, h int) string {
 		{title: "TYPE", min: 7, weight: 0, prio: 3},
 		{title: "PROCESS", min: 8, max: 18, weight: 1, prio: 4},
 		{title: "WORKLOAD", min: 10, max: 40, weight: 2, prio: 5},
-		{title: "DETAIL", min: 12, weight: 4, prio: 0},
+		{title: "DETAIL", min: 14, weight: 4, prio: 0},
 	}
 	rows := func(start, end int) []table.Row {
 		evs := m.eventWindow(start, end)
@@ -486,7 +527,7 @@ func (m *Model) eventsBody(w, h int) string {
 			}
 			out = append(out, table.Row{
 				e.Timestamp.Time().Format("15:04:05"), verdict, string(e.Type),
-				comm, workloadKey(e), describeEvent(e),
+				comm, eventWorkload(e), describeEvent(e),
 			})
 		}
 		return out
@@ -499,22 +540,44 @@ func (m *Model) eventsBody(w, h int) string {
 	return m.box(title, m.tableBlock(specs, rows, "no events yet", iw, ih), w, h, true)
 }
 
-// eventWindow returns the events between two row indexes.
+// eventWindow returns rows [start, end) of the event list, newest first.
 //
-// Following the tail is the common case and needs only the newest rows, which
-// the ring can hand over without copying itself. Scrolled back, the offset can
-// point anywhere and the full slice is needed.
+// Newest first because the stream is a tail: the line that just arrived is the
+// one being looked at, and it should not move. Oldest-first would slide every
+// row under the cursor down one place per event, which on a busy node makes
+// the list unreadable and the cursor meaningless.
+//
+// Only the requested rows are built. The window is what fits on the screen, so
+// this is a few dozen events however many the ring is holding - the frame is
+// redrawn at the event rate, and copying four thousand events to draw forty of
+// them was most of what the console did.
 func (m *Model) eventWindow(start, end int) []export.Event {
-	total := m.rowCount()
-	if end >= total {
-		tail := m.filteredWindow(end - start)
-		return tail
-	}
-	all := m.filteredEvents()
-	if start > len(all) {
+	if end <= start {
 		return nil
 	}
-	return all[start:min(end, len(all))]
+	out := make([]export.Event, 0, end-start)
+	if m.filterText() == "" {
+		n := m.events.len()
+		for i := start; i < end; i++ {
+			e, ok := m.events.at(n - 1 - i)
+			if !ok {
+				break
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+	// Filtered, the matches are already in hand from the row count, cached
+	// against the ring's generation, so this walks them rather than rescanning.
+	all := m.filteredEvents()
+	for i := start; i < end; i++ {
+		j := len(all) - 1 - i
+		if j < 0 {
+			break
+		}
+		out = append(out, all[j])
+	}
+	return out
 }
 
 // ---------------------------------------------------------- attack surface
@@ -522,7 +585,7 @@ func (m *Model) eventWindow(start, end int) []export.Event {
 func (m *Model) surfaceBody(w, h int) string {
 	specs := []colSpec{
 		{title: "NAMESPACE", min: 9, max: 20, weight: 2, prio: 3},
-		{title: "SURFACE", min: 8, max: 34, weight: 3, prio: 0},
+		{title: "SURFACE", min: 10, max: 34, weight: 3, prio: 0},
 		{title: "RISK", min: 9, weight: 0, prio: 1},
 		{title: "PORTS", min: 5, weight: 0, prio: 2},
 		{title: "SYSCALLS", min: 8, weight: 0, prio: 4},
@@ -619,7 +682,7 @@ func riskStyle(score int) lipgloss.Style {
 func (m *Model) coverageBody(w, h int) string {
 	specs := []colSpec{
 		{title: "DETECTOR", min: 8, max: 14, weight: 1, prio: 1},
-		{title: "HOOK", min: 12, max: 40, weight: 3, prio: 0},
+		{title: "HOOK", min: 14, max: 40, weight: 3, prio: 0},
 		{title: "LSM", min: 3, weight: 0, prio: 3},
 		{title: "ATT&CK", min: 10, weight: 3, prio: 2},
 	}
@@ -673,12 +736,17 @@ func (m *Model) coverageDetail(w int) string {
 // helpBody is generated from the key bindings rather than typed out beside
 // them, so a binding that changes cannot leave a help screen that lies.
 func (m *Model) helpBody(w, h int) string {
-	m.help.Width = max(1, w)
 	iw, ih := m.boxInner(w, h)
+	// The width given to the help widget is the pane's inside, not the body's:
+	// with the border's four columns counted twice it drops a whole group of
+	// bindings off the right-hand edge rather than wrapping them.
+	m.help.Width = max(1, iw)
 	body := m.help.FullHelpView(m.keys.FullHelp())
 	note := styleDim.Render(wrap(
-		"This console is a reader. No key here changes a policy, a mode or a profile, "+
-			"so it cannot be the thing that turns enforcement off during an incident.", iw))
+		"The event list runs newest first, and pause freezes it without freezing the "+
+			"counters. This console is a reader: no key here changes a policy, a mode or a "+
+			"profile, so it cannot be the thing that turns enforcement off during an "+
+			"incident.", iw))
 	return m.box("keys", fit(body+"\n\n"+note, iw, ih), w, h, true)
 }
 
@@ -693,6 +761,27 @@ func wrap(s string, w int) string {
 		return ""
 	}
 	return lipgloss.NewStyle().Width(w).Render(s)
+}
+
+// eventWorkload names the owner of an event the way a person reads it:
+// namespace and name. The Kind is in the key because the key has to be unique;
+// it is noise in a column that is already competing for width.
+func eventWorkload(e export.Event) string {
+	k := e.Kubernetes
+	if k == nil {
+		return workloadKey(e)
+	}
+	name := k.WorkloadName
+	if name == "" {
+		name = k.Pod
+	}
+	if name == "" {
+		return workloadKey(e)
+	}
+	if k.Namespace == "" {
+		return name
+	}
+	return k.Namespace + "/" + name
 }
 
 func orDash(s string) string {

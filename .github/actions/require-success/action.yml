@@ -1,0 +1,24 @@
+name: Require every dependency to have succeeded
+description: >
+  Fails the job unless every entry in the `needs` context has a result of
+  success or skipped. Used by the single aggregate status check so that branch
+  protection has one thing to require without it silently passing when a
+  parallel job failed.
+
+inputs:
+  needs:
+    description: The JSON of the caller's `needs` context, i.e. ${{ toJSON(needs) }}.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The logic lives in a script rather than inline YAML so that
+    # selftest.sh can execute it directly with contrived results. A gate this
+    # important is not something to verify by pushing a deliberately broken
+    # branch and watching.
+    - name: Check the result of every dependency
+      shell: bash
+      env:
+        NEEDS: ${{ inputs.needs }}
+      run: bash "${GITHUB_ACTION_PATH}/require-success.sh"

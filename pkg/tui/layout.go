@@ -232,9 +232,16 @@ func fit(s string, w, h int) string {
 	}
 	// Truncation is ANSI-aware: cutting a styled line by bytes would leave a
 	// colour escape unterminated and bleed it across the rest of the screen.
+	// Lines that already fit are passed through untouched - every frame goes
+	// through four nested fits, and re-rendering every line four times was
+	// pure allocation.
 	cut := lipgloss.NewStyle().MaxWidth(w)
 	out := make([]string, 0, h)
 	for _, l := range lines {
+		if lipgloss.Width(l) <= w {
+			out = append(out, l)
+			continue
+		}
 		out = append(out, cut.Render(l))
 	}
 	for len(out) < h {
@@ -269,19 +276,6 @@ func padRight(s string, n int) string {
 		return s + strings.Repeat(" ", n-w)
 	}
 	return s
-}
-
-// padTo makes a block exactly n lines, so the status bar does not wander up
-// and down the screen as content changes height.
-func padTo(s string, n int) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) > n {
-		lines = lines[:n]
-	}
-	for len(lines) < n {
-		lines = append(lines, "")
-	}
-	return strings.Join(lines, "\n")
 }
 
 func max(a, b int) int {
