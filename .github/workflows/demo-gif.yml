@@ -12,10 +12,16 @@ name: Demo GIF
 on:
   push:
     branches: [ main ]
+    # Deliberately not '.github/workflows/demo-gif.yml' here, though it is on
+    # the pull_request trigger below. The encoder is not deterministic, so a
+    # re-render always differs byte for byte: editing this file on main used to
+    # spend two minutes producing a visually identical GIF and then commit it,
+    # churning the README, the Pages site and everyone's next `git pull` for a
+    # change to a YAML file. A pull request touching this file still renders,
+    # so the workflow is exercised before it lands.
     paths:
       - 'docs/assets/demo.tape'
       - 'docs/assets/demo.sh'
-      - '.github/workflows/demo-gif.yml'
   pull_request:
     branches: [ main ]
     paths:
@@ -36,35 +42,63 @@ jobs:
   render:
     name: Render and check the demo GIF
     runs-on: ubuntu-latest
+    env:
+      TTYD_VERSION: 1.7.7
+      VHS_VERSION: 0.10.0
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
       - name: Install ffmpeg
         run: |
+          set -euo pipefail
+          # `apt-get update` refreshes every index on the runner before it can
+          # decide it has nothing to do. The runner image usually ships ffmpeg,
+          # so ask first.
+          if command -v ffmpeg >/dev/null; then
+            ffmpeg -version | head -1
+            exit 0
+          fi
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
 
       # vhs shells out to ttyd to get a real terminal and to ffmpeg to encode.
       # Neither is bundled, and vhs reports the missing one and exits 1 - which
       # is how this workflow failed on its first run.
-      - name: Install ttyd
-        run: |
-          set -euo pipefail
-          TTYD_VERSION=1.7.7
-          sudo curl -sSL -o /usr/local/bin/ttyd \
-            "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
-          sudo chmod +x /usr/local/bin/ttyd
-          ttyd --version
+      #
+      # Both are pinned release binaries that never change for a given version,
+      # so they are fetched from GitHub's release CDN once and read from the
+      # cache after that. Cached under HOME rather than in /usr/local/bin
+      # because the cache is restored as the runner user, which cannot write
+      # there; the install step below is what needs sudo.
+      - name: Cache the ttyd and vhs binaries
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pahlevan-demo-tools
+          key: demo-tools-${{ runner.os }}-ttyd${{ env.TTYD_VERSION }}-vhs${{ env.VHS_VERSION }}
 
-      - name: Install vhs
+      - name: Install ttyd and vhs
         run: |
           set -euo pipefail
-          VHS_VERSION=0.10.0
-          curl -sSL -o /tmp/vhs.tar.gz \
-            "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
-          tar -xzf /tmp/vhs.tar.gz -C /tmp
-          sudo install -m 0755 "$(find /tmp -name vhs -type f | head -1)" /usr/local/bin/vhs
+          tools="$HOME/.cache/pahlevan-demo-tools"
+          mkdir -p "$tools"
+
+          if [ ! -x "$tools/ttyd" ]; then
+            curl -sSL -o "$tools/ttyd" \
+              "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
+            chmod +x "$tools/ttyd"
+          fi
+
+          if [ ! -x "$tools/vhs" ]; then
+            curl -sSL -o /tmp/vhs.tar.gz \
+              "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_Linux_x86_64.tar.gz"
+            tar -xzf /tmp/vhs.tar.gz -C /tmp
+            install -m 0755 "$(find /tmp -name vhs -type f | head -1)" "$tools/vhs"
+          fi
+
+          sudo install -m 0755 "$tools/ttyd" /usr/local/bin/ttyd
+          sudo install -m 0755 "$tools/vhs" /usr/local/bin/vhs
+          ttyd --version
           vhs --version
 
       # vhs drives headless Chrome to rasterise the terminal. In a container

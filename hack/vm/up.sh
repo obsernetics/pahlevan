@@ -4,9 +4,10 @@
 #
 # Downloads an Ubuntu 24.04 cloud image once, builds a cloud-init seed with a
 # generated SSH keypair + passwordless-sudo user, boots the VM headless under
-# KVM with SSH forwarded to a localhost port, and provisions it with the eBPF
-# toolchain (clang/llvm/libbpf/headers) and Go so eBPF programs can be compiled
-# AND loaded INSIDE the VM.
+# KVM with SSH forwarded to a localhost port, and provisions it with bpftool
+# and a Go toolchain so the committed eBPF objects are LOADED INSIDE the VM by
+# a real kernel. The programs are compiled out-of-band by `make ebpf`, not
+# here - see the package list below.
 #
 # The guest kernel is forced to enable the *bpf* LSM via GRUB_CMDLINE_LINUX
 # (lsm=...,bpf) so /sys/kernel/security/lsm inside the VM includes "bpf" - the
@@ -17,8 +18,6 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=env.sh
 source "${SCRIPT_DIR}/env.sh"
-
-GO_VERSION="1.25.13"
 
 # --------------------------------------------------------------------------
 # 0. Fast path: already running and reachable.
@@ -76,6 +75,27 @@ instance-id: pahlevan-ebpf-vm
 local-hostname: pahlevan-vm
 EOF
 
+  # Packages the guest actually needs.
+  #
+  # The eBPF objects and their Go bindings are committed and loaded by
+  # cilium/ebpf, which is pure Go: nothing in the guest compiles BPF C, so the
+  # toolchain that used to be installed here - build-essential, clang, llvm,
+  # libbpf-dev, libelf-dev, zlib1g-dev, pkg-config, linux-headers-generic and
+  # linux-tools-{common,generic} - was several hundred megabytes of download
+  # and unpack on every provision for code that is never run. Grepping the VM
+  # suite for what it execs turns up bpftool, setpriv, sudo, ip and /bin/sh;
+  # only bpftool is not already in the cloud image. Go arrives separately, as a
+  # host-cached tarball (see below).
+  #
+  # Set PAHLEVAN_VM_EXTRA_PACKAGES="clang llvm libbpf-dev ..." to get the
+  # compile toolchain back for a guest where you want to run `make ebpf`.
+  GUEST_PACKAGES=(bpftool curl git)
+  if [[ -n "${PAHLEVAN_VM_EXTRA_PACKAGES:-}" ]]; then
+    read -r -a _extra_packages <<<"${PAHLEVAN_VM_EXTRA_PACKAGES}"
+    GUEST_PACKAGES+=("${_extra_packages[@]}")
+  fi
+  PACKAGE_LINES="$(printf '  - %s\n' "${GUEST_PACKAGES[@]}")"
+
   cat >"${USER_DATA}" <<EOF
 #cloud-config
 users:
@@ -94,20 +114,7 @@ chpasswd:
 
 package_update: true
 packages:
-  - build-essential
-  - clang
-  - llvm
-  - libbpf-dev
-  - libelf-dev
-  - zlib1g-dev
-  - pkg-config
-  - linux-headers-generic
-  - linux-tools-common
-  - linux-tools-generic
-  - bpftool
-  - git
-  - curl
-
+${PACKAGE_LINES}
 write_files:
   # Force the bpf LSM active in the guest kernel cmdline.
   - path: /etc/default/grub.d/99-pahlevan-bpf-lsm.cfg
@@ -116,15 +123,21 @@ write_files:
     permissions: '0644'
 
 runcmd:
-  # Install Go ${GO_VERSION} (apt Go is too old for this repo).
-  - [ bash, -c, "curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz -o /tmp/go.tgz" ]
-  - [ bash, -c, "rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz" ]
+  # PATH for the Go that up.sh unpacks from the host-cached tarball. Writing
+  # the profile fragment needs no network, so it stays in cloud-init.
   - [ bash, -c, "printf 'export PATH=\$PATH:/usr/local/go/bin:/root/go/bin:/home/${SSH_USER}/go/bin\\n' > /etc/profile.d/go.sh" ]
-  - [ bash, -c, "ln -sf /usr/local/go/bin/go /usr/local/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt" ]
-  # Apply the bpf-LSM grub cmdline (takes effect after the reboot up.sh triggers).
+  # Apply the bpf-LSM grub cmdline. It only takes effect on the next boot,
+  # which power_state below starts the moment this returns.
   - [ bash, -c, "update-grub" ]
   # Signal provisioning complete.
   - [ bash, -c, "touch ${PROVISION_MARKER}" ]
+
+# lsm= only takes effect on the next boot; rebooting from cloud-init itself
+# saves up.sh an SSH round trip and a fixed sleep (see section 6 of up.sh).
+power_state:
+  mode: reboot
+  condition: true
+  message: "rebooting to activate lsm=${GUEST_LSM_LIST}"
 
 final_message: "pahlevan eBPF VM cloud-init finished after \$UPTIME seconds"
 EOF
@@ -155,7 +168,7 @@ EOF
     -display none \
     -serial "file:${VM_LOGFILE}" \
     -monitor "unix:${QEMU_MONITOR},server,nowait" \
-    -drive "if=virtio,format=qcow2,file=${DISK_IMG}" \
+    -drive "if=virtio,format=qcow2,cache=${DISK_CACHE},file=${DISK_IMG}" \
     -drive "if=virtio,format=raw,file=${SEED_ISO}" \
     -netdev "user,id=net0,hostfwd=tcp:${SSH_HOST}:${SSH_PORT}-:22" \
     -device virtio-net-pci,netdev=net0 \
@@ -163,66 +176,90 @@ EOF
     -daemonize
 
   log "QEMU started (pid $(cat "${VM_PIDFILE}")). Serial log: ${VM_LOGFILE}"
+
+  # Fetch the Go tarball on the host, in the background, while the guest boots
+  # and runs apt. Two reasons it is not a curl inside cloud-init any more: a
+  # file in CACHE_DIR is something actions/cache can keep between CI runs and a
+  # guest download never can, and doing it here overlaps the ~80MB with the
+  # boot instead of adding it to the end of provisioning.
+  GO_FETCH_PID=""
+  if [[ ! -f "${GO_TARBALL}" ]]; then
+    log "Fetching ${GO_TARBALL_NAME} on the host (background)..."
+    ( curl -fsSL -o "${GO_TARBALL}.part" "${GO_TARBALL_URL}" && mv "${GO_TARBALL}.part" "${GO_TARBALL}" ) &
+    GO_FETCH_PID=$!
+  else
+    log "Go tarball already cached: ${GO_TARBALL}"
+  fi
 fi
 
 # --------------------------------------------------------------------------
-# 6. Wait for SSH.
+# 6. Wait for the guest to be ready.
+#
+# Ready means two things at once: cloud-init finished, and the kernel it
+# finished on has the bpf LSM. That used to be three waits - SSH every 5s,
+# then the provisioning marker every 10s, then a manual `sudo reboot`, a flat
+# 8s sleep and SSH again every 5s - which spent up to 23 seconds asleep past a
+# guest that was already up, on top of the reboot itself. cloud-init now
+# reboots itself (power_state above), so there is one condition, one SSH round
+# trip per poll, and a 2s interval: the thing being waited on is a boot, and
+# rounding a boot up to the next 10s multiple cost more than polling does.
 # --------------------------------------------------------------------------
-log "Waiting for SSH on ${SSH_HOST}:${SSH_PORT} (cloud image first boot can take a minute)..."
-for i in $(seq 1 120); do
-  if vm_ssh_ready; then
-    log "SSH is up."
-    break
-  fi
+log "Waiting for the guest to provision and come up with lsm=${GUEST_LSM_LIST}..."
+ready=0
+deadline=$(( $(date +%s) + VM_READY_TIMEOUT ))
+while [[ $(date +%s) -lt ${deadline} ]]; do
   if ! vm_is_running; then
     err "QEMU process died. Serial log tail:"
     tail -n 40 "${VM_LOGFILE}" >&2 || true
     exit 1
   fi
-  sleep 5
-  [[ $i -eq 120 ]] && { err "Timed out waiting for SSH."; tail -n 40 "${VM_LOGFILE}" >&2 || true; exit 1; }
-done
-
-# --------------------------------------------------------------------------
-# 7. Wait for cloud-init provisioning to finish (marker file).
-# --------------------------------------------------------------------------
-log "Waiting for cloud-init provisioning to finish (installs toolchain + Go)..."
-for i in $(seq 1 120); do
-  if vm_ssh "test -f ${PROVISION_MARKER}" 2>/dev/null; then
-    log "Provisioning complete."
+  # An unprovisioned guest, a guest mid-reboot and a guest still on its first
+  # boot's kernel are all the same "not yet" from out here, so they are one
+  # test rather than three states to sequence.
+  if vm_ssh "test -f ${PROVISION_MARKER} && grep -q bpf /sys/kernel/security/lsm" 2>/dev/null; then
+    ready=1
     break
   fi
-  sleep 10
-  [[ $i -eq 120 ]] && { err "Timed out waiting for provisioning marker."; vm_ssh "sudo cloud-init status --long" >&2 || true; exit 1; }
+  sleep 2
 done
+if [[ ${ready} -ne 1 ]]; then
+  err "Timed out after ${VM_READY_TIMEOUT}s waiting for a provisioned guest with the bpf LSM."
+  err "cloud-init status, kernel cmdline and active LSMs, if the guest answers:"
+  vm_ssh "sudo cloud-init status --long; cat /proc/cmdline; cat /sys/kernel/security/lsm" >&2 || true
+  tail -n 40 "${VM_LOGFILE}" >&2 || true
+  exit 1
+fi
+log "Provisioned, and the bpf LSM is active."
 
 # --------------------------------------------------------------------------
-# 8. Ensure the bpf LSM is active; reboot once to apply the GRUB cmdline.
+# 7. Go toolchain, unpacked from the host tarball.
+#
+# The apt Go in noble is too old for this repo. cloud-init used to curl the
+# upstream tarball inside the guest, which put the download on the critical
+# path and made it impossible to cache in CI.
 # --------------------------------------------------------------------------
-if vm_ssh "cat /sys/kernel/security/lsm" 2>/dev/null | grep -q bpf; then
-  log "bpf LSM already active."
+if vm_ssh "/usr/local/go/bin/go version 2>/dev/null | grep -q 'go${GO_VERSION} '" 2>/dev/null; then
+  log "Go ${GO_VERSION} already installed in the guest."
 else
-  log "bpf LSM not active yet; rebooting guest to apply kernel cmdline..."
-  vm_ssh "sudo reboot" 2>/dev/null || true
-  sleep 8
-  for i in $(seq 1 60); do
-    if vm_ssh_ready; then break; fi
-    sleep 5
-    [[ $i -eq 60 ]] && { err "Timed out waiting for SSH after reboot."; exit 1; }
-  done
-  if vm_ssh "cat /sys/kernel/security/lsm" 2>/dev/null | grep -q bpf; then
-    log "bpf LSM active after reboot."
-  else
-    err "bpf LSM STILL not active. /sys/kernel/security/lsm =>"
-    vm_ssh "cat /sys/kernel/security/lsm" >&2 || true
-    err "Kernel cmdline =>"
-    vm_ssh "cat /proc/cmdline" >&2 || true
-    exit 1
+  if [[ -n "${GO_FETCH_PID:-}" ]]; then
+    log "Waiting for the host Go download to finish..."
+    wait "${GO_FETCH_PID}" || true
   fi
+  if [[ ! -f "${GO_TARBALL}" ]]; then
+    log "Fetching ${GO_TARBALL_NAME} on the host..."
+    curl -fsSL -o "${GO_TARBALL}.part" "${GO_TARBALL_URL}"
+    mv "${GO_TARBALL}.part" "${GO_TARBALL}"
+  fi
+  log "Installing Go ${GO_VERSION} in the guest..."
+  vm_scp "${GO_TARBALL}" "${SSH_USER}@${SSH_HOST}:/tmp/go.tgz"
+  vm_ssh "sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz && \
+          sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
+          sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt"
+  log "Guest Go: $(vm_ssh 'go version' 2>/dev/null || echo '?')"
 fi
 
 # --------------------------------------------------------------------------
-# 9. Summary.
+# 8. Summary.
 # --------------------------------------------------------------------------
 log "VM is ready."
 log "  kernel : $(vm_ssh 'uname -r' 2>/dev/null || echo '?')"
