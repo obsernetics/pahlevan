@@ -48,6 +48,9 @@
 # same commands an operator would actually type. `pahlevan` is the real CLI name
 # shipped in the image; every subcommand replayed here exists.
 
+# The rendered console frames, found relative to this file so the demo works
+# from any directory.
+DEMO_CONSOLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/console"
 B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
 GRN=$'\033[32m'; RED=$'\033[31m'; YEL=$'\033[33m'; CYN=$'\033[36m'; MAG=$'\033[35m'; GRY=$'\033[90m'
 # Reverse video, for the selected row and the active tab in the ui view.
@@ -159,24 +162,23 @@ pahlevan() {
       echo "  ${GRY}the same events reach Slack and PagerDuty as formatted findings,${R}"
       echo "  ${GRY}and Loki as OTLP records sharing the resource the metrics carry${R}"
       ;;
-    "ui"*)
-      # The interactive view, drawn the way it actually renders: the tab bar,
-      # the workload table with observed against refused, and the status line.
-      echo "${B}pahlevan${R}  ${INV} 1 events ${R} ${GRY} 2 workloads ${R} ${GRY} 3 coverage ${R} ${GRY} ? help ${R}"
-      echo "${DIM}────────────────────────────────────────────────────────────────────────${R}"
-      echo "${DIM}WORKLOAD                             FILE     NET   EXEC    CAP   DENIED${R}"
-      echo "${INV}prod/Deployment/app                   118       6      1      1        6${R}"
-      echo "kube-system/DaemonSet/cni              12      44      0      0        0"
-      echo ""
-      echo "  ${DIM}prod/Deployment/app${R}   ${GRY}node-1${R}"
-      echo "  ${DIM}OBSERVED${R}  files 118   network 6   execs 1   capabilities 1"
-      echo "  ${DIM}REFUSED${R}   ${RED}6${R}"
-      echo "    ${RED}read /etc/shadow${R}"
-      echo "    ${RED}exec /tmp/xmrig${R}"
-      echo "    ${RED}tcp 203.0.113.7:4444${R}"
-      echo "${DIM}────────────────────────────────────────────────────────────────────────${R}"
-      echo "${GRY}1509 events · ${R}${RED}6 denied${R}${GRY} · node-1:9090${R}"
-      echo "${GRY}reads only; it never changes a policy or a mode${R}"
+    "ui"*|" ")
+      # The console. These frames are not drawn here: pkg/tui renders them from
+      # a fixture and writes docs/assets/console/*.ansi, and a test fails if
+      # they stop matching what the console draws. A recording that hand-drew
+      # this tool's screens once drifted into claiming ATT&CK techniques the
+      # tool did not have, so this one prints what the renderer produced.
+      #
+      # It takes the alternate screen and gives it back on exit, as the real
+      # console does, so the demo's earlier output is still there afterwards.
+      local frame
+      printf '\033[?1049h'
+      for frame in overview policies workloads events coverage; do
+        printf '\033[H\033[2J'
+        cat "${DEMO_CONSOLE}/${frame}.ansi"
+        sleep 2.4
+      done
+      printf '\033[?1049l'
       ;;
     "coverage"*)
       echo "${DIM}PROGRAM                        ATT&CK${R}"

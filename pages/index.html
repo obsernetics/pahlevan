@@ -447,58 +447,40 @@
     <section id="cli" class="section">
         <div class="container">
             <div class="section-header">
-                <span class="eyebrow">Command line</span>
-                <h2>A terminal UI over the live event stream</h2>
+                <span class="eyebrow">Console</span>
+                <h2>Run <code>pahlevan</code> in a terminal</h2>
                 <p class="section-sub">
-                    <code>pahlevan ui</code> is a Bubble Tea view over the agent's gRPC stream: a live
-                    event list, per-workload counts of what was observed against what was refused, a
-                    detail pane per workload, and the ATT&amp;CK coverage table read from the same
-                    source the tool enforces from.
+                    Policies, workloads, live events and ATT&amp;CK coverage in one place. It only
+                    reads, so it cannot turn enforcement off. Piped or in CI it prints a plain summary.
                 </p>
             </div>
-
+            <!-- Rendered by pkg/tui from a fixture, not drawn by hand; the demo
+                 GIF prints the same frames, and a test fails if they drift. -->
             <div class="code-block">
-                <pre><code class="language-bash">pahlevan  <span style="background:#1e3a5f;color:#e6edf7"> 1 events </span>  2 workloads   3 coverage   ? help
-────────────────────────────────────────────────────────────────────────
-WORKLOAD                             FILE     NET   EXEC    CAP   DENIED
-prod/Deployment/app                   118       6      1      1        6
-kube-system/DaemonSet/cni              12      44      0      0        0
-
-  prod/Deployment/app   node-1
-  OBSERVED  files 118   network 6   execs 1   capabilities 1
-  REFUSED   6
-    read /etc/shadow
-    exec /tmp/xmrig
-    tcp 203.0.113.7:4444
-────────────────────────────────────────────────────────────────────────
-1509 events · 6 denied · node-1:9090</code></pre>
-            </div>
-
-            <div class="arch-notes" style="margin-top: 1.5rem;">
-                <div class="arch-note">
-                    <h3>It reads, and only reads</h3>
-                    <p>
-                        No view changes a policy, a mode or a profile, so the thing you open during an
-                        incident cannot be the thing that turns enforcement off.
-                    </p>
-                </div>
-                <div class="arch-note">
-                    <h3>It does not break your scripts</h3>
-                    <p>
-                        Every other command keeps its exact output. Piped, redirected, or under
-                        <code>CI</code>, <code>NO_COLOR</code>, <code>TERM=dumb</code> or
-                        <code>--no-tui</code>, it prints a plain greppable summary instead of drawing a
-                        screen. A program that writes escape codes into a pipe is worse than one with
-                        no interface at all.
-                    </p>
-                </div>
-                <div class="arch-note">
-                    <h3>Reproducible without a cluster</h3>
-                    <p>
-                        <code>--replay</code> takes the JSON lines the file sink writes, so a problem
-                        you saw on a node can be looked at from a capture, with no cluster attached.
-                    </p>
-                </div>
+                <pre><code>pahlevan  1 ovr  2 pol  3 prf  4 wkl  5 evt  6 atk  7 cov  ? hlp 
+╭─ events ─────────────────────────────────────────────────────────────────────────╮
+│  TIME      VERDICT  TYPE     PROCESS     WORKLOAD        DETAIL                  │
+│  12:00:17  allow    network  python3     prod/api        tcp prod/postgres:5432  │
+│  12:00:16  allow    file     nginx       prod/web        read /srv/www/index.h…  │
+│  12:00:15  ✖ DENY   file     sh          prod/api        write /etc/passwd       │
+│  12:00:14  ✖ DENY   capabi…  sh          prod/api        capability CAP_SYS_AD…  │
+│  12:00:13  ✖ DENY   network  sh          prod/api        tcp 203.0.113.7:4444    │
+│  12:00:12  ✖ DENY   process  sh          prod/api        exec /tmp/xmrig         │
+│  12:00:11  ✖ DENY   file     sh          prod/api        read /etc/shadow        │
+│  12:00:10  allow    file     nginx       prod/web        read /srv/www/style.c…  │
+│  12:00:09  allow    network  python3     prod/api        tcp prod/postgres:5432  │
+│  12:00:08  allow    file     nginx       prod/web        read /srv/www/app.js    │
+│  12:00:07  allow    process  python3     prod/api        exec /usr/bin/python3   │
+│  12:00:06  allow    file     nginx       prod/web        write /var/log/nginx/…  │
+│  12:00:05  allow    network  python3     prod/api        tcp prod/redis:6379     │
+│  12:00:04  allow    file     python3     prod/api        read /app/config.yaml   │
+│  12:00:03  allow    network  python3     prod/api        tcp prod/postgres:5432  │
+│  12:00:02  allow    file     nginx       prod/web        read /srv/www/index.h…  │
+│  12:00:01  allow    file     nginx       prod/web        read /etc/nginx/nginx…  │
+│                                                                                  │
+│                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────╯
+row 1/17 · 17 events · 5 denied · node-1:9090 · 0s</code></pre>
             </div>
         </div>
     </section>
