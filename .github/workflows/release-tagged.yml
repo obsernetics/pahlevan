@@ -1,0 +1,78 @@
+name: Release tagged
+
+# A release that is merged but never tagged looks exactly like one that
+# shipped: CHANGELOG.md names it, the website calls it the current release,
+# and the version is in main's Makefile. There is no tag, no release, no
+# image, and nothing anyone can install.
+#
+# It happens because the scheduled maintenance agent runs as the GitHub App,
+# which cannot create tag refs. v3.1.0 sat untagged for five days; v3.3.1 and
+# v3.3.3 were each announced while nothing could install them. The agent's
+# prompt was rewritten twice and it happened again both times, which is the
+# argument for a check rather than another reminder.
+on:
+  schedule:
+    # Every six hours. The tag normally lands within minutes of the merge, so
+    # this is about catching the case where it never does, not about racing it.
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: release-tagged
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: The version main declares is tagged
+    runs-on: ubuntu-latest
+    if: github.repository == 'obsernetics/pahlevan'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Tags are the whole subject of the check, so a shallow clone with
+          # none of them would pass by knowing nothing.
+          fetch-depth: 0
+
+      - name: Check
+        id: check
+        run: ./scripts/check-release-tagged.sh --remote
+
+      # A failed scheduled run is an email the maintainer can archive without
+      # reading. An issue is a thing with a state that stays open until the
+      # release is actually published.
+      - name: Open an issue if a release is untagged
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^VERSION?=\(v[0-9][^ \t]*\).*/\1/p' Makefile | head -1)
+          title="Release ${version} is merged but not tagged"
+          existing=$(gh issue list --state open --search "in:title $title" --json number -q '.[0].number' || true)
+          if [ -n "$existing" ]; then
+            echo "issue #$existing is already open"
+            exit 0
+          fi
+          # The body goes to a file rather than an argument: its blank lines
+          # would otherwise terminate this block scalar, which is how the first
+          # attempt at this workflow failed to parse.
+          {
+            echo "\`main\` declares \`${version}\`, and CHANGELOG.md and the website say so, but"
+            echo "no such tag exists: no release, no image, nothing installable."
+            echo
+            echo "The usual cause is a release merged by an automation that cannot create tag refs."
+            echo
+            echo '```'
+            echo "git checkout main && git pull"
+            echo "git tag -a ${version} -m ${version}"
+            echo "git push origin ${version}"
+            echo '```'
+            echo
+            echo "Opened by the Release tagged workflow."
+          } > /tmp/issue-body.md
+          gh issue create --title "$title" --body-file /tmp/issue-body.md

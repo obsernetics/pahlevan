@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A check that a merged release was actually tagged.** The scheduled
+  maintenance agent runs as the GitHub App, which cannot create tag refs, so it
+  merges a release PR and the tag never appears: no tag, no release, no image,
+  while `CHANGELOG.md` and the website both announce the version as current.
+  `v3.1.0` sat untagged for five days; `v3.3.1` and `v3.3.3` were each
+  announced while nothing could install them. The agent's prompt was rewritten
+  twice and it happened again both times, so this is a check rather than
+  another reminder: a six-hourly workflow compares the `VERSION` in `main`'s
+  Makefile against the pushed tags and opens an issue when a release has been
+  merged without one.
+
+### Changed
+
+- The roadmap has a **Version 4** section: an interactive CLI, an optional and
+  deliberately unprivileged dashboard, and the two changes that have to break
+  to stop being temporary - the API graduating to `v1beta1`, and enforcement no
+  longer requiring `lsm=bpf` on the kernel command line.
+
 ## [3.3.3] - 2026-09-14
 
 ### Changed

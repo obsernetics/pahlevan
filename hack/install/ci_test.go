@@ -14,12 +14,15 @@
 package install
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
 
 const repoRoot = "../.."
@@ -148,5 +151,117 @@ func BenchmarkGenerateInstallManifest(b *testing.B) {
 		if _, err := cmd.Output(); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// The release-tag check is itself a workflow, and a workflow that stops
+// running is indistinguishable from one that keeps passing. These assert it
+// still exists, still runs on a schedule, and still calls the script - the
+// three ways it could quietly stop protecting anything.
+func TestTheReleaseTagCheckStillRuns(t *testing.T) {
+	const wf = repoRoot + "/.github/workflows/release-tagged.yml"
+	b, err := os.ReadFile(wf)
+	if err != nil {
+		t.Fatalf("reading %s: %v", wf, err)
+	}
+	var w struct {
+		On struct {
+			Schedule []struct {
+				Cron string `json:"cron"`
+			} `json:"schedule"`
+		} `json:"true"` // unquoted `on:` is YAML 1.1's boolean true
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string `json:"run"`
+			} `json:"steps"`
+		} `json:"jobs"`
+	}
+	if err := yaml.Unmarshal(b, &w); err != nil {
+		t.Fatalf("parsing %s: %v", wf, err)
+	}
+	if len(w.On.Schedule) == 0 {
+		t.Error("no schedule; an untagged release would go unnoticed, which is the entire point")
+	}
+	var runsCheck bool
+	for _, j := range w.Jobs {
+		for _, s := range j.Steps {
+			if strings.Contains(s.Run, "check-release-tagged.sh") {
+				runsCheck = true
+			}
+		}
+	}
+	if !runsCheck {
+		t.Error("no step runs scripts/check-release-tagged.sh, so the job passes without checking anything")
+	}
+}
+
+// The script is the check. If it stops failing on an untagged version it is a
+// green tick that means nothing, so this drives it both ways against a
+// throwaway repo rather than trusting it against whatever this clone happens
+// to have fetched.
+func TestCheckReleaseTaggedScript(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) error {
+		c := exec.Command(args[0], args[1:]...)
+		c.Dir = dir
+		return c.Run()
+	}
+	for _, c := range [][]string{
+		{"git", "init", "-q"},
+		{"git", "config", "user.email", "t@example.com"},
+		{"git", "config", "user.name", "t"},
+	} {
+		if err := run(c...); err != nil {
+			t.Skipf("git unavailable: %v", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(repoPath("scripts/check-release-tagged.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts/check-release-tagged.sh"), src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(v string) {
+		if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("VERSION?="+v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("v1.0.0")
+	if err := run("git", "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("git", "commit", "-qm", "x"); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(dir, "scripts/check-release-tagged.sh")
+
+	// Untagged: must fail. This is the case that shipped three phantom
+	// releases.
+	if err := exec.Command("bash", script).Run(); err == nil {
+		t.Error("the script passed with v1.0.0 untagged; it would not have caught v3.1.0, v3.3.1 or v3.3.3")
+	}
+
+	// Tagged: must pass.
+	if err := run("git", "tag", "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("bash", script).Run(); err != nil {
+		t.Errorf("the script failed with v1.0.0 tagged: %v", err)
+	}
+
+	// A Makefile with no VERSION is a different failure and must not be
+	// reported as an untagged release.
+	if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("all:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = exec.Command("bash", script).Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 2 {
+		t.Errorf("a Makefile with no VERSION exited %v, want exit code 2", err)
 	}
 }

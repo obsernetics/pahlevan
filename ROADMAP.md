@@ -115,12 +115,135 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
   by never running.
 - A commit-msg hook that rejects assistant attribution trailers.
 
+## Version 4
+
+The 3.x line is complete in the sense that matters: the data plane observes and
+enforces, and every claim on this page can be pointed at in the tree. What it
+is not is *operable*. Everything Pahlevan knows is reachable through `kubectl
+get -o yaml`, a Prometheus scrape, or a log line, and a learned profile is a
+YAML status block that nobody reads until something is denied.
+
+Version 4 is about that, plus the two things that have to break to stop being
+temporary.
+
+### What makes it a major
+
+Semver majors need breaking changes, not just big ones. These are the two:
+
+- **The API graduates to `v1beta1`.** `v1alpha1` has meant "the shape may move"
+  since the first commit, and it has moved. Graduating means committing to the
+  shape, shipping a conversion path, and serving both versions for a deprecation
+  window. Anything reading the CRDs by version string breaks.
+- **Enforcement no longer requires `lsm=bpf` on the kernel command line.** Today
+  an agent on a stock distribution loads the syscall tracepoint, the
+  `commit_creds` kprobe and the `readline` uretprobe, and silently cannot refuse
+  a file open, a connect or an exec. Once a kprobe-based path exists, those
+  clusters start enforcing where they previously only observed. That is the
+  behaviour change people will feel, and it needs a release that says so rather
+  than arriving in a patch.
+
+Everything else in 4.0 is additive. If the two above slip, the rest ships as
+3.x and the major waits, because a major cut for a feature list is a major
+nobody can reason about.
+
+### Workstreams
+
+**1. An interactive CLI.** `pahlevan` is a set of one-shot commands that print
+and exit. Watching a workload learn means running `status --watch` and reading
+a redrawn line; comparing what was learned against what is enforced means two
+commands and a mental diff; the side-by-side in the README's recording is drawn
+by a shell script, not by the tool. A terminal UI built on Bubble Tea, with
+Lip Gloss for layout and Bubbles for the list and viewport widgets, would make
+the learned surface something an operator can move around in: a live event
+stream, a per-workload learned-versus-enforcing panel, a profile diff, the
+ATT&CK coverage table, and a policy explain view, all against the gRPC
+streaming API that already exists.
+
+The constraint that decides the design: **it must not break scripts.** Every
+existing command keeps its exact non-interactive output, the TUI is opt-in
+(`pahlevan ui`, or a bare `pahlevan` on a TTY), and anything that detects a
+non-TTY, `--no-tui`, `NO_COLOR` or a `CI` environment falls back to the plain
+path. A tool that renders escape codes into a pipe is worse than one with no
+interface at all.
+
+**2. An optional dashboard.** Something a team can deploy and point a browser
+at, showing what each workload does: the process tree, the learned file,
+network and syscall surface, the flow from learning to enforcement, and what
+was denied and why. Diagrams and flows rather than another table of rows,
+because the thing worth seeing is the shape of a workload's behaviour.
+
+**Optional means optional.** It is not in `install.yaml`, not in the default
+Helm values, and a cluster that never enables it runs exactly the bytes it runs
+today. It is a separate Deployment with its own image, off unless asked for.
+
+**Secure means it does not become the soft target.** A security tool that
+ships a dashboard with a cluster-admin service account and a bespoke login page
+has handed an attacker a better primitive than the one it defends against. So:
+
+- Authentication and authorisation are delegated to Kubernetes. The browser
+  presents a token, the dashboard calls `TokenReview` to establish who that is
+  and `SubjectAccessReview` for every read, so a viewer sees exactly the
+  namespaces their own RBAC allows and nothing else. No user database, no
+  session secret to leak, no separate permission model to get wrong.
+- Read-only by default. Changing a policy or a mode from the browser is a
+  separate, explicitly enabled capability, and it is off unless someone turns
+  it on.
+- The service account is not cluster-admin. It needs `TokenReview`,
+  `SubjectAccessReview`, and read on the three CRDs. That is the whole list.
+- TLS only, `ClusterIP` only, with a `NetworkPolicy` shipped alongside. No
+  `NodePort`, no `LoadBalancer`, no `hostNetwork` in anything the project
+  ships; exposing it is the operator's deliberate act through their own
+  ingress.
+- A strict Content-Security-Policy with no inline script and no external
+  origin. Assets are served from the image. A dashboard that pulls a charting
+  library from a CDN at runtime has made every viewer's browser trust a third
+  party, which is not a trade this project gets to make on a user's behalf.
+- The agent stays the only privileged component. The dashboard reads the same
+  gRPC API and CRDs any other client reads, and it gets no path into the
+  kernel.
+
+Threat model, test coverage and a `SECURITY.md` section land with the code, not
+after it.
+
+**3. The two breaking changes above**, plus the Near term items that are ready
+when 4.0 is cut. Nothing here is a reason to hold the major.
+
 ## Near term
 
 The honest list of what Pahlevan still cannot do. Each is written in Pahlevan's
 own terms rather than as a comparison, and each is a real gap rather than a
 polish item.
 
+- **Planned: an interactive CLI (4.0).** Every `pahlevan` command prints and
+  exits. There is no way to watch a workload learn, move around its learned
+  surface, or see learned against enforcing without running two commands and
+  diffing them in your head. A Bubble Tea terminal UI over the existing gRPC
+  stream would fix that. It must leave every existing command's non-interactive
+  output byte-identical and fall back to it on a non-TTY, under `--no-tui`,
+  `NO_COLOR` or `CI`: a tool that writes escape codes into a pipe is worse than
+  one with no interface. See [Version 4](#version-4).
+- **Planned: an optional dashboard (4.0).** A deployable web view of what each
+  workload does - process tree, learned file, network and syscall surface, the
+  learning-to-enforcement flow, and what was denied and why - drawn as diagrams
+  rather than more tables. Optional in the real sense: absent from
+  `install.yaml` and the default Helm values, a separate Deployment, off unless
+  asked for. Authentication and authorisation delegated to Kubernetes through
+  `TokenReview` and a `SubjectAccessReview` per read, so a viewer sees only what
+  their own RBAC allows; read-only by default; no cluster-admin service account;
+  TLS and `ClusterIP` only with a `NetworkPolicy` alongside; a strict CSP with
+  no inline script and no external origin, because a security tool whose
+  dashboard loads a chart library from a CDN has made every viewer's browser
+  trust a third party. See [Version 4](#version-4).
+- **Planned: fail loudly when a merged release is never tagged.** The scheduled
+  maintenance agent runs as the GitHub App, which cannot create tag refs, so it
+  merges a release PR and the tag never appears: no tag, no release, no image,
+  while `CHANGELOG.md` and the website both announce the version as current.
+  This has now happened three times - `v3.1.0` sat untagged for five days, and
+  `v3.3.1` and `v3.3.3` were each announced as released while nothing could
+  install them. Rewriting the agent's prompt did not stop it, twice. A check
+  that compares the `VERSION` in `main`'s Makefile against the pushed tags and
+  fails once a release has been merged without one would, because it does not
+  depend on anyone remembering.
 - **Planned: Kubernetes audit-log ingestion.** Pahlevan sees what happens on a
   node and nothing of what happens at the API server, so a `kubectl exec`, a
   role binding granted, or a secret read through the API is invisible to it.
