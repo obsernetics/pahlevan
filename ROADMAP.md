@@ -287,6 +287,31 @@ polish item.
   `pahlevan profile patch`. Nothing applies them: a pod's `seccompProfile`
   cannot be changed after admission and the operator deliberately runs without
   a mutating webhook.
+- **Planned: rare and periodic behaviour is indistinguishable from an attack.**
+  Learning is a window of wall-clock time. A workload that does something once
+  a day - a nightly batch, a weekly certificate renewal, a log rotation, a
+  backup that opens a path nothing else opens - does not do it during a
+  fifty-minute window, so it is not in the baseline, and under `Blocking` it is
+  refused. From the kernel's side it is indistinguishable from an attack,
+  because the only evidence Pahlevan has is that the workload has never done it
+  before.
+
+  What exists today is a safety net, not an answer. Self-healing rolls
+  enforcement back to learning once denials pass `rollbackThreshold` inside
+  `rollbackWindow`, so the nightly job is denied at least that many times
+  first. `Audit` mode reports what would have been refused and refuses nothing,
+  which is the honest way to run a full cycle before enforcing, but nothing
+  tells an operator to do that and nothing knows how long their cycle is.
+  `learningConfig.duration` can be set to 25 hours, which is the operator
+  guessing.
+
+  What is missing is any notion of periodicity: no model of a workload's
+  rhythm, no warning that a window is shorter than the interval between a
+  CronJob's runs, and no way to say "this profile is not complete until it has
+  seen a Monday". Until that exists, the answer for a workload with a daily or
+  weekly cycle is to learn across at least one full cycle, or to stay in
+  `Audit` until one has passed.
+
 - **Planned: a review step before a learned profile enforces.** Learning is
   trust on first use. A workload already compromised when learning starts has
   its malicious behaviour baselined. Deny lists and exceptions let an operator
