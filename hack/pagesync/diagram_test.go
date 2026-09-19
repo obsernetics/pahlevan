@@ -240,3 +240,22 @@ func TestTheDiagramArrowsTerminateOnBoxes(t *testing.T) {
 		t.Error("two connectors share the same x, so the round trip reads as one line doubled back")
 	}
 }
+
+// The site is held to the same no-em-dash rule as the docs, and an entity
+// counts: a rendered page showing an em dash is an em dash, whether the source
+// spelled it as one character or as &mdash;.
+func TestTheSiteUsesNoEmDashes(t *testing.T) {
+	for _, p := range []string{"../../pages/index.html", "../../pages/changelog.html"} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("reading %s: %v", p, err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			for _, form := range []string{"\u2014", "&mdash;", "&#8212;", "&#x2014;"} {
+				if strings.Contains(line, form) {
+					t.Errorf("%s:%d contains an em dash (%s); use \" - \" instead", p, i+1, form)
+				}
+			}
+		}
+	}
+}

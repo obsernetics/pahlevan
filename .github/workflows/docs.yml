@@ -35,12 +35,18 @@ jobs:
       run: |
         markdownlint --config .markdownlint.yml '**/*.md' --ignore node_modules --ignore .git || true
 
+    # Test fixtures are excluded. hack/sitegen/testdata holds markdown written
+    # to exercise the generator, including deliberately broken and external
+    # links, and a link checker that reads them fails on inputs that are doing
+    # their job.
     - name: Check links in documentation
       uses: gaurav-nelson/github-action-markdown-link-check@v1
       with:
         use-quiet-mode: 'yes'
         use-verbose-mode: 'yes'
         config-file: '.markdown-link-check.json'
+        folder-path: 'docs, .github'
+        file-path: './README.md, ./CHANGELOG.md, ./ROADMAP.md, ./SECURITY.md, ./CONTRIBUTING.md'
 
   generate-docs:
     name: Generate API Documentation
