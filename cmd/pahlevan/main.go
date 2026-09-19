@@ -110,6 +110,11 @@ enforcement, and real-time monitoring of container behavior using eBPF technolog
 		commands.NewMetricsCommand(),
 		commands.NewDebugCommand(),
 		commands.NewCoverageCommand(),
+		// The interactive view reads the agent's gRPC stream or a replay file
+		// and never the API server, so it must not demand a kubeconfig: an
+		// operator debugging a node should not need cluster credentials to
+		// look at what that node's agent is reporting.
+		commands.Offline(commands.NewUICommand()),
 		// Neither touches the cluster: one writes a shell script, the other
 		// prints constants compiled into the binary.
 		commands.Offline(commands.NewCompletionCommand()),
