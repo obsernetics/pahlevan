@@ -329,3 +329,54 @@ func TestVMTestHonoursTheCacheLocation(t *testing.T) {
 		t.Errorf("PAHLEVAN_VM_CACHE was set and the recipe still writes to .vmcache/:\n%s", got)
 	}
 }
+
+// The cloud-init user-data in up.sh is written through an unquoted heredoc, so
+// the shell expands it before the guest ever sees it. That is deliberate for
+// ${VAR}. It is dangerous for anything that runs a command: a backtick or a
+// $( in that heredoc executes on the HOST, as the user running up.sh.
+//
+// This is not hypothetical. A comment quoting `sudo reboot` in backticks sat
+// inside the heredoc, so every provision ran sudo reboot on the machine
+// building the seed. It was caught by reading, not by a test; the host merely
+// happened not to reboot. The rule for this repo is that eBPF and anything
+// privileged run in the VM and never on the host, so the heredoc must contain
+// nothing the host shell would execute.
+func TestProvisioningHeredocsRunNothingOnTheHost(t *testing.T) {
+	scripts, err := filepath.Glob(filepath.Join(repoRoot, "hack", "vm", "*.sh"))
+	if err != nil || len(scripts) == 0 {
+		t.Fatalf("no scripts found under hack/vm: %v", err)
+	}
+	for _, p := range scripts {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("reading %s: %v", p, err)
+		}
+		lines := strings.Split(string(b), "\n")
+		var open string // the terminator of the unquoted heredoc we are inside
+		for i, line := range lines {
+			if open != "" {
+				if strings.TrimSpace(line) == open {
+					open = ""
+					continue
+				}
+				if strings.Contains(line, "`") || strings.Contains(line, "$(") {
+					t.Errorf("%s:%d runs a command on the host from inside an unquoted heredoc:\n  %s\n"+
+						"escape it, or quote the heredoc delimiter if nothing in it needs expanding",
+						filepath.Base(p), i+1, strings.TrimSpace(line))
+				}
+				continue
+			}
+			// <<EOF or <<-EOF opens an expanding heredoc; <<'EOF' and <<"EOF"
+			// do not expand, so nothing inside them can run. <<< is a
+			// here-string, which has no body and no terminator - treating it
+			// as a heredoc reads the rest of the file as heredoc and flags
+			// every ordinary $( in the script.
+			if j := strings.Index(line, "<<"); j >= 0 && !strings.HasPrefix(line[j:], "<<<") {
+				rest := strings.TrimLeft(strings.TrimPrefix(line[j+2:], "-"), " ")
+				if rest != "" && rest[0] != '\'' && rest[0] != '"' {
+					open = strings.Fields(rest)[0]
+				}
+			}
+		}
+	}
+}
