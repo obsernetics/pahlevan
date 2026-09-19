@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"go/ast"
 	"go/parser"
 	"go/token"
 	"reflect"
@@ -81,8 +80,8 @@ func fixtureCluster() *fakeCluster {
 				Namespace: "prod", Name: "payments", Phase: "Learning", Mode: "Monitoring",
 				Selector: "app=payments", Learning: true, Progress: 62,
 				Containers: 4, Enforcing: 0,
-				Workloads:  []string{"Deployment/payments"},
-				Rules:      []string{"file read /etc/ssl/certs/ca-certificates.crt"},
+				Workloads: []string{"Deployment/payments"},
+				Rules:     []string{"file read /etc/ssl/certs/ca-certificates.crt"},
 			},
 			{
 				Namespace: "kube-system", Name: "cni", Phase: "Failed", Mode: "Blocking",
@@ -196,7 +195,6 @@ func TestTheConsoleDoesNotImportAKubernetesClient(t *testing.T) {
 					}
 				}
 			}
-			_ = ast.Print
 		}
 	}
 }
