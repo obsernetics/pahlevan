@@ -214,14 +214,15 @@ The honest list of what Pahlevan still cannot do. Each is written in Pahlevan's
 own terms rather than as a comparison, and each is a real gap rather than a
 polish item.
 
-- **Planned: an interactive CLI (4.0).** Every `pahlevan` command prints and
-  exits. There is no way to watch a workload learn, move around its learned
-  surface, or see learned against enforcing without running two commands and
-  diffing them in your head. A Bubble Tea terminal UI over the existing gRPC
-  stream would fix that. It must leave every existing command's non-interactive
-  output byte-identical and fall back to it on a non-TTY, under `--no-tui`,
-  `NO_COLOR` or `CI`: a tool that writes escape codes into a pipe is worse than
-  one with no interface. See [Version 4](#version-4).
+- **In progress: an interactive CLI (4.0).** `pahlevan ui` is in the tree: a
+  Bubble Tea view over the existing gRPC stream, with a live event list,
+  per-workload observed-versus-refused counts, a workload detail pane, and the
+  coverage table read from `pkg/coverage`. It is a reader and changes nothing.
+  Every existing command keeps its exact output, and a non-TTY, `--no-tui`,
+  `NO_COLOR`, `TERM=dumb` or `CI` gets a plain summary instead of a drawn
+  screen. Still to come: a learned-versus-enforcing diff sourced from
+  `ContainerProfile` rather than inferred from the event stream, and a policy
+  explain view. See [Version 4](#version-4).
 - **Planned: an optional dashboard (4.0).** A deployable web view of what each
   workload does - process tree, learned file, network and syscall surface, the
   learning-to-enforcement flow, and what was denied and why - drawn as diagrams

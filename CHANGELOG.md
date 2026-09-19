@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`pahlevan ui`, an interactive view of what the agents are reporting.** Every
+  command printed and exited, so watching a workload learn meant reading a
+  redrawn line, and comparing learned against enforcing meant two commands and a
+  diff done in your head. The view is a Bubble Tea screen over the gRPC stream
+  that already exists: a live event list, per-workload counts of what was
+  observed and what was refused, a detail pane per workload, and the ATT&CK
+  coverage table read from `pkg/coverage` rather than retyped.
+
+  It is a reader - it never changes a policy, a mode or a profile, so it cannot
+  be the thing that turns enforcement off during an incident. It does not break
+  scripts: every existing command keeps its exact output, and without a terminal
+  (piped, redirected, `CI`, `NO_COLOR`, `TERM=dumb`, or `--no-tui`) it prints a
+  plain greppable summary instead of drawing. Retained events live in a
+  fixed-capacity ring, because a slice that only appends turns the UI into a
+  memory leak that grows with the node's syscall rate; evictions are counted and
+  shown. `--replay` takes the JSON-lines the file sink writes, so a UI problem is
+  reproducible from a capture with no cluster.
+
 - **The architecture diagram on the landing page was stale and clipped.** It
   showed three eBPF programs long after there were seven, so a reader saw a
   third of what Pahlevan does. One label was anchored at its right-hand end at
