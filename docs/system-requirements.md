@@ -1,455 +1,227 @@
 # System Requirements
 
-This document outlines the system requirements for running Pahlevan in different environments.
+Pahlevan runs in the kernel, so what it can do on a given node is decided by
+that node's kernel, not by the chart you installed. This page states the floors
+that can be justified from the code in this repository, and says where a claim
+would need testing this project has not done. An agent that loads on a kernel
+it should not have, or refuses one it should have accepted, is a bug in this
+page as much as in the loader.
 
-## Minimum Requirements
+## Kernel version
 
-### Kubernetes Cluster
+The agent loads eight eBPF objects, and each one has its own floor because each
+uses a different set of BPF helpers. A helper the running kernel does not know
+is rejected by the verifier at load time, which takes out the whole object that
+calls it and nothing else. The floors below are the first kernel release that
+carries every helper the program calls, read out of `bpf/*.c`. The hook and the
+BPF LSM column come from `pkg/coverage/coverage.go`, which is the table
+`pahlevan coverage` prints, so they cannot drift from the code.
 
-| Component | Minimum Version | Recommended |
-|-----------|----------------|-------------|
-| **Kubernetes** | 1.24 | 1.28+ |
-| **kubectl** | 1.24 | 1.28+ |
-| **Helm** (optional) | 3.8 | 3.12+ |
+| Program | Kernel hook | Needs `lsm=bpf` | Kernel floor | What sets the floor |
+|---|---|---|---|---|
+| `bpf/syscall_monitor.c` | `tracepoint/raw_syscalls/sys_enter` | No | **5.8** | `BPF_MAP_TYPE_RINGBUF` (5.8) |
+| `bpf/network_monitor.c` | `lsm/socket_connect` | Yes | **5.8** | `BPF_PROG_TYPE_LSM` (5.7), ring buffer (5.8) |
+| `bpf/capability_monitor.c` | `lsm/capable` | Yes | **5.8** | `BPF_PROG_TYPE_LSM` (5.7), ring buffer (5.8) |
+| `bpf/shell_monitor.c` | `uretprobe/readline` | No | **5.8** | `bpf_probe_read_user_str` (5.5), ring buffer (5.8) |
+| `bpf/file_monitor.c` | `lsm/file_open` | Yes | **5.10** | `bpf_d_path` (5.10) |
+| `bpf/exec_monitor.c` | `lsm/bprm_check_security` | Yes | **5.11** | `bpf_d_path` (5.10), `bpf_get_current_task_btf` (5.11) |
+| `bpf/cred_monitor.c` | `kprobe/commit_creds` | No | **5.11** | `bpf_send_signal` (5.3), `bpf_get_current_task_btf` (5.11) |
+| `bpf/generic_kprobe.c` | `kprobe/<symbol>`, attached on request | No | **5.15** | `bpf_get_attach_cookie` (5.15) |
 
-### Operating System
+Every one of those helper versions is the release that merged the helper into
+mainline, cross-checked against the kernel feature table in
+[iovisor/bcc](https://github.com/iovisor/bcc/blob/master/docs/kernel-versions.md).
+All eight objects are CO-RE, so the kernel must also expose its own BTF at
+`/sys/kernel/btf/vmlinux`, which arrived in 5.5 and needs
+`CONFIG_DEBUG_INFO_BTF=y`. That is below every floor in the table, so it never
+decides the answer on its own, but a kernel built without BTF fails everything
+at once.
 
-| OS | Minimum Version | Kernel | Notes |
-|----|----------------|--------|-------|
-| **Ubuntu** | 20.04 LTS | 5.4+ | Preferred platform |
-| **CentOS/RHEL** | 8.0 | 4.18+ | Production tested |
-| **Debian** | 11 | 5.10+ | Community tested |
-| **Amazon Linux** | 2 | 4.14+ | EKS compatible |
-| **Bottlerocket** | 1.0+ | 5.4+ | EKS optimized |
+**The floor to run at all is 5.8.** The syscall monitor is the only program
+whose load failure stops the agent, because behavioural learning is built on
+it. Everything else is best effort: a program that will not load costs its own
+observations and leaves the rest of the agent running, with one log line saying
+so. On a 5.8 node the syscall, network, capability and shell programs load and
+the file, exec, credential and generic-kprobe objects do not; 5.10 adds file;
+5.11 adds exec and credential changes, which is the first kernel where every
+detector `pahlevan coverage` lists is present; 5.15 adds the ad-hoc kernel
+probes. Whether the four LSM programs in that set then attach is a separate
+question, below.
 
-### Linux Kernel Requirements
+**The floor to enforce anything is higher than a version number.** The four
+LSM-hooked programs also need the kernel booted with `bpf` in its active LSM
+list, which most distributions do not set. That is the single most consequential
+requirement on this page and it has its own:
+[`lsm-support.md`](lsm-support.md).
 
-#### Essential Features
+## Kernel configuration
 
-```bash
-# Check required kernel features
-grep -E "(CONFIG_BPF=|CONFIG_BPF_SYSCALL=|CONFIG_BPF_JIT=)" /boot/config-$(uname -r)
-
-# Expected output:
-CONFIG_BPF=y
-CONFIG_BPF_SYSCALL=y
-CONFIG_BPF_JIT=y
-```
-
-#### Minimum Kernel Version Matrix
-
-| Kernel Version | eBPF Support | TC Support | LSM Support | Tracepoints | Notes |
-|---------------|--------------|------------|-------------|-------------|-------|
-| **4.18** | Basic | Yes | No | Yes | Minimum supported |
-| **5.4** | Good | Yes | No | Yes | Ubuntu 20.04 default |
-| **5.7** | Full | Yes | Yes | Yes | BPF LSM introduced |
-| **5.8+** | Optimal | Yes | Yes | Yes | **Recommended** |
-
-> **Note**: Current implementation uses tracepoint-based file monitoring, not LSM hooks.
-
-### Hardware Requirements
-
-#### Development Environment
-
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| **CPU** | 2 cores | 4 cores |
-| **Memory** | 4 GB | 8 GB |
-| **Storage** | 20 GB | 50 GB |
-| **Network** | 1 Gbps | 10 Gbps |
-
-#### Production Environment
-
-| Resource | Minimum | Recommended | High-Scale |
-|----------|---------|-------------|-----------|
-| **CPU** | 4 cores | 8 cores | 16+ cores |
-| **Memory** | 8 GB | 16 GB | 32+ GB |
-| **Storage** | 100 GB SSD | 500 GB SSD | 1+ TB NVMe |
-| **Network** | 10 Gbps | 25 Gbps | 100 Gbps |
-
-#### Per-Node Resources
-
-| Component | CPU (per node) | Memory (per node) | Storage |
-|-----------|---------------|------------------|---------|
-| **Operator** | 500m-1000m | 512Mi-1Gi | - |
-| **eBPF Programs** | 100m per 100 containers | 10MB per container | - |
-| **Ring Buffers** | - | 32KB-64KB per container | - |
-| **Policy Cache** | 50m per 1000 policies | 100MB per 1000 policies | - |
-
-## Environment-Specific Requirements
-
-### Development
-
-```yaml
-# Minimal dev cluster requirements
-nodes:
-  count: 1
-  cpu: 2 cores
-  memory: 4 GB
-  storage: 20 GB
-
-pahlevan:
-  replicas: 1
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-```
-
-### Staging
-
-```yaml
-# Staging environment
-nodes:
-  count: 3
-  cpu: 4 cores
-  memory: 8 GB
-  storage: 100 GB
-
-pahlevan:
-  replicas: 2
-  resources:
-    requests:
-      cpu: 500m
-      memory: 512Mi
-    limits:
-      cpu: 1000m
-      memory: 1Gi
-```
-
-### Production
-
-```yaml
-# Production environment
-nodes:
-  count: 5+
-  cpu: 8+ cores
-  memory: 16+ GB
-  storage: 500+ GB NVMe
-
-pahlevan:
-  replicas: 3
-  resources:
-    requests:
-      cpu: 1000m
-      memory: 1Gi
-    limits:
-      cpu: 2000m
-      memory: 2Gi
-```
-
-## Container Runtime Compatibility
-
-### Supported Runtimes
-
-| Runtime | Version | Support Level | Notes |
-|---------|---------|--------------|-------|
-| **containerd** | 1.6+ | Full | Preferred runtime |
-| **Docker** | 20.10+ | Full | Legacy support |
-| **CRI-O** | 1.24+ | Full | OpenShift default |
-| **runc** | 1.1+ | Full | Low-level runtime |
-| **crun** | 1.5+ | Limited | Experimental |
-
-### Runtime Configuration
-
-#### containerd
-
-```toml
-# /etc/containerd/config.toml
-[plugins."io.containerd.grpc.v1.cri"]
-  [plugins."io.containerd.grpc.v1.cri".cni]
-    bin_dir = "/opt/cni/bin"
-    conf_dir = "/etc/cni/net.d"
-```
-
-#### Docker
-
-```json
-{
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "100m"
-  },
-  "storage-driver": "overlay2"
-}
-```
-
-## CNI Plugin Compatibility
-
-### Tested CNI Plugins
-
-| CNI Plugin | Version | Compatibility | Network Policies | Notes |
-|------------|---------|--------------|-----------------|-------|
-| **Calico** | 3.24+ | Full | Yes | Excellent integration |
-| **Cilium** | 1.12+ | Full | Yes | eBPF-native CNI |
-| **Flannel** | 0.20+ | Good | No | Basic networking |
-| **Weave** | 2.8+ | Good | Yes | Legacy support |
-| **Antrea** | 1.8+ | Good | Yes | VMware CNI |
-
-### CNI-Specific Considerations
-
-#### Cilium
-
-```yaml
-# Cilium configuration for optimal Pahlevan integration
-cilium:
-  kubeProxyReplacement: strict
-  bpf:
-    masquerade: true
-    hostLegacyRouting: false
-  hubble:
-    enabled: true
-    relay:
-      enabled: true
-```
-
-#### Calico
-
-```yaml
-# Calico configuration
-calicoNetwork:
-  bgp: Disabled
-  ipPools:
-  - blockSize: 26
-    cidr: 10.244.0.0/16
-    encapsulation: VXLANCrossSubnet
-```
-
-## Cloud Provider Compatibility
-
-### AWS EKS
-
-| EKS Version | Pahlevan Support | Notes |
-|-------------|-----------------|-------|
-| **1.24** | Full | Minimum supported |
-| **1.25** | Full | Recommended |
-| **1.26** | Full | Latest stable |
-| **1.27** | Full | Latest |
-
-**EKS-Specific Requirements:**
-- Amazon Linux 2 or Bottlerocket AMI
-- Instance types with enhanced networking
-- VPC CNI or Calico
-
-#### Recommended Instance Types
-
-| Workload | Instance Type | vCPU | Memory | Network |
-|----------|--------------|------|--------|---------|
-| **Dev/Test** | t3.medium | 2 | 4 GB | Up to 5 Gbps |
-| **Staging** | m5.large | 2 | 8 GB | Up to 10 Gbps |
-| **Production** | m5.xlarge | 4 | 16 GB | Up to 10 Gbps |
-| **High-Scale** | c5n.2xlarge | 8 | 21 GB | Up to 25 Gbps |
-
-### Google GKE
-
-| GKE Version | Pahlevan Support | Notes |
-|-------------|-----------------|-------|
-| **1.24** | Full | Minimum supported |
-| **1.25** | Full | Recommended |
-| **1.26** | Full | Latest stable |
-
-**GKE-Specific Requirements:**
-- Ubuntu or Container-Optimized OS
-- VPC-native networking
-- GKE Autopilot: Limited (eBPF restrictions)
-
-#### Recommended Machine Types
-
-| Workload | Machine Type | vCPU | Memory |
-|----------|-------------|------|--------|
-| **Dev/Test** | e2-standard-2 | 2 | 8 GB |
-| **Staging** | n1-standard-4 | 4 | 15 GB |
-| **Production** | n1-standard-8 | 8 | 30 GB |
-
-### Azure AKS
-
-| AKS Version | Pahlevan Support | Notes |
-|-------------|-----------------|-------|
-| **1.24** | Full | Minimum supported |
-| **1.25** | Full | Recommended |
-| **1.26** | Full | Latest stable |
-
-**AKS-Specific Requirements:**
-- Ubuntu 20.04 node image
-- Azure CNI or Calico
-- System-assigned managed identity
-
-#### Recommended VM Sizes
-
-| Workload | VM Size | vCPU | Memory |
-|----------|---------|------|--------|
-| **Dev/Test** | Standard_D2s_v3 | 2 | 8 GB |
-| **Staging** | Standard_D4s_v3 | 4 | 16 GB |
-| **Production** | Standard_D8s_v3 | 8 | 32 GB |
-
-## Verification Scripts
-
-### System Compatibility Check
+The agent checks part of this itself at startup and logs what is missing, so an
+unhappy node is diagnosable from `kubectl logs`. The checks that matter:
 
 ```bash
-#!/bin/bash
-# check-system-compatibility.sh
+# eBPF, the BPF JIT and kernel BTF. Distribution kernels since 5.8 set all of
+# these; a custom or minimal kernel may not.
+grep -E 'CONFIG_BPF=|CONFIG_BPF_SYSCALL=|CONFIG_BPF_JIT=|CONFIG_BPF_EVENTS=|CONFIG_KPROBES=|CONFIG_DEBUG_INFO_BTF=|CONFIG_BPF_LSM=' /boot/config-$(uname -r)
 
-echo "=== Pahlevan System Compatibility Check ==="
+# Kernel BTF must actually be exposed, not only compiled in. The agent mounts
+# this path with hostPath type Directory, so a node without it cannot even
+# start the pod.
+ls -l /sys/kernel/btf/vmlinux
 
-# Check kernel version
-KERNEL_VERSION=$(uname -r)
-echo "Kernel Version: $KERNEL_VERSION"
+# cgroup v2. Every allow-set in the data plane is keyed on the cgroup v2 id
+# returned by bpf_get_current_cgroup_id, and attribution resolves that id back
+# to a pod through the unified hierarchy. A cgroup v1 node is not supported.
+test -f /sys/fs/cgroup/cgroup.controllers && echo "cgroup v2"
 
-# Check for required kernel features
-echo -e "\n=== Kernel Features ==="
-for feature in CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BPF_JIT CONFIG_BPF_EVENTS; do
-    if grep -q "${feature}=y" /boot/config-$(uname -r) 2>/dev/null; then
-        echo "Yes $feature: Enabled"
-    else
-        echo "No $feature: Disabled or not found"
-    fi
-done
+# The active LSM list decides whether the four LSM programs can attach.
+cat /sys/kernel/security/lsm
+```
 
-# Check eBPF filesystem
-if [ -d "/sys/fs/bpf" ]; then
-    echo "Yes BPF filesystem: Available"
+The agent refuses to start if it cannot load the syscall tracepoint, and the
+error names debugfs and tracepoint support, because that is the usual cause on
+a node where `/sys/kernel/debug` is not mounted.
+
+## CPU architecture
+
+Objects are built for both amd64 and arm64, and a test parses both ELFs to
+assert they expose the same programs and maps. Only amd64 has ever been loaded
+by a kernel. The VM harness that runs in CI boots an amd64 guest, so an arm64
+verifier has never seen these programs, and a verifier rejection is exactly the
+class of failure that a structural comparison of two ELF files cannot find.
+Treat arm64 as built and unproven until that changes; [`../ROADMAP.md`](../ROADMAP.md)
+tracks it.
+
+## Node privileges
+
+The agent is a DaemonSet, runs on every node, and needs real privilege in the
+init namespace. [`../deploy/base/daemonset-agent.yaml`](../deploy/base/daemonset-agent.yaml)
+is the authoritative version of what follows.
+
+- **`CAP_BPF` and `CAP_PERFMON`.** `CAP_BPF` allows the `bpf()` syscall
+  operations that create maps and load programs; `CAP_PERFMON` covers the
+  tracing attachments. Both were split out of `CAP_SYS_ADMIN` in Linux 5.8,
+  which is the same release as the agent's floor.
+- **`CAP_SYS_ADMIN`, `CAP_SYS_RESOURCE` and `CAP_NET_ADMIN`** are requested
+  alongside them. They are what makes the agent work on kernels and container
+  runtimes where the finer-grained pair is not enough on its own, and they are
+  why the DaemonSet does not claim to be least-privilege.
+- **`hostPID: true`.** Kernel events carry host PIDs. Without the host PID
+  namespace the agent cannot resolve them, and the shell monitor cannot reach
+  `/proc/<pid>/root` to find the shell binary inside a container's filesystem
+  and attach a uprobe to its inode.
+- **Host mounts.** `/sys/fs/bpf` (bidirectional, for pinned objects),
+  `/sys/kernel/btf` and `/sys/fs/cgroup` read-only, `/sys/kernel/debug`, the
+  host `/proc` at `/host/proc` read-only,
+  and a writable `/var/lib/kubelet/seccomp/pahlevan` so generated seccomp
+  profiles land where the kubelet can resolve them as a `localhostProfile`.
+- **Pod Security Admission.** `pahlevan-system` is labelled
+  `pod-security.kubernetes.io/enforce: privileged`. Workloads Pahlevan protects
+  live in their own namespaces and keep whatever level they already run at.
+- The container does **not** set `privileged: true`, and it cannot run in a
+  user namespace. The operator, which has no kernel privilege at all, does:
+  it runs with `hostUsers: false`.
+
+## Kubernetes
+
+| Requirement | Version | Why |
+|---|---|---|
+| Cluster | 1.24+ | The Helm chart declares `kubeVersion: ">=1.24.0"`. |
+| `hostUsers: false` on the operator | 1.30+ | User namespaces for pods are beta from 1.30 and on by default from 1.33. On an older cluster the operator still runs, without the user namespace. |
+| `ValidatingAdmissionPolicy` | 1.30+ | Policy validation is a CEL admission policy rather than a webhook. `pahlevan status` reports the API as unavailable on older clusters instead of failing. |
+
+## Container runtime and cgroups
+
+Attribution parses the cgroup v2 path of a container to recover the pod UID and
+container id, and recognises the scope shapes that containerd, CRI-O and Docker
+produce, along with the `containerd://`, `cri-o://` and `docker://` prefixes on
+the container ids reported by the Kubernetes API. A runtime that writes neither
+shape leaves events attributed to a cgroup id and no pod, which is a
+degradation rather than a failure.
+
+cgroup v2 is required, as above. No runtime version floor is stated here,
+because nothing in the code checks one and this project has not tested a matrix
+of runtime versions.
+
+## Resources
+
+The DaemonSet requests `100m` CPU and `128Mi` memory per node with `500m` and
+`512Mi` limits; the operator requests `50m` and `64Mi` with `200m` and `256Mi`.
+Those are the values in the shipped manifests, chosen to be enough for the
+workloads the benchmark harness exercises, and they are the number to revisit
+first when an agent is being OOM-killed on a busy node.
+
+BPF maps are preallocated by the kernel, so map sizing is resident memory that
+exists from the moment the programs load, whether or not any event arrives.
+Across the programs that measures 37.7 MiB on Linux 6.8. Each program carries
+its own ring buffer, 256 KiB where events are deduplicated in the kernel and
+1 MiB where they are not, and the allow-sets are sized for 8192 governed cgroups
+and 131,072 file paths per node.
+
+End-to-end agent memory under load has not been measured since the map-sizing
+fix that produced the figure above, so no total is quoted here.
+[`benchmarks/README.md`](benchmarks/README.md) holds the methodology and the
+recorded runs.
+
+## Checking a node before you install
+
+This is the whole check, and every line of it reads something the agent
+actually depends on:
+
+```bash
+#!/usr/bin/env bash
+# Run on the node, not in the agent pod: the agent image is distroless and has
+# no shell, and it does not mount securityfs.
+
+echo "kernel:      $(uname -r)"
+echo "arch:        $(uname -m)"
+
+if [ -e /sys/kernel/btf/vmlinux ]; then
+  echo "BTF:         present"
 else
-    echo "No BPF filesystem: Not available"
+  echo "BTF:         MISSING - no CO-RE program can load, and the agent pod will not start"
 fi
 
-# Check for required commands
-echo -e "\n=== Required Commands ==="
-for cmd in kubectl tc ip; do
-    if command -v $cmd >/dev/null 2>&1; then
-        echo "Yes $cmd: Available"
-    else
-        echo "No $cmd: Not found"
-    fi
-done
-
-# Check Kubernetes version
-if command -v kubectl >/dev/null 2>&1; then
-    K8S_VERSION=$(kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion')
-    echo "Kubernetes Client: $K8S_VERSION"
-fi
-
-# Check available resources
-echo -e "\n=== System Resources ==="
-echo "CPU Cores: $(nproc)"
-echo "Memory: $(free -h | awk '/^Mem:/ {print $2}')"
-echo "Disk Space: $(df -h / | awk 'NR==2 {print $4}')"
-
-echo -e "\n=== Compatibility Summary ==="
-echo "Kernel version should be 4.18+"
-echo "All kernel features should be enabled"
-echo "All required commands should be available"
-echo "Minimum 2 CPU cores and 4GB RAM recommended"
-```
-
-### Kubernetes Cluster Check
-
-```bash
-#!/bin/bash
-# check-k8s-cluster.sh
-
-echo "=== Kubernetes Cluster Check ==="
-
-# Check cluster version
-kubectl version --short
-
-# Check node readiness
-echo -e "\n=== Node Status ==="
-kubectl get nodes -o wide
-
-# Check available resources
-echo -e "\n=== Node Resources ==="
-kubectl describe nodes | grep -E "(Name:|cpu:|memory:)" | grep -A2 "Name:"
-
-# Check CNI plugin
-echo -e "\n=== CNI Plugin ==="
-kubectl get pods -n kube-system | grep -E "(calico|cilium|flannel|weave)"
-
-# Check for required namespaces
-echo -e "\n=== Namespace Check ==="
-kubectl get ns kube-system
-kubectl get ns kube-public
-
-# Check RBAC
-echo -e "\n=== RBAC Check ==="
-kubectl auth can-i create customresourcedefinitions --as=system:serviceaccount:pahlevan-system:pahlevan-operator
-
-echo -e "\n=== Cluster Summary ==="
-echo "Cluster should be running Kubernetes 1.24+"
-echo "All nodes should be Ready"
-echo "CNI plugin should be running"
-echo "RBAC should allow CRD creation"
-```
-
-### Runtime Pahlevan Check
-
-```bash
-#!/bin/bash
-# check-pahlevan-readiness.sh
-
-echo "=== Pahlevan Readiness Check ==="
-
-# Check if Pahlevan is installed
-if ! kubectl get crd pahlevanpolicies.policy.pahlevan.io >/dev/null 2>&1; then
-    echo "No Pahlevan CRDs not installed"
-    exit 1
-fi
-echo "Yes Pahlevan CRDs installed"
-
-# Check operator status
-if kubectl get deployment pahlevan-operator -n pahlevan-system >/dev/null 2>&1; then
-    echo "Yes Pahlevan operator deployed"
-
-    # Check operator readiness
-    READY=$(kubectl get deployment pahlevan-operator -n pahlevan-system -o jsonpath='{.status.readyReplicas}')
-    DESIRED=$(kubectl get deployment pahlevan-operator -n pahlevan-system -o jsonpath='{.spec.replicas}')
-
-    if [ "$READY" = "$DESIRED" ]; then
-        echo "Yes Operator is ready ($READY/$DESIRED)"
-    else
-        echo "Warning:  Operator not fully ready ($READY/$DESIRED)"
-    fi
+if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+  echo "cgroup:      v2"
 else
-    echo "No Pahlevan operator not deployed"
+  echo "cgroup:      NOT v2 - attribution and every allow-set key depend on cgroup v2"
 fi
 
-# Check operator logs for errors
-echo -e "\n=== Recent Operator Logs ==="
-kubectl logs -n pahlevan-system deployment/pahlevan-operator --tail=10
+if [ -d /sys/kernel/debug/tracing ]; then
+  echo "tracefs:     present"
+else
+  echo "tracefs:     MISSING - the syscall monitor cannot attach, and its failure is fatal"
+fi
 
-# Test system capabilities
-echo -e "\n=== System Capabilities Test ==="
-kubectl run pahlevan-test --rm -i --tty --restart=Never \
-    --image=obsernetics/pahlevan:latest \
-    --command -- /pahlevan debug system-capabilities
+lsm=$(cat /sys/kernel/security/lsm 2>/dev/null || echo "unreadable")
+echo "active LSMs: ${lsm}"
+case "${lsm}" in
+  *bpf*) echo "             bpf is active: file, network, exec and capability enforcement are available" ;;
+  *)     echo "             bpf is NOT active: see docs/lsm-support.md, Pahlevan will observe but not enforce" ;;
+esac
 ```
 
-## Performance Benchmarks
+Once Pahlevan is installed, `pahlevan debug` collects the same picture for
+every node in the cluster through the Kubernetes API, including a per-node
+verdict on the BPF LSM inferred from the agent's own logs, and `pahlevan
+coverage` prints which detectors exist and which of them need the BPF LSM.
 
-> **Note**: Performance characteristics may vary based on workload patterns and system configuration.
+## What this page does not say
 
-### eBPF Program Performance
+There is no table here of cloud providers, node images, CNI plugins or
+instance types. Pahlevan's kernel tests run against one kernel, the Ubuntu
+24.04 cloud image booted by [`../hack/vm/up.sh`](../hack/vm/up.sh) with
+`lsm=bpf`, in CI
+on every change to `bpf/`, `pkg/ebpf/` or the harness itself, and nightly. Any
+per-provider compatibility claim would be a guess, and a requirements document
+that guesses is worse than one that is silent: the checks above answer the
+question for whatever node you actually have.
 
-| Metric | Baseline | Target | Maximum |
-|--------|----------|--------|---------|
-| **Syscall Latency** | Minimal | <5μs | <10μs |
-| **Network Latency** | Minimal | <1ms | <5ms |
-| **Memory Usage** | - | 20-35MB/container | <50MB/container |
-| **CPU Overhead** | - | 3-7% | <10% |
+## Related
 
-### Scale Limits
-
-> **Note**: Actual limits depend on hardware configuration and workload characteristics.
-
-| Resource | Development | Production | Enterprise |
-|----------|-------------|------------|-----------|
-| **Containers/Node** | 50-100 | 200-500 | 1000+ |
-| **Policies/Cluster** | 10-50 | 100-1000 | 5000+ |
-| **Events/Second** | 1K | 10K-100K | 500K+ |
-| **Nodes/Cluster** | 1-3 | 10-100 | 500+ |
-
-Use these requirements to plan your Pahlevan deployment and ensure optimal performance in your environment.
+- [`lsm-support.md`](lsm-support.md) for the BPF LSM and the boot parameter it
+  needs.
+- [`architecture.md`](architecture.md) for how the agent and operator are split.
+- [`troubleshooting.md`](troubleshooting.md) for what to do when a node fails
+  one of these checks.

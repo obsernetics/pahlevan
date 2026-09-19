@@ -426,6 +426,10 @@ func (m *Model) rowCount() int {
 }
 
 // filteredEvents returns the events matching the filter, oldest first.
+//
+// Callers that only draw a window should use filteredWindow: this copies the
+// whole ring, and a redraw happens per event, so on a busy node it is the
+// dominant cost in the UI.
 func (m *Model) filteredEvents() []export.Event {
 	all := m.events.slice()
 	if m.filter == "" {
@@ -439,6 +443,22 @@ func (m *Model) filteredEvents() []export.Event {
 		}
 	}
 	return out
+}
+
+// filteredWindow returns at most n of the newest matching events.
+//
+// Unfiltered, this reads the tail of the ring directly instead of copying all
+// of it: at the default capacity a full copy was 413KB and 330us per frame,
+// once per event, which is a lot of work to render twenty lines.
+func (m *Model) filteredWindow(n int) []export.Event {
+	if m.filter == "" {
+		return m.events.last(n)
+	}
+	all := m.filteredEvents()
+	if len(all) > n {
+		return all[len(all)-n:]
+	}
+	return all
 }
 
 func (m *Model) filteredWorkloads() []*Workload {

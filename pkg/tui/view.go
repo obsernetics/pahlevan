@@ -74,17 +74,27 @@ func (m *Model) body() string {
 }
 
 func (m *Model) eventsView() string {
-	evs := m.filteredEvents()
 	h := m.bodyHeight()
+	// Following the tail is the common case and needs only the last h events,
+	// so it avoids copying the whole ring on every redraw. Scrolled or paused,
+	// the offset can point anywhere and the full slice is needed.
+	if !m.paused && m.cursor == 0 {
+		evs := m.filteredWindow(h)
+		if len(evs) == 0 {
+			return m.emptyBody("no events yet")
+		}
+		lines := make([]string, 0, len(evs))
+		for _, e := range evs {
+			lines = append(lines, m.eventLine(e, false))
+		}
+		return padTo(strings.Join(lines, "\n"), h)
+	}
+
+	evs := m.filteredEvents()
 	if len(evs) == 0 {
 		return m.emptyBody("no events yet")
 	}
-	// The events view follows the tail unless the user has scrolled, which is
-	// what a log view is for. Pausing is the way to hold position.
-	start := len(evs) - h
-	if m.paused || m.cursor > 0 {
-		start = m.offset
-	}
+	start := m.offset
 	if start < 0 {
 		start = 0
 	}

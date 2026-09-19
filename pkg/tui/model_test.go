@@ -330,11 +330,14 @@ func TestStreamStopsOnContextCancel(t *testing.T) {
 	// the UI leaks a goroutine and a connection.
 	ctx, cancel := context.WithCancel(context.Background())
 	src := &SliceSource{Events: make([]export.Event, 10000)}
+	// Only the terminal message is forwarded. Buffering events here and
+	// dropping on a full channel made the test flaky about one run in six: the
+	// first event filled the buffer, the SourceEndedMsg was dropped, and the
+	// test waited out its deadline unless cancel happened to win the race.
 	got := make(chan tea.Msg, 1)
 	Stream(ctx, src, func(m tea.Msg) {
-		select {
-		case got <- m:
-		default:
+		if _, ok := m.(SourceEndedMsg); ok {
+			got <- m
 		}
 	})
 	cancel()

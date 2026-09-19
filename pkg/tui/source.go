@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -65,19 +67,28 @@ type ReaderSource struct {
 }
 
 func (s *ReaderSource) Run(ctx context.Context, out chan<- export.Event) error {
-	dec := json.NewDecoder(s.R)
-	for {
+	// Scanned line by line rather than handed to a streaming json.Decoder.
+	//
+	// A decoder latches a syntax error: once one record is malformed, every
+	// later Decode returns that same error without consuming input, so the
+	// stream is over. The tolerance below would then spin against the latched
+	// error and report a count that is the retry limit rather than the number
+	// of bad records - and, worse, discard the rest of a file that is mostly
+	// fine. A capture truncated mid-write is the normal way these files end,
+	// so losing everything before the truncation is the wrong answer.
+	sc := bufio.NewScanner(s.R)
+	sc.Buffer(make([]byte, 0, 64*1024), maxRecordBytes)
+
+	for sc.Scan() {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
 		var e export.Event
-		if err := dec.Decode(&e); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			// One malformed line should not end the session: a capture
-			// truncated mid-write is the normal way these files end, and
-			// discarding everything before it would be the wrong answer.
+		if err := json.Unmarshal(line, &e); err != nil {
 			s.mu.Lock()
 			s.bad++
 			bad := s.bad
@@ -96,7 +107,20 @@ func (s *ReaderSource) Run(ctx context.Context, out chan<- export.Event) error {
 		case out <- e:
 		}
 	}
+	if err := sc.Err(); err != nil {
+		// A line longer than the buffer is a malformed capture, not a read
+		// failure, and it should not lose what was read before it.
+		if errors.Is(err, bufio.ErrTooLong) {
+			return fmt.Errorf("%s: a record exceeds the %d byte limit: %w", s.Describe(), maxRecordBytes, err)
+		}
+		return fmt.Errorf("reading %s: %w", s.Describe(), err)
+	}
+	return nil
 }
+
+// maxRecordBytes caps one JSON-lines record. An exec event carries argv, which
+// is attacker-influenced, so the reader needs a ceiling it will not grow past.
+const maxRecordBytes = 4 << 20
 
 // maxMalformedLines bounds how much garbage a replay tolerates before it is
 // reported as a broken file rather than a truncated one.

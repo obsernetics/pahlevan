@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/obsernetics/pahlevan/pkg/tui"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 type uiOptions struct {
@@ -84,11 +85,12 @@ func interactive(opts *uiOptions, out io.Writer) bool {
 	if !ok {
 		return false
 	}
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return st.Mode()&os.ModeCharDevice != 0
+	// term.IsTerminal rather than a ModeCharDevice test. /dev/null is a
+	// character device, so the mode test called `pahlevan ui > /dev/null` a
+	// terminal and the program then failed trying to open a TTY that is not
+	// there. Asking whether the descriptor is actually a terminal is the
+	// question that was meant.
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func runUI(ctx context.Context, opts *uiOptions, out, errOut io.Writer) error {
