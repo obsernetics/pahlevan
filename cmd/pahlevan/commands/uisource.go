@@ -174,6 +174,19 @@ func runPlain(ctx context.Context, src tui.Source, out io.Writer) error {
 		return err
 	}
 
+	// Malformed records have to reach the summary. A capture that decoded to
+	// nothing prints "0 events", which reads exactly like a quiet node - the
+	// wrong conclusion to hand somebody looking for an incident. Tolerating a
+	// bad record is right; hiding that it happened is not.
+	var malformed int
+	if r, ok := src.(interface{ Malformed() int }); ok {
+		malformed = r.Malformed()
+	}
+	if total == 0 && malformed > 0 {
+		return fmt.Errorf("%s: no events decoded from %d malformed records; this is not a quiet node, it is an unreadable capture",
+			src.Describe(), malformed)
+	}
+
 	keys := make([]string, 0, len(byWorkload))
 	for k := range byWorkload {
 		keys = append(keys, k)
@@ -181,7 +194,11 @@ func runPlain(ctx context.Context, src tui.Source, out io.Writer) error {
 	sort.Strings(keys)
 
 	fmt.Fprintf(out, "source\t%s\n", src.Describe())
-	fmt.Fprintf(out, "events\t%d\ndenied\t%d\nworkloads\t%d\n\n", total, denied, len(keys))
+	fmt.Fprintf(out, "events\t%d\ndenied\t%d\nworkloads\t%d\n", total, denied, len(keys))
+	if malformed > 0 {
+		fmt.Fprintf(out, "malformed\t%d\n", malformed)
+	}
+	fmt.Fprintln(out)
 	fmt.Fprintf(out, "%-44s %7s %7s %6s %6s %8s %8s\n",
 		"WORKLOAD", "FILE", "NET", "EXEC", "CAP", "SYSCALL", "DENIED")
 	for _, k := range keys {

@@ -117,9 +117,11 @@ func TestInteractiveRefusesToDrawWhenNothingIsWatching(t *testing.T) {
 	}
 }
 
-func TestInteractiveDrawsOnACharacterDevice(t *testing.T) {
-	// Without a case that returns true, the checks above would all pass on a
-	// function that had been changed to return false unconditionally.
+func TestRedirectingToDevNullIsNotATerminal(t *testing.T) {
+	// /dev/null is a character device, so a mode test called it a terminal and
+	// `pahlevan ui > /dev/null` then died trying to open a TTY that is not
+	// there. The question being asked is whether the descriptor is a terminal,
+	// which is not the same as whether it is a character device.
 	dev, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
 		t.Skipf("no character device to test against: %v", err)
@@ -127,8 +129,23 @@ func TestInteractiveDrawsOnACharacterDevice(t *testing.T) {
 	t.Cleanup(func() { _ = dev.Close() })
 
 	neutralTerminalEnv(t)
-	assert.True(t, interactive(&uiOptions{}, dev),
-		"a character device is a terminal as far as this check can tell")
+	assert.False(t, interactive(&uiOptions{}, dev),
+		"redirecting to /dev/null must fall back rather than try to draw")
+}
+
+func TestInteractiveDrawsOnARealTerminal(t *testing.T) {
+	// Without a case that returns true, every check above would pass on a
+	// function changed to return false unconditionally. A pty is the only
+	// honest way to get one.
+	ptmx, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no pty available: %v", err)
+	}
+	t.Cleanup(func() { _ = ptmx.Close() })
+
+	neutralTerminalEnv(t)
+	assert.True(t, interactive(&uiOptions{}, ptmx),
+		"a real terminal must draw, or the fallback checks prove nothing")
 }
 
 func TestRunPlainPrintsAStableSummaryWithNoEscapeCodes(t *testing.T) {
