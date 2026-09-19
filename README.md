@@ -29,31 +29,8 @@ instead of root.
 
 ## The console
 
-Run `pahlevan` in a terminal: policies, workloads, live events and ATT&CK
-coverage in one place. It only reads, so it cannot turn enforcement off.
-Piped or in CI it prints a plain summary instead.
-
-## What it watches
-
-<p align="center">
-  <img src="docs/assets/kernel-programs.png" width="920"
-       alt="The data plane. Userspace processes in one cgroup sit above the syscall boundary; below it, seven eBPF programs: file_open, socket_connect, bprm_check and capable on BPF LSM hooks, the syscall tracepoint, and the commit_creds kprobe and readline uretprobe which need no BPF LSM. Beneath them the five enforcement actions: Learn, Deny, Kill, Signal, Audit." />
-</p>
-
-| Program | Sees | Does |
-|---|---|---|
-| `lsm/file_open` | Every open, path resolved in-kernel | Refuses an unlearned path |
-| `lsm/socket_connect` | Every connect, IPv4 and IPv6 | Refuses an unlearned destination |
-| `lsm/bprm_check_security` | Every exec, with argv and ancestry | Refuses an unlearned binary |
-| `lsm/capable` | Every capability check | Refuses a capability never used |
-| `kprobe/commit_creds` | Privilege changing with no `execve` | Reports it, or kills the task |
-| `tracepoint/raw_syscalls/sys_enter` | Every syscall and its arguments | Becomes a seccomp profile |
-| `uretprobe/readline` | Shell builtins like `history -c` | Records what a shell did |
-
-Each workload can **Deny**, **Kill**, **Signal**, **Audit** (report and allow)
-or **Learn**. For a job that runs rarely, declare it in
-`learningConfig.expectedBehavior`, or let Pahlevan read its CronJob schedule and
-learn for a full cycle. Detail: [`docs/architecture.md`](docs/architecture.md).
+Run `pahlevan` to see policies, workloads, live events and ATT&CK coverage in
+one place. It only reads, so it cannot turn enforcement off.
 
 ## The trade
 
