@@ -223,6 +223,17 @@ polish item.
   screen. Still to come: a learned-versus-enforcing diff sourced from
   `ContainerProfile` rather than inferred from the event stream, and a policy
   explain view. See [Version 4](#version-4).
+- **In progress: an optional dashboard (4.0).** `pkg/dashboard` and
+  `cmd/pahlevan-dashboard` are in the tree, with the deployment artifacts off
+  by default. Reads are filtered by a `SubjectAccessReview` per request and the
+  reviews are never cached across requests, so a viewer sees only what their own
+  RBAC allows and revoking access takes effect immediately. An unreachable API
+  server returns 503 rather than an empty page, because "no access" and "no
+  answer" look identical otherwise and send the reader to different people.
+  The shipped manifests do not pass `--agent`, so there is no live event store
+  yet and the views say so rather than drawing zeroes.
+  The original entry, for the commitments it still has to meet:
+
 - **Planned: an optional dashboard (4.0).** A deployable web view of what each
   workload does - process tree, learned file, network and syscall surface, the
   learning-to-enforcement flow, and what was denied and why - drawn as diagrams
@@ -299,8 +310,18 @@ polish item.
   slice forever, and a `TracerProvider` built with zero span processors that
   reported tracing as enabled. Still uninstrumented:
   `internal/learner.SyscallLearner` itself.
-- **Planned: graduate the API past `v1alpha1`**, with a conversion path, once
-  the CRD shape has stopped moving.
+- **Done in the tree: the API is graduated to `v1beta1`.** All three kinds now
+  serve both versions, with `v1beta1` as the storage version and `v1alpha1`
+  served, marked deprecated and carrying a warning. Conversion is written field
+  by field rather than reflectively, because a converter that matches by name
+  silently ignores what it does not recognise, which is the one failure an API
+  graduation must not have. Six paths cannot round-trip and each is listed with
+  a reason and a test proving it really is lost, so the list cannot be padded,
+  while a filler that populates every field proves nothing else is, so it
+  cannot be short. No conversion webhook: `v1beta1` was shaped so every shared
+  field keeps its JSON name, type and nesting, and a test enforces that claim
+  and says to ship a webhook if it ever breaks. Still to do: the controllers
+  reconcile `v1alpha1` and `v1beta1.AddToScheme` is not called yet.
 
 ## Later
 
