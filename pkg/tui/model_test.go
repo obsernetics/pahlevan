@@ -51,21 +51,53 @@ func sized(m *Model, w, h int) *Model {
 	return m
 }
 
-func key(m *Model, s string) {
-	var msg tea.KeyMsg
+// keyMsg builds the message bubbletea would deliver for a key, so tests drive
+// the same path the terminal does rather than calling handlers directly.
+func keyMsg(s string) tea.KeyMsg {
 	switch s {
 	case "enter":
-		msg = tea.KeyMsg{Type: tea.KeyEnter}
+		return tea.KeyMsg{Type: tea.KeyEnter}
 	case "esc":
-		msg = tea.KeyMsg{Type: tea.KeyEsc}
-	case "space":
-		msg = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case " ", "space":
+		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
 	case "backspace":
-		msg = tea.KeyMsg{Type: tea.KeyBackspace}
+		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "pgup":
+		return tea.KeyMsg{Type: tea.KeyPgUp}
+	case "pgdown":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
+	case "home":
+		return tea.KeyMsg{Type: tea.KeyHome}
+	case "end":
+		return tea.KeyMsg{Type: tea.KeyEnd}
+	case "ctrl+c":
+		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	default:
-		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
-	m.Update(msg)
+}
+
+func press(m *Model, s string) tea.Cmd {
+	_, cmd := m.Update(keyMsg(s))
+	return cmd
+}
+
+// typeFilter opens the filter, types it and accepts it, the way a person does.
+func typeFilter(m *Model, s string) {
+	press(m, "/")
+	for _, r := range s {
+		press(m, string(r))
+	}
+	press(m, "enter")
 }
 
 func TestWorkloadsAreKeyedByOwnerNotPod(t *testing.T) {
@@ -137,12 +169,30 @@ func TestTheDenialListIsBounded(t *testing.T) {
 	}
 }
 
+func TestRetainedEventsStayInTheBoundedRing(t *testing.T) {
+	// The console's memory must not grow with the node's syscall rate, on the
+	// one machine where somebody is already watching something go wrong.
+	m := sized(New(Options{Capacity: 16}), 120, 30)
+	for i := 0; i < 5000; i++ {
+		feed(m, ev(export.EventTypeFile, i%7 == 0, "nginx", "prod", "Deployment", "api"))
+	}
+	if got := m.events.len(); got != 16 {
+		t.Errorf("the ring holds %d events, want its capacity of 16", got)
+	}
+	if m.events.dropped != 5000-16 {
+		t.Errorf("dropped %d events, want %d", m.events.dropped, 5000-16)
+	}
+	if m.total != 5000 {
+		t.Errorf("the session total is %d, want 5000", m.total)
+	}
+}
+
 func TestPauseFreezesTheListButNotTheCounters(t *testing.T) {
 	// Returning from a pause to counters that pretended nothing happened would
 	// be a lie about what the node did while you were reading.
 	m := sized(New(Options{}), 100, 30)
 	feed(m, ev(export.EventTypeFile, false, "nginx", "prod", "Deployment", "api"))
-	key(m, " ")
+	press(m, " ")
 	if !m.paused {
 		t.Fatal("space did not pause")
 	}
@@ -168,98 +218,223 @@ func TestFilterMatchesFieldsNotTheRenderedLine(t *testing.T) {
 		ev(export.EventTypeFile, false, "nginx", "prod", "Deployment", "api"),
 		ev(export.EventTypeNetwork, false, "curl", "kube-system", "DaemonSet", "cni"),
 	)
-	key(m, "/")
-	for _, r := range "kube-system" {
-		key(m, string(r))
-	}
-	key(m, "enter")
+	typeFilter(m, "kube-system")
 
 	got := m.filteredEvents()
 	if len(got) != 1 {
-		t.Fatalf("%d events matched %q, want 1", len(got), m.filter)
+		t.Fatalf("%d events matched %q, want 1", len(got), m.filterText())
 	}
 	if got[0].Type != export.EventTypeNetwork {
 		t.Errorf("matched the wrong event: %v", got[0].Type)
 	}
 }
 
-func TestEscapeClearsTheFilterThenLeavesTheView(t *testing.T) {
-	m := sized(New(Options{}), 100, 30)
+func TestTypingInTheFilterDoesNotTriggerCommands(t *testing.T) {
+	// The filter shares the keyboard with q, c, space and the number keys.
+	// Typing "quiet cron" into it must not quit, clear the ring, pause, or
+	// jump to another view.
+	m := sized(New(Options{}), 120, 30)
 	feed(m, ev(export.EventTypeFile, false, "nginx", "prod", "Deployment", "api"))
-	key(m, "2")
-	key(m, "enter") // into detail
-	if m.view != ViewDetail {
-		t.Fatalf("enter did not open the detail view, at %v", m.view)
+	press(m, "5") // events
+	before := m.events.len()
+
+	press(m, "/")
+	for _, r := range "quiet cron 2" {
+		if cmd := press(m, string(r)); cmd != nil {
+			if msg := cmd(); msg != nil {
+				if _, quit := msg.(tea.QuitMsg); quit {
+					t.Fatalf("typing %q in the filter quit the program", r)
+				}
+			}
+		}
 	}
-	key(m, "/")
-	key(m, "x")
-	key(m, "enter")
-	if m.filter != "x" {
-		t.Fatalf("filter is %q, want x", m.filter)
+	if m.quitting {
+		t.Error("typing q in the filter set quitting")
 	}
-	key(m, "esc")
-	if m.filter != "" {
-		t.Errorf("esc did not clear the filter, it is %q", m.filter)
+	if m.paused {
+		t.Error("typing a space in the filter paused the stream")
 	}
-	if m.view != ViewDetail {
-		t.Errorf("esc left the view while a filter was set; it should clear the filter first")
+	if m.view != ViewEvents {
+		t.Errorf("typing a digit in the filter changed the view to %v", m.view)
 	}
-	key(m, "esc")
-	if m.view == ViewDetail {
-		t.Error("a second esc did not leave the detail view")
+	if m.events.len() != before {
+		t.Error("typing c in the filter cleared the retained events")
+	}
+	if m.filterText() != "quiet cron 2" {
+		t.Errorf("the filter holds %q, want %q", m.filterText(), "quiet cron 2")
+	}
+}
+
+func TestEscapeClearsTheFilterThenLeavesTheDetailPane(t *testing.T) {
+	m := sized(New(Options{}), 60, 30) // narrow: the detail pane replaces the list
+	feed(m, ev(export.EventTypeFile, true, "python3", "prod", "Deployment", "api"))
+	press(m, "4") // workloads
+	// Opening the filter returns to the list, because a filter narrows the
+	// list rather than the thing the detail pane is describing.
+	typeFilter(m, "prod")
+	if m.filterText() != "prod" {
+		t.Fatalf("the filter holds %q, want prod", m.filterText())
+	}
+	if m.focus != paneList {
+		t.Fatal("filtering did not return the focus to the list")
+	}
+	press(m, "enter")
+	if m.focus != paneDetail {
+		t.Fatal("enter did not focus the detail pane")
+	}
+
+	press(m, "esc")
+	if m.filterText() != "" {
+		t.Errorf("esc did not clear the filter, it holds %q", m.filterText())
+	}
+	if m.focus != paneDetail {
+		t.Error("esc left the detail pane while a filter was set; it should clear the filter first")
+	}
+	press(m, "esc")
+	if m.focus != paneList {
+		t.Error("a second esc did not leave the detail pane")
+	}
+}
+
+func TestTheDetailPaneFollowsTheCursor(t *testing.T) {
+	m := sized(New(Options{}), 200, 40)
+	feed(m,
+		ev(export.EventTypeFile, true, "python3", "prod", "Deployment", "api"),
+		ev(export.EventTypeFile, false, "cni", "kube-system", "DaemonSet", "cni"),
+	)
+	press(m, "4") // workloads
+
+	// Workloads are sorted, so kube-system sorts before prod.
+	if got := m.selectedWorkload(); got == nil || got.Key != "kube-system/DaemonSet/cni" {
+		t.Fatalf("the first row selects %v", got)
+	}
+	if !strings.Contains(m.View(), "kube-system/DaemonSet/cni") {
+		t.Error("the detail pane does not name the selected workload")
+	}
+	press(m, "j")
+	if got := m.selectedWorkload(); got == nil || got.Key != "prod/Deployment/api" {
+		t.Fatalf("moving down selects %v", got)
+	}
+	if out := m.View(); !strings.Contains(out, "refused in-kernel") {
+		t.Errorf("the detail pane does not report the denial:\n%s", out)
+	}
+}
+
+func TestEachViewRemembersItsOwnCursor(t *testing.T) {
+	// Tabbing away from row 20 of the profiles list and back again should
+	// return to row 20. A single shared cursor sends you to the top of a list
+	// you were reading because you glanced at another tab.
+	m := sized(New(Options{}), 200, 40)
+	for i := 0; i < 40; i++ {
+		feed(m, ev(export.EventTypeFile, false, fmt.Sprintf("p%d", i), "prod", "Deployment", fmt.Sprintf("api-%02d", i)))
+	}
+	press(m, "4") // workloads
+	for i := 0; i < 5; i++ {
+		press(m, "j")
+	}
+	want := m.cursor()
+	if want != 5 {
+		t.Fatalf("the workloads cursor is %d, want 5", want)
+	}
+	press(m, "5") // events
+	press(m, "4") // back to workloads
+	if got := m.cursor(); got != want {
+		t.Errorf("the workloads cursor is %d after a round trip, want %d", got, want)
+	}
+}
+
+func TestEveryViewIsReachableByTabAndByNumber(t *testing.T) {
+	m := sized(New(Options{}), 200, 40)
+	seen := map[View]bool{}
+	for i := 0; i < len(views); i++ {
+		seen[m.view] = true
+		press(m, "tab")
+	}
+	for _, v := range views {
+		if !seen[v] {
+			t.Errorf("tabbing never reaches %v", v)
+		}
+	}
+	if m.view != views[0] {
+		t.Errorf("tabbing %d times did not return to the first view, it is at %v", len(views), m.view)
+	}
+	for i, v := range views {
+		press(m, fmt.Sprintf("%d", i+1))
+		if m.view != v {
+			t.Errorf("key %d opened %v, want %v", i+1, m.view, v)
+		}
+	}
+	press(m, "shift+tab")
+	if m.view != views[len(views)-2] {
+		t.Errorf("shift+tab from the last view opened %v", m.view)
+	}
+}
+
+func TestHelpTogglesAndComesBack(t *testing.T) {
+	m := sized(New(Options{}), 120, 30)
+	press(m, "3")
+	press(m, "?")
+	if m.view != ViewHelp {
+		t.Fatalf("? opened %v, want help", m.view)
+	}
+	press(m, "?")
+	if m.view != ViewProfiles {
+		t.Errorf("? from help returned to %v, want the profiles view", m.view)
+	}
+	press(m, "?")
+	press(m, "esc")
+	if m.view != ViewProfiles {
+		t.Errorf("esc from help returned to %v, want the profiles view", m.view)
 	}
 }
 
 func TestCursorStaysInRangeAcrossResizeAndFilter(t *testing.T) {
 	// An off-by-one in a viewport is how a terminal UI panics on a resize, so
-	// this drives the combinations rather than one happy path.
-	m := sized(New(Options{}), 120, 40)
-	for i := 0; i < 50; i++ {
-		feed(m, ev(export.EventTypeFile, false, fmt.Sprintf("p%d", i), "prod", "Deployment", "api"))
-	}
-	key(m, "2")
-	key(m, "G")
-	for _, h := range []int{40, 5, 1, 200, 3} {
-		sized(m, 120, h)
-		for _, k := range []string{"j", "k", "G", "g", "j"} {
-			key(m, k)
-			if m.cursor < 0 || (m.rowCount() > 0 && m.cursor >= m.rowCount()) {
-				t.Fatalf("cursor %d out of range for %d rows at height %d", m.cursor, m.rowCount(), h)
+	// this drives the combinations rather than one happy path, on every view
+	// and at every size the terminal can actually be.
+	for _, v := range allViews {
+		t.Run(v.String(), func(t *testing.T) {
+			m := sized(New(Options{Cluster: fixtureCluster()}), 120, 40)
+			for i := 0; i < 50; i++ {
+				feed(m, ev(export.EventTypeFile, i%4 == 0, fmt.Sprintf("p%d", i), "prod", "Deployment", fmt.Sprintf("api-%02d", i%7)))
 			}
-			if m.offset < 0 {
-				t.Fatalf("offset %d is negative at height %d", m.offset, h)
-			}
-			// Rendering must not panic at any of these sizes.
-			_ = m.View()
-		}
-	}
-}
+			drainCluster(m)
+			m.view = v
+			m.clampCursor()
 
-func TestSelectingAWorkloadOpensItsDetail(t *testing.T) {
-	m := sized(New(Options{}), 120, 30)
-	feed(m,
-		ev(export.EventTypeFile, true, "python3", "prod", "Deployment", "api"),
-		ev(export.EventTypeFile, false, "cni", "kube-system", "DaemonSet", "cni"),
-	)
-	key(m, "2")
-	key(m, "enter")
-	if m.view != ViewDetail {
-		t.Fatalf("view is %v, want detail", m.view)
-	}
-	// Workloads are sorted, so kube-system sorts before prod.
-	if m.selected != "kube-system/DaemonSet/cni" {
-		t.Errorf("selected %q", m.selected)
-	}
-	out := m.View()
-	if !strings.Contains(out, "kube-system/DaemonSet/cni") {
-		t.Error("the detail view does not name the workload")
+			for _, filter := range []string{"", "api", "no-such-thing"} {
+				m.input.SetValue(filter)
+				m.clampCursor()
+				for _, h := range []int{40, 5, 2, 1, 200, 3} {
+					for _, w := range []int{1, 40, 200} {
+						sized(m, w, h)
+						for _, k := range []string{"j", "k", "G", "g", "j", "enter", "pgdown", "pgup", "esc"} {
+							press(m, k)
+							if m.cursor() < 0 || (m.rowCount() > 0 && m.cursor() >= m.rowCount()) {
+								t.Fatalf("cursor %d out of range for %d rows at %dx%d (filter %q, key %q)",
+									m.cursor(), m.rowCount(), w, h, filter, k)
+							}
+							if m.offset() < 0 {
+								t.Fatalf("offset %d is negative at %dx%d", m.offset(), w, h)
+							}
+							if m.offset() > max(0, m.rowCount()-1) {
+								t.Fatalf("offset %d is past the last of %d rows at %dx%d",
+									m.offset(), m.rowCount(), w, h)
+							}
+							// Rendering must not panic at any of these sizes.
+							_ = m.View()
+						}
+					}
+				}
+			}
+		})
 	}
 }
 
 func TestClearEmptiesTheEventsButKeepsTheTotals(t *testing.T) {
 	m := sized(New(Options{}), 100, 30)
 	feed(m, ev(export.EventTypeFile, true, "python3", "prod", "Deployment", "api"))
-	key(m, "c")
+	press(m, "c")
 	if m.events.len() != 0 {
 		t.Errorf("c did not clear the events, %d remain", m.events.len())
 	}
@@ -272,7 +447,7 @@ func TestQuitSetsQuittingSoTheLastFrameIsEmpty(t *testing.T) {
 	// Leaving a half-drawn screen behind after the program returns is the most
 	// common way a TUI makes a mess of somebody's terminal.
 	m := sized(New(Options{}), 80, 24)
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	cmd := press(m, "q")
 	if cmd == nil {
 		t.Fatal("q returned no command, so the program would not quit")
 	}
@@ -285,14 +460,14 @@ func TestQuitSetsQuittingSoTheLastFrameIsEmpty(t *testing.T) {
 }
 
 func TestStreamEndReportsTheError(t *testing.T) {
-	m := sized(New(Options{}), 80, 24)
+	m := sized(New(Options{}), 120, 24)
 	want := errors.New("connection refused")
 	m.Update(SourceEndedMsg{Err: want})
 	if !m.ended || m.err == nil {
 		t.Fatal("the stream end was not recorded")
 	}
 	if !strings.Contains(m.View(), "connection refused") {
-		t.Error("the status line does not show why the stream ended")
+		t.Error("the status bar does not show why the stream ended")
 	}
 }
 
@@ -327,7 +502,7 @@ func TestStreamDeliversEventsAndThenTheEnd(t *testing.T) {
 
 func TestStreamStopsOnContextCancel(t *testing.T) {
 	// A source that keeps producing must not outlive the program, or quitting
-	// the UI leaks a goroutine and a connection.
+	// the console leaks a goroutine and a connection.
 	ctx, cancel := context.WithCancel(context.Background())
 	src := &SliceSource{Events: make([]export.Event, 10000)}
 	// Only the terminal message is forwarded. Buffering events here and
@@ -352,6 +527,17 @@ func TestStreamStopsOnContextCancel(t *testing.T) {
 		case <-deadline:
 			t.Fatal("the stream did not end after the context was cancelled")
 		}
+	}
+}
+
+func TestElapsedMeasuresFromTheInjectedStart(t *testing.T) {
+	// A quiet stream and a dead stream look identical without a clock, so the
+	// start time is injectable rather than read from the wall: a test that
+	// depended on real time would be a test that fails on a slow machine.
+	start := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	m := New(Options{Now: func() time.Time { return start }})
+	if got := m.Elapsed(start.Add(90 * time.Second)); got != 90*time.Second {
+		t.Errorf("Elapsed is %v, want 90s", got)
 	}
 }
 
@@ -380,7 +566,7 @@ func BenchmarkFilteredEvents(b *testing.B) {
 	for i := 0; i < 2000; i++ {
 		m.ingest(ev(export.EventTypeFile, i%10 == 0, "nginx", "prod", "Deployment", "api"))
 	}
-	m.filter = "shadow"
+	m.input.SetValue("shadow")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -5,17 +5,9 @@
 <p><b>Your workload writes its own security policy. The kernel enforces it.</b></p>
 
 <p>
-  <a href="https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/obsernetics/pahlevan/ci.yml?branch=main&label=CI&logo=github" alt="CI" /></a>
-  <a href="https://goreportcard.com/report/github.com/obsernetics/pahlevan"><img src="https://goreportcard.com/badge/github.com/obsernetics/pahlevan" alt="Go Report Card" /></a>
-  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26" /></a>
-  <a href="https://github.com/obsernetics/pahlevan/releases"><img src="https://img.shields.io/github/v/release/obsernetics/pahlevan?sort=semver&color=success" alt="Latest release" /></a>
-  <a href="https://github.com/obsernetics/pahlevan/stargazers"><img src="https://img.shields.io/github/stars/obsernetics/pahlevan?style=flat&logo=github&color=yellow" alt="GitHub stars" /></a>
+  <a href="https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/obsernetics/pahlevan/ci.yml?branch=main&label=CI&logo=github" alt="CI" /></a> <a href="https://goreportcard.com/report/github.com/obsernetics/pahlevan"><img src="https://goreportcard.com/badge/github.com/obsernetics/pahlevan" alt="Go Report Card" /></a> <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a> <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26" /></a> <a href="https://github.com/obsernetics/pahlevan/releases"><img src="https://img.shields.io/github/v/release/obsernetics/pahlevan?sort=semver&color=success" alt="Latest release" /></a> <a href="https://github.com/obsernetics/pahlevan/stargazers"><img src="https://img.shields.io/github/stars/obsernetics/pahlevan?style=flat&logo=github&color=yellow" alt="GitHub stars" /></a>
   <br/>
-  <img src="https://img.shields.io/badge/Kubernetes-1.24%2B-326CE5?logo=kubernetes&logoColor=white" alt="Kubernetes 1.24+" />
-  <img src="https://img.shields.io/badge/eBPF-CO--RE-FF6600?logo=linux&logoColor=white" alt="eBPF CO-RE" />
-  <img src="https://img.shields.io/badge/LSM-BPF%20enforcement-8A2BE2?logo=linux&logoColor=white" alt="LSM BPF enforcement" />
-  <a href="#contributing"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
+  <img src="https://img.shields.io/badge/Kubernetes-1.24%2B-326CE5?logo=kubernetes&logoColor=white" alt="Kubernetes 1.24+" /> <img src="https://img.shields.io/badge/eBPF-CO--RE-FF6600?logo=linux&logoColor=white" alt="eBPF CO-RE" /> <img src="https://img.shields.io/badge/LSM-BPF%20enforcement-8A2BE2?logo=linux&logoColor=white" alt="LSM BPF enforcement" /> <a href="#contributing"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
 </p>
 
 <img src="docs/assets/demo.gif" alt="Pahlevan learn-then-enforce demo: a workload is profiled during a learning window, the learned surface is shown beside the enforced one, and then an attacker's read of /etc/shadow, exec of a miner, egress to an unlearned address, CAP_SYS_ADMIN, a ptrace of pid 1 and a setuid to root are each denied, killed or recorded in-kernel" width="880" />
@@ -24,56 +16,59 @@
 
 ## The idea
 
-A container is the most predictable thing in your infrastructure. It runs one
-program. It opens the same files every time. It dials the same handful of
-destinations. It uses maybe sixty of the kernel's four hundred syscalls, and it
-will use exactly those sixty for as long as the image is deployed.
-
-Pahlevan watches a container do all of that, once, and then refuses everything
-else, in the kernel, at the moment of the attempt, with `EPERM`.
-
-Nobody writes a rule. There is no rule to write. The container already told you
-what it does; the only question was whether anything was listening.
+A container runs one program, opens the same files every time, dials the same
+handful of destinations, and uses maybe sixty of the kernel's four hundred
+syscalls. Pahlevan watches it do that, once, then refuses everything else in
+the kernel at the moment of the attempt, with `EPERM`. Nobody writes a rule. An
+attacker inherits that baseline rather than root: a command-injection bug in a
+Python service gets them `python3` and not `/etc/shadow`, an unlearned egress,
+a binary dropped in `/tmp`, or `CAP_SYS_ADMIN`. The baseline cannot go stale,
+because it describes the image that is running, and a denial is a fact rather
+than a score: the kernel found the path in a hash map, or it did not.
 
 <p align="center">
   <img src="docs/assets/learn-then-enforce.png" width="920"
        alt="Two panels. On the left, a learning window listing what an nginx container actually did: opened /etc/nginx/* and /var/log/*, connected to 10.0.1.7:5432, executed nginx, and used 61 of roughly 400 syscalls. An arrow labelled 'becomes the allow-set' leads to the right panel, enforcement, where those same three entries are marked ok and three that were never learned are refused with EPERM: /etc/shadow, /tmp/xmrig, and 45.9.1.4:80." />
 </p>
 
-## What that buys you
+## Watch it happen: `pahlevan ui`
 
-**An attacker inherits your baseline, not root.** A command-injection bug in a
-Python service gets an attacker `python3`, because the service runs `python3`
-constantly and it is in the allow-set. What it does not get them is
-`/etc/shadow`, an egress to an address the workload never dialed, a binary
-dropped in `/tmp`, or `CAP_SYS_ADMIN`. Every one of those is refused before the
-syscall returns.
+An interactive console over the agent's gRPC stream (`--grpc`, default
+`localhost:9090`). A bare `pahlevan` in a terminal opens the same thing.
 
-**The policy is never out of date.** A learned baseline describes the image that
-is actually running. Redeploy with a new dependency and the next learning window
-picks it up. There is no rule set to review, no detection content to subscribe
-to, and no gap between "we deployed something new" and "somebody updated the
-rules".
+```
+pahlevan  1  2  3  4  5 events  6  7
+╭─ events ─────────────────────────────────────────────────────────────────────────────────────╮
+│  TIME      VERDICT  TYPE     PROCESS       WORKLOAD            DETAIL                        │
+│  14:22:00  allow    file     nginx         prod/Deployment/n…  read /etc/nginx/nginx.conf    │
+│  14:22:01  allow    network  nginx         prod/Deployment/n…  tcp prod/postgres:5432        │
+│  14:22:02  allow    process  nginx         prod/Deployment/n…  exec /usr/sbin/nginx          │
+│  14:22:03  allow    syscall  nginx         prod/Deployment/n…  syscall openat                │
+│  14:22:04  allow    file     python3       prod/Deployment/a…  read /app/config.yaml         │
+│  14:22:05  allow    network  python3       prod/Deployment/a…  tcp prod/redis:6379           │
+│  14:22:06  ✖ DENY   file     sh            prod/Deployment/n…  read /etc/shadow              │
+│  14:22:07  ✖ DENY   process  sh            prod/Deployment/n…  exec /tmp/xmrig               │
+│  14:22:08  ✖ DENY   network  xmrig         prod/Deployment/n…  tcp 45.9.1.4:80               │
+│  14:22:09  ✖ DENY   capabi…  sh            prod/Deployment/n…  capability CAP_SYS_ADMIN      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+10 events · 4 denied · node-3:9090 · 0s
+```
 
-**A denial is a fact, not a score.** There is no threshold, no anomaly model, no
-confidence percentage. The kernel either found the path in a hash map or it did
-not. When Pahlevan says a container tried to read `/etc/shadow`, it did, and it
-did not succeed.
+Seven views on `tab` and the number keys, named in full when the terminal is
+wide enough: overview, policies, profiles, workloads, events, attack surface,
+coverage. Workloads counts what each one did against what was refused and opens
+a pane putting `OBSERVED` beside `REFUSED`; coverage is the ATT&CK table read
+from `pkg/coverage` rather than retyped. `j`/`k` move, `enter` opens a row,
+`space` pauses the list while the counters keep running, `/` filters, `q`
+quits, and `?` lists every key, generated from the bindings themselves.
 
-## The trade, stated plainly
-
-A baseline narrow enough to stop an attacker is narrow enough to stop you.
-
-If you `kubectl exec` into a production pod and run `curl`, Pahlevan will deny
-it, because the workload never ran `curl` and Pahlevan cannot tell your hands
-from someone else's. That is not a bug being worked around - it is the same
-mechanism working correctly, and every honest evaluation of this tool has to
-start there.
-
-Three things exist because of it: `Monitoring` mode, which learns and reports
-without ever denying; self-healing, which returns a container to learning if
-enforcement breaks it; and policy exceptions, which let you widen the set
-deliberately and in writing. Use the first one until you believe the baseline.
+- **It is a reader.** It never changes a policy, a mode or a profile, so it
+  cannot be the thing that turns enforcement off during an incident.
+- **It does not break scripts.** Every other command keeps its exact output,
+  and with no terminal - piped, redirected, under `CI`, `NO_COLOR`,
+  `TERM=dumb` or `--no-tui` - it prints a plain greppable summary.
+- **A bug in it needs no cluster.** `pahlevan ui --replay events.jsonl` reads
+  the JSON-lines the file sink writes, so a capture reproduces the problem.
 
 ## What it watches
 
@@ -90,41 +85,28 @@ across containers or reaches the rest of the node.
 | `lsm/file_open` | Every open, path resolved in-kernel by `bpf_d_path` | Refuses an unlearned path |
 | `lsm/socket_connect` | Every connect, IPv4 and IPv6, named against cluster Services | Refuses an unlearned destination |
 | `lsm/bprm_check_security` | Every exec: binary, argv, cwd, four levels of ancestry | Refuses an unlearned binary, or one its parent may not launch |
-| `lsm/capable` | Every capability check, plus the task's effective/permitted/inheritable sets | Refuses a capability never exercised |
-| `kprobe/commit_creds` | The moment privilege actually changes | Reports it; kills the task if you ask it to |
+| `lsm/capable` | Every capability check, plus the task's capability sets | Refuses a capability never exercised |
+| `kprobe/commit_creds` | Privilege actually changing, with no `execve` to explain it | Reports it; kills the task if you ask it to |
 | `tracepoint/raw_syscalls/sys_enter` | Every syscall, with its six arguments | Becomes the generated seccomp profile |
-| `uretprobe/readline` | Commands typed at an interactive prompt | Records what somebody with a shell actually did |
+| `uretprobe/readline` | Shell builtins like `history -c`, which produce no exec | Records what somebody with a shell actually did |
 
-"Refuses" is five choices, not one. Per workload you pick **Deny** (`EPERM`, or
-an errno you name), **Kill**, **Signal** (`SIGSTOP` freezes the process with its
-memory intact, which `SIGKILL` destroys), **Audit** (report it and let it
-through), or **Learn**. Audit is the one to roll out with: it reports every
-operation that *would* have been refused without refusing any of them, and
-unlike learning mode it does not widen the baseline as it goes.
+"Refuses" is five choices per workload: **Deny** (`EPERM`, or an errno you
+name), **Kill**, **Signal** (`SIGSTOP` keeps the memory `SIGKILL` destroys),
+**Audit** (report and allow), or **Learn**. Roll out with Audit: unlike
+learning, it does not widen the baseline as it goes. An eighth program, a
+generic kprobe, is pointed at any kernel function a policy names with no
+rebuild, and cannot deny, because a kprobe fires alongside a function rather
+than in place of it. Detail: [`docs/architecture.md`](docs/architecture.md).
 
-Two of those are worth pointing at directly.
+## The trade, stated plainly
 
-**`commit_creds`** is the single function through which any task's credentials
-change. A local-root exploit that overwrites a `cred` struct and calls it
-directly makes no syscall a syscall monitor could see - but it lands here, and
-it lands with no `execve` underway to explain it, which is what separates it
-from `sudo` doing its job. It reports by default and kills only for workloads
-you have explicitly marked as never legitimately escalating, because the only
-response available at that site is a signal and a false positive there ends a
-process rather than denying one operation.
-
-**`readline`** catches what the kernel cannot. `cd /root`, `export
-KUBECONFIG=…`, `history -c` are shell builtins: they change what a session is
-doing and produce no exec, no open, no connect. An exec-based monitor watches
-somebody work through them and reports nothing but the shell's own process.
-
-An eighth program covers what those seven do not: a generic kprobe, compiled
-once, that the operator points at any kernel function a policy names, with no
-rebuild and no new image. Up to five arguments are captured and up to
-four selectors ANDed against them, or against the calling uid, gid or pid. It
-cannot refuse a call, because a kprobe fires alongside the function rather than
-in place of it, so its actions are report, audit, kill and signal, and a policy
-asking it to deny is refused at load rather than quietly downgraded.
+A baseline narrow enough to stop an attacker is narrow enough to stop you. If
+you `kubectl exec` into a production pod and run `curl`, Pahlevan denies it: it
+cannot tell your hands from someone else's. That is the mechanism working
+correctly, and every honest evaluation starts there. Three things exist because
+of it - `Monitoring` mode, which learns and reports without ever denying;
+self-healing, which returns a container to learning if enforcement breaks it;
+and policy exceptions, which widen the set deliberately and in writing.
 
 ## Architecture
 
@@ -135,151 +117,78 @@ asking it to deny is refused at load rather than quietly downgraded.
 A per-node **agent** DaemonSet owns the eBPF data plane and enforces locally in
 the kernel. A leader-elected **operator** Deployment drives the policy
 lifecycle, status aggregation and CEL admission, with no host access and no
-mutating webhook. If the operator is down, enforcement already installed in the
-kernel keeps working. Detail: [`docs/architecture.md`](docs/architecture.md).
-
-Events leave the agent as JSON lines to a file, an HTTP webhook, OTLP logs, or
-a gRPC stream, all behind a bounded queue that drops and counts rather than
-stalling the ring-buffer readers. Denials can also go straight to a Slack
-incoming webhook, PagerDuty, or a Go template you write: denials only by
-default, deduplicated per finding over a window, and grouped one message per
-batch, because a channel that receives one message per file open gets muted
-within the hour.
+mutating webhook; if it is down, enforcement already in the kernel keeps
+working. Events leave the agent as JSON lines, an HTTP webhook, OTLP logs or a
+gRPC stream, behind a bounded queue that drops and counts rather than stalling
+the ring-buffer readers; denials can also reach Slack, PagerDuty or a template.
 
 ## Quick start
 
 ```bash
 kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml
+# or: helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
 ```
-
-Point a policy at a labelled workload:
 
 ```yaml
-apiVersion: policy.pahlevan.io/v1alpha1
+apiVersion: policy.pahlevan.io/v1beta1
 kind: PahlevanPolicy
-metadata:
-  name: nginx-security
+metadata: {name: nginx-security}
 spec:
-  selector:
-    matchLabels:
-      app: nginx
-  learningConfig:
-    duration: 5m          # watch normal behaviour
-    autoTransition: true  # then enforce, automatically
-  enforcementConfig:
-    mode: Monitoring      # Blocking denies in-kernel; start here
-  selfHealing:
-    enabled: true         # return to learning if enforcement breaks the workload
+  selector: {matchLabels: {app: nginx}}
+  learningConfig: {duration: 5m, autoTransition: true}   # watch, then enforce
+  enforcementConfig: {mode: Monitoring}   # Blocking denies in-kernel; start here
+  selfHealing: {enabled: true}   # back to learning if enforcement breaks it
 ```
 
-```bash
-kubectl get pahlevanpolicy nginx-security -w
-```
-
-Before you switch to `Blocking`, read what the baseline actually says:
-
-```bash
-pahlevan policy explain -f nginx-security.yaml   # no cluster needed
-pahlevan profile list -n default                 # what has been learned so far
-pahlevan profile get pod-<uid> -o yaml           # one container's learned profile
-```
-
-`policy explain` is the one to run first, and it is the only one of the three
-that needs no cluster. It tells you which fields of a policy translate into
-kernel state and which are ignored, including the ones that look like they
-work. More in [`examples/`](examples) and
-[`docs/policy-reference.md`](docs/policy-reference.md).
-
-`pahlevan ui` opens the same data as an interactive view: a live event list,
-per-workload counts of what was observed against what was refused, and the
-coverage table. It reads the agent's gRPC stream, or a captured JSON-lines file
-with `--replay`, and changes nothing, so it cannot be the thing that turns
-enforcement off during an incident. Piped, redirected, under CI or with
-`--no-tui` it prints a plain summary rather than drawing a screen, so a
-pipeline gets text instead of escape codes.
-
-The rest is one command per question: `pahlevan status` and `pahlevan
-attack-surface` for what the operator has concluded, `pahlevan events`,
-`pahlevan logs` and `pahlevan metrics` for what the agents are reporting,
-`pahlevan debug` for whether this kernel can enforce at all, `pahlevan
-coverage` for the ATT&CK mapping, and `pahlevan version` and `pahlevan
-completion` for the binary itself.
-
-## Measured, not asserted
-
-Every number Pahlevan publishes comes from
-[`test/benchmark/run.sh`](test/benchmark/run.sh), run inside a kernel-isolated
-VM, twice: once with no agent installed at all, then with Pahlevan learning and
-enforcing.
-
-The control pass is the part that makes the rest mean anything. Without it, a
-scenario that silently failed to execute is indistinguishable from one that was
-prevented, and a CPU figure has no idle node to subtract from it. Scenarios are
-mapped to MITRE ATT&CK for Containers techniques and committed alongside the
-harness. Methodology and recorded runs:
-[`docs/benchmarks/`](docs/benchmarks).
-
-eBPF is never loaded on a developer machine. `hack/vm/` provisions a kernel with
-the BPF LSM active, and that is where every load, attach and enforcement test
-runs.
+Before switching to `Blocking`, run `pahlevan policy explain -f policy.yaml`:
+no cluster needed, and it says which fields translate into kernel state and
+which are ignored, including the ones that look like they work. `pahlevan
+profile` shows what was learned, `pahlevan debug` whether this kernel can
+enforce at all. Every command and flag:
+[`docs/quick-start.md`](docs/quick-start.md),
+[`docs/policy-reference.md`](docs/policy-reference.md), [`examples/`](examples).
 
 ## Requirements
 
-- **Kubernetes 1.24+**; the user-namespace operator needs 1.30+.
-- **Linux 5.8+** for observation: CO-RE, ring buffer, `CAP_BPF`.
-- **Go 1.26+** to build from source. Running the published image needs nothing.
-- **`CONFIG_BPF_LSM` with `lsm=bpf`** on the kernel command line for in-kernel
-  enforcement. Without it, the LSM hooks do not attach and Pahlevan runs as an
-  observability tool; the `commit_creds` kprobe and the syscall tracepoint still
-  work, because kprobes need no boot parameter.
+| | |
+|---|---|
+| Kubernetes | 1.24+; user namespaces and CEL admission need 1.30+ |
+| Linux | 5.8+ to observe: CO-RE, ring buffer, `CAP_BPF` |
+| In-kernel enforcement | `CONFIG_BPF_LSM` with `lsm=bpf` on the kernel command line |
+| Building from source | Go 1.26+; the published image needs nothing |
+| Without the BPF LSM | The LSM hooks do not attach and Pahlevan is an observability tool; the `commit_creds` kprobe and the syscall tracepoint still work, because kprobes need no boot parameter |
 
-Details: [`docs/system-requirements.md`](docs/system-requirements.md),
-[`docs/lsm-support.md`](docs/lsm-support.md).
-
-## Install
-
-```bash
-helm repo add pahlevan https://obsernetics.github.io/pahlevan/charts
-helm install pahlevan pahlevan/pahlevan-operator -n pahlevan-system --create-namespace
-```
-
-The distroless image `ghcr.io/obsernetics/pahlevan` ships the agent, operator
-and CLI. Tags, chart usage and manifest pinning:
-[`docs/packages.md`](docs/packages.md). Release notes:
-[`CHANGELOG.md`](CHANGELOG.md).
+See [`docs/system-requirements.md`](docs/system-requirements.md),
+[`docs/lsm-support.md`](docs/lsm-support.md), and
+[`docs/packages.md`](docs/packages.md) for the image and chart.
 
 ## Development
 
-```bash
-make build          # agent, operator and CLI binaries
-make test           # unit tests, generated CRDs and manifests, fmt, vet
-make lint           # golangci-lint + yamllint
-make ebpf-build     # regenerate CO-RE objects and Go bindings (needs clang)
-hack/vm/up.sh       # bring up the eBPF-capable VM, then: make vm-test
-```
+`make build`, `make test`, `make lint` and `make ebpf-build` do what they say,
+and `make help` lists the rest. eBPF is never loaded on a developer machine:
+`hack/vm/up.sh` brings up a kernel with the BPF LSM active and `make vm-test`
+runs there, which any change to `bpf/*.c`, the loader or a map layout needs,
+because the verifier accepts or rejects a program at attach time and a change
+that passes `go build` can still fail to load.
 
-Any change to `bpf/*.c`, to the loader, or to a map layout needs a `make
-vm-test` run: the verifier accepts or rejects a program at attach time, and a
-change that passes `go build` can still fail to load. `make help` lists every
-target.
+Every published number comes from
+[`test/benchmark/run.sh`](test/benchmark/run.sh), run in that VM twice, once
+with no agent and once with Pahlevan enforcing, because a scenario that
+silently failed to run is otherwise indistinguishable from one that was
+prevented ([`docs/benchmarks/`](docs/benchmarks)).
 
 ## Honest status
 
-One maintainer. A `v1alpha1` API. No public production adopters yet. The
-learning model has a conceptual limit no amount of engineering removes - a
-workload that is already compromised when learning begins gets its malicious
-behaviour baselined along with everything else.
-
-[`ROADMAP.md`](ROADMAP.md) says what exists, what is in progress, and what is
-merely planned, and marks each one. Nothing in this README describes something
-that is not in the tree.
+One maintainer, no public production adopters yet, and an API still moving:
+`v1alpha1` is deprecated in favour of `v1beta1`. The learning model has a
+conceptual limit no engineering removes - a workload already compromised when
+learning begins gets its malicious behaviour baselined with everything else.
+[`ROADMAP.md`](ROADMAP.md) marks what exists, what is in progress and what is
+merely planned. Nothing here describes something that is not in the tree.
 
 ## Contributing
 
-Contributions are welcome. Open an issue for substantial changes, run `make test
-lint` before submitting, and keep eBPF changes verifiable with `make vm-test`.
-See [`CONTRIBUTING.md`](CONTRIBUTING.md).
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE).
+Open an issue for substantial changes, run `make test lint` before submitting,
+and keep eBPF changes verifiable with `make vm-test`. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Licensed under the
+[Apache License 2.0](LICENSE).

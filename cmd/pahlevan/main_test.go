@@ -86,8 +86,10 @@ func TestRootCommand_HelpRuns(t *testing.T) {
 	if !strings.Contains(out, "Pahlevan CLI") {
 		t.Errorf("help output missing description: %q", out)
 	}
-	if !strings.Contains(out, "Available Commands") {
-		t.Errorf("help output missing command list: %q", out)
+	// The command list is printed under the group titles rather than a single
+	// "Available Commands" heading, which is the point of grouping them.
+	if !strings.Contains(out, "Watch a running deployment:") {
+		t.Errorf("help output missing the grouped command list: %q", out)
 	}
 }
 

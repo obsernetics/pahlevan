@@ -58,6 +58,14 @@ This shows them against a file, before anything is applied.`,
   # Fail if the policy contains anything unrepresentable (for CI).
   pahlevan policy explain -f policy.yaml --strict`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Checked here rather than with MarkFlagRequired, whose message is
+			// `required flag(s) "filename" not set` - correct, and silent about
+			// what a policy file is or where the examples live. This is the
+			// command a user reaches for while writing their first policy.
+			if filename == "" {
+				return fmt.Errorf("no policy file to explain: pass -f <file>\nUsage: %s\n\n%s",
+					cmd.UseLine(), cmd.Example)
+			}
 			return runPolicyExplain(cmd.OutOrStdout(), filename, strict)
 		},
 	}
@@ -65,7 +73,6 @@ This shows them against a file, before anything is applied.`,
 	cmd.Flags().StringVarP(&filename, "filename", "f", "", "policy file to explain (required)")
 	cmd.Flags().BoolVar(&strict, "strict", false,
 		"exit non-zero if any part of the policy cannot be enforced")
-	_ = cmd.MarkFlagRequired("filename")
 	// Reads a file and computes an answer. Needing a cluster to explain a
 	// policy would make it useless in CI and useless while writing one.
 	return Offline(cmd)

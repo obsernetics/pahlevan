@@ -33,8 +33,18 @@ func NewVersionCommand(version, buildDate, gitCommit string) *cobra.Command {
 		Use:   "version",
 		Short: "Show version information",
 		Long:  "Display version information for the Pahlevan CLI and operator.",
+		Example: `  # What am I running?
+  pahlevan version
+
+  # For a bug report
+  pahlevan version -o json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			writer := cli.NewOutputWriter(output)
+			// Write where the command was told to write. The default writer is
+			// os.Stdout directly, which means anything that redirects the
+			// command's output - a test, or a parent command reusing this one -
+			// silently gets nothing.
+			writer.Writer = cmd.OutOrStdout()
 
 			versionInfo := map[string]interface{}{
 				"version":   version,
@@ -108,9 +118,17 @@ PowerShell:
   PS> pahlevan completion powershell > pahlevan.ps1
   # and source this file from your PowerShell profile.
 `,
+		Example: `  # This shell, right now
+  source <(pahlevan completion bash)
+
+  # Every new zsh session
+  pahlevan completion zsh > "${fpath[1]}/_pahlevan"`,
 		DisableFlagsInUseLine: true,
 		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
-		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
+		// Named rather than cobra.MatchAll(ExactArgs(1), OnlyValidArgs): a bare
+		// "pahlevan completion" answered "accepts 1 arg(s), received 0", which
+		// does not say that the missing word is a shell name.
+		Args: OneOfArgs("shell", "bash", "zsh", "fish", "powershell"),
 		Run: func(cmd *cobra.Command, args []string) {
 			switch args[0] {
 			case "bash":

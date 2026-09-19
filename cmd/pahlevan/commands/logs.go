@@ -122,6 +122,7 @@ want when investigating a single workload.`,
 	flags.BoolVar(&opts.previous, "previous", false, "Read the previous terminated container instead of the running one")
 	flags.BoolVar(&opts.timestamps, "timestamps", false, "Include the RFC3339 timestamp the kubelet recorded for each line")
 	flags.StringVar(&opts.prefix, "prefix", opts.prefix, "Per-line source prefix (auto, always, never); auto prefixes only when several pods are read")
+	acceptWatchAsFollow(cmd)
 
 	return cmd
 }

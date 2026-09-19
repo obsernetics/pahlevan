@@ -47,6 +47,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 )
 
 var (
@@ -68,6 +69,11 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(policyv1alpha1.AddToScheme(scheme))
+	// Both versions are served. v1beta1 is the storage version and the one
+	// the resolver reads, because it is the only version carrying
+	// learningConfig.expectedBehavior; v1alpha1 stays registered so an
+	// object written by an older client is still readable.
+	utilruntime.Must(policyv1beta1.AddToScheme(scheme))
 }
 
 func main() {

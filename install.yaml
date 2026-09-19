@@ -1256,6 +1256,139 @@ spec:
                   duration:
                     description: Duration specifies how long to run in learning mode
                     type: string
+                  expectedBehavior:
+                    description: |-
+                      ExpectedBehavior declares operations the operator knows the workload
+                      performs but which may not happen during the learning window.
+
+                      Learning is a window of wall-clock time, so anything the workload does
+                      once a day is simply absent from the baseline: a nightly batch, a weekly
+                      certificate renewal, a log rotation, a backup that opens a path nothing
+                      else opens. Under Blocking the kernel then refuses it, and from the
+                      kernel's side that refusal is correct - the only evidence against the
+                      operation is that the workload has never done it before, which is exactly
+                      what an attacker produces too. Without this field the operator's only
+                      options are to guess a longer duration, or to let self-healing roll
+                      enforcement back after the job has already been denied at 03:00.
+
+                      Declarations are additive. Every entry is merged into the allow-set
+                      alongside what was learned, none can remove a learned entry, and an entry
+                      that cannot be represented exactly is refused with a warning naming the
+                      field rather than widened into something broader.
+                    minProperties: 1
+                    properties:
+                      capabilities:
+                        description: |-
+                          Capabilities are Linux capabilities the workload exercises rarely, as
+                          names with or without the CAP_ prefix - the spelling
+                          syscallPolicy.capabilityFilter accepts and the one
+                          containerProfile.status.learnedCapabilities reports. A name outside the
+                          kernel's table is refused at translation, because the API server has no
+                          list to check it against and a typo would otherwise be a declaration that
+                          covers nothing.
+                        items:
+                          minLength: 1
+                          type: string
+                        type: array
+                      executables:
+                        description: |-
+                          Executables are binary paths the workload executes rarely - a backup
+                          tool, a migration runner, a cert-renewal hook. Absolute and fully
+                          resolved, the same rule filePolicy.executableFilter.allowedExecutables
+                          carries, because the kernel matches the path bprm_check_security resolves.
+                        items:
+                          minLength: 1
+                          pattern: ^/
+                          type: string
+                        type: array
+                      files:
+                        description: |-
+                          Files are paths the workload opens on a code path the learning window may
+                          not reach.
+                        items:
+                          description: |-
+                            ExpectedFile declares one path the workload uses.
+
+                            filePolicy draws the read/write line with two lists, readOnlyPaths and
+                            writeAllowedPaths. A declaration is a list of operations rather than a list
+                            of paths, so the line is drawn per entry instead - but it is the same line,
+                            and it means the same thing: reads and writes are separate entries in the
+                            kernel allow-set, so declaring a read does not permit a write.
+                          properties:
+                            path:
+                              description: |-
+                                Path is the fully resolved absolute path. Enforcement keys on the path
+                                the kernel resolves, which follows symlinks, so declaring
+                                "/etc/os-release" grants nothing where it links to /usr/lib/os-release.
+                                Wildcards have no representation in the allow-set and are refused at
+                                translation rather than matched literally and silently never firing.
+                              minLength: 1
+                              pattern: ^/
+                              type: string
+                            write:
+                              description: |-
+                                Write declares the workload writes the path as well as reading it, which
+                                is what filePolicy.writeAllowedPaths grants. Omitted means read only,
+                                matching filePolicy.readOnlyPaths.
+                              type: boolean
+                          required:
+                          - path
+                          type: object
+                        type: array
+                      networkDestinations:
+                        description: NetworkDestinations are egress endpoints the
+                          workload dials rarely.
+                        items:
+                          description: |-
+                            ExpectedDestination declares one egress endpoint the workload dials.
+
+                            It is flatter than a networkPolicy egress rule - one address, one port, one
+                            protocol - because a rule's peer selectors and port ranges exist to describe
+                            a class of traffic, and a declaration is the opposite: it names the one
+                            operation an operator is willing to vouch for. The field names and the
+                            single-host rule are the egress rule's, so the same CIDR that works in
+                            egressRules works here.
+                          properties:
+                            cidr:
+                              description: |-
+                                CIDR is the destination as a single-host prefix (10.43.12.7/32, or a /128
+                                for IPv6) or a bare address. The allow-set is a hash of the exact
+                                destination and cannot express a prefix, so anything wider is refused at
+                                translation - seeding only the network address would grant one host that
+                                was never declared and none of the others.
+                              minLength: 1
+                              type: string
+                            port:
+                              description: Port is the destination port.
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                            protocol:
+                              description: |-
+                                Protocol is the transport. Empty means TCP.
+
+                                UDP is accepted by the API server and refused at translation: the
+                                allow-set key folds the protocol in, but the decision a policy translates
+                                into carries only (address, port), so a declared UDP destination would be
+                                written into the kernel as a TCP entry - granting a protocol nobody
+                                declared and not granting the one that was. The field exists rather than
+                                being omitted so that limit is visible where the declaration is written,
+                                instead of being a silent assumption about what "port 53" meant.
+
+                                The enum lives on TransportProtocol rather than here: repeating it on the
+                                field as well makes controller-gen emit the same enum twice inside an
+                                allOf, which validates identically and reads as a generator bug.
+                              enum:
+                              - TCP
+                              - UDP
+                              type: string
+                          required:
+                          - cidr
+                          - port
+                          type: object
+                        type: array
+                    type: object
                   lifecycleAware:
                     description: LifecycleAware enables lifecycle-based learning transitions
                     type: boolean
@@ -2472,6 +2605,37 @@ spec:
               node agent. It is what the kernel enforces once the container is enforcing -
               a first-class, inspectable, git-backupable record.
             properties:
+              declaredCapabilities:
+                description: |-
+                  DeclaredCapabilities are the capabilities permitted by declaration rather
+                  than by observation, spelled without the CAP_ prefix like
+                  LearnedCapabilities.
+                items:
+                  type: string
+                type: array
+              declaredExecutables:
+                description: |-
+                  DeclaredExecutables are the binary paths permitted by declaration rather
+                  than by observation.
+                items:
+                  type: string
+                type: array
+              declaredFiles:
+                description: |-
+                  DeclaredFiles are the paths permitted because the policy declared them
+                  rather than because this container was observed opening them. A declared
+                  write is suffixed " (write)": declaring a write is a materially larger
+                  assertion than declaring a read, and the two must not read alike here.
+                items:
+                  type: string
+                type: array
+              declaredNetworkDestinations:
+                description: |-
+                  DeclaredNetworkDestinations are the ip:port destinations permitted by
+                  declaration rather than by observation.
+                items:
+                  type: string
+                type: array
               denialCount:
                 description: |-
                   DenialCount is the number of in-kernel denials observed since the current

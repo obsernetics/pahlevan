@@ -663,3 +663,130 @@ func BenchmarkPolicyRoundTrip(b *testing.B) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The added list is exactly the set of fields that are added
+// ---------------------------------------------------------------------------
+
+// IntentionallyAdded is the mirror of IntentionallyDropped and needs the same
+// bracketing. Short means a v1beta1 field exists that v1alpha1 users will never
+// see and nobody wrote down why. Padded means a field is listed as v1beta1-only
+// when v1alpha1 carries it, which teaches readers to ignore the list.
+//
+// Each case sets exactly one added field on an otherwise empty v1beta1 object
+// and asserts it does not survive a trip through v1alpha1. That loss is real
+// and it is the cost of the field: an operator who reads a policy as v1alpha1
+// and writes it back erases the declaration from the stored object.
+func TestEveryAddedFieldIsActuallyOnlyInV1Beta1(t *testing.T) {
+	roundTripPolicyThroughSpoke := func(t *testing.T, src *v1beta1.PahlevanPolicy) *v1beta1.PahlevanPolicy {
+		t.Helper()
+		var spoke PahlevanPolicy
+		require.NoError(t, spoke.ConvertFrom(src))
+		var back v1beta1.PahlevanPolicy
+		require.NoError(t, spoke.ConvertTo(&back))
+		return &back
+	}
+	roundTripProfileThroughSpoke := func(t *testing.T, src *v1beta1.ContainerProfile) *v1beta1.ContainerProfile {
+		t.Helper()
+		var spoke ContainerProfile
+		require.NoError(t, spoke.ConvertFrom(src))
+		var back v1beta1.ContainerProfile
+		require.NoError(t, spoke.ConvertTo(&back))
+		return &back
+	}
+
+	profileWith := func(set func(*v1beta1.ContainerProfileStatus)) func(t *testing.T) {
+		return func(t *testing.T) {
+			src := &v1beta1.ContainerProfile{}
+			set(&src.Status)
+			require.NotEqual(t, &v1beta1.ContainerProfile{}, src, "the case sets nothing")
+			assert.Equal(t, &v1beta1.ContainerProfile{}, roundTripProfileThroughSpoke(t, src))
+		}
+	}
+
+	cases := []struct {
+		path string
+		run  func(t *testing.T)
+	}{
+		{
+			path: "spec.learningConfig.expectedBehavior",
+			run: func(t *testing.T) {
+				src := &v1beta1.PahlevanPolicy{Spec: v1beta1.PahlevanPolicySpec{
+					LearningConfig: v1beta1.LearningConfig{
+						ExpectedBehavior: &v1beta1.ExpectedBehavior{
+							Files: []v1beta1.ExpectedFile{{Path: "/var/lib/app/nightly.db", Write: true}},
+						},
+					},
+				}}
+				back := roundTripPolicyThroughSpoke(t, src)
+				assert.Nil(t, back.Spec.LearningConfig.ExpectedBehavior,
+					"v1alpha1 has nowhere to carry a declaration, so this cannot survive")
+			},
+		},
+		{
+			path: "status.declaredFiles",
+			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
+				s.DeclaredFiles = []string{"/var/lib/app/nightly.db (write)"}
+			}),
+		},
+		{
+			path: "status.declaredNetworkDestinations",
+			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
+				s.DeclaredNetworkDestinations = []string{"10.43.12.7:5432"}
+			}),
+		},
+		{
+			path: "status.declaredExecutables",
+			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
+				s.DeclaredExecutables = []string{"/usr/bin/pg_dump"}
+			}),
+		},
+		{
+			path: "status.declaredCapabilities",
+			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
+				s.DeclaredCapabilities = []string{"DAC_OVERRIDE"}
+			}),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			reason, listed := IntentionallyAdded[tc.path]
+			require.True(t, listed, "%s exists only in v1beta1 but is not documented", tc.path)
+			require.GreaterOrEqual(t, len(reason), 40,
+				"the reason for adding %s has to say what the field does", tc.path)
+			tc.run(t)
+		})
+	}
+
+	require.Len(t, IntentionallyAdded, len(cases),
+		"every entry in IntentionallyAdded needs a case here proving it is real")
+}
+
+// A declaration must not be approximated into something v1alpha1 can hold. An
+// exception with the declared paths as patterns would convert cleanly and be a
+// permanent hole in the policy where a declaration was meant, so the conversion
+// deliberately drops it instead of being clever.
+func TestADeclarationIsNotSmuggledIntoAnException(t *testing.T) {
+	src := &v1beta1.PahlevanPolicy{Spec: v1beta1.PahlevanPolicySpec{
+		LearningConfig: v1beta1.LearningConfig{
+			ExpectedBehavior: &v1beta1.ExpectedBehavior{
+				Files:        []v1beta1.ExpectedFile{{Path: "/var/lib/app/nightly.db", Write: true}},
+				Executables:  []string{"/usr/bin/pg_dump"},
+				Capabilities: []string{"DAC_OVERRIDE"},
+				NetworkDestinations: []v1beta1.ExpectedDestination{
+					{CIDR: "10.43.12.7/32", Port: 5432},
+				},
+			},
+		},
+	}}
+	var spoke PahlevanPolicy
+	require.NoError(t, spoke.ConvertFrom(src))
+
+	assert.Empty(t, spoke.Spec.EnforcementConfig.Exceptions)
+	assert.Nil(t, spoke.Spec.FilePolicy)
+	assert.Nil(t, spoke.Spec.NetworkPolicy)
+	assert.Nil(t, spoke.Spec.SyscallPolicy)
+	assert.Equal(t, PahlevanPolicySpec{}, spoke.Spec,
+		"a declaration converts to nothing at all in v1alpha1")
+}

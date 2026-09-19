@@ -49,6 +49,11 @@ func NewPolicyCommand() *cobra.Command {
 
 Policies define how containers should be monitored, what behavior should be learned,
 and how violations should be handled.`,
+		Example: `  # What is deployed right now
+  pahlevan policy list
+
+  # What a policy file would actually enforce, before it touches a cluster
+  pahlevan policy explain -f examples/policies/web-application.yaml`,
 	}
 
 	cmd.AddCommand(
@@ -78,8 +83,19 @@ func NewPolicyListCommand() *cobra.Command {
 		Short:   "List Pahlevan policies",
 		Long:    "List Pahlevan policies in the current or specified namespace.",
 		Aliases: []string{"ls"},
+		Example: `  # Policies in the current namespace
+  pahlevan policy list
+
+  # Every namespace, machine readable
+  pahlevan policy list --all-namespaces -o json
+
+  # Only the policies selecting one app
+  pahlevan policy list -l app=web`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			k8sClient, _, _, namespace, _ := GetClients()
+			k8sClient, _, _, namespace, ready := GetClients()
+			if !ready || k8sClient == nil {
+				return errClientsNotReady()
+			}
 			writer := cli.NewOutputWriter(output)
 
 			// Prepare list options
@@ -168,9 +184,17 @@ func NewPolicyGetCommand() *cobra.Command {
 		Use:   "get <policy-name>",
 		Short: "Get a specific Pahlevan policy",
 		Long:  "Get detailed information about a specific Pahlevan policy.",
-		Args:  cobra.ExactArgs(1),
+		Args:  NamedArgs("policy-name"),
+		Example: `  # The full resource, as applied
+  pahlevan policy get web-app-policy
+
+  # As JSON, for jq
+  pahlevan policy get web-app-policy -o json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			k8sClient, _, _, namespace, _ := GetClients()
+			k8sClient, _, _, namespace, ready := GetClients()
+			if !ready || k8sClient == nil {
+				return errClientsNotReady()
+			}
 			writer := cli.NewOutputWriter(output)
 
 			policyName := args[0]
@@ -200,9 +224,17 @@ func NewPolicyDescribeCommand() *cobra.Command {
 		Use:   "describe <policy-name>",
 		Short: "Describe a Pahlevan policy",
 		Long:  "Show detailed information about a Pahlevan policy including status and events.",
-		Args:  cobra.ExactArgs(1),
+		Args:  NamedArgs("policy-name"),
+		Example: `  # Spec, status, attack surface and the events the operator recorded
+  pahlevan policy describe web-app-policy
+
+  # A policy in another namespace
+  pahlevan policy describe web-app-policy -n payments`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			k8sClient, kubeClient, _, namespace, _ := GetClients()
+			k8sClient, kubeClient, _, namespace, ready := GetClients()
+			if !ready || k8sClient == nil {
+				return errClientsNotReady()
+			}
 			writer := cli.NewOutputWriter("table")
 
 			policyName := args[0]
@@ -305,8 +337,27 @@ func NewPolicyCreateCommand() *cobra.Command {
 		Use:   "create [flags]",
 		Short: "Create a Pahlevan policy",
 		Long:  "Create a new Pahlevan policy from file or command line options.",
+		Example: `  # From a file
+  pahlevan policy create -f examples/policies/web-application.yaml
+
+  # Let the API server validate it without persisting anything
+  pahlevan policy create -f examples/policies/web-application.yaml --dry-run
+
+  # From flags: learn app=web for ten minutes, then monitor
+  pahlevan policy create -l app=web --learning-time 10m --enforcement-mode Monitoring`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			k8sClient, _, _, namespace, _ := GetClients()
+			k8sClient, _, _, namespace, ready := GetClients()
+			if !ready || k8sClient == nil {
+				return errClientsNotReady()
+			}
+			// Without -f and without -l the policy built from flags has an
+			// empty selector, and an empty selector matches every workload in
+			// the namespace. Creating that by accident puts unrelated
+			// workloads into a learning window, which is not something the
+			// user can tell happened by reading the success line.
+			if filename == "" && selector == "" {
+				return fmt.Errorf("nothing to create from: pass -f <file>, or -l <key=value> to select the workloads to learn\nUsage: %s", cmd.UseLine())
+			}
 			writer := cli.NewOutputWriter("table")
 
 			var policy *policyv1alpha1.PahlevanPolicy
@@ -378,9 +429,14 @@ func NewPolicyDeleteCommand() *cobra.Command {
 		Use:   "delete <policy-name>",
 		Short: "Delete a Pahlevan policy",
 		Long:  "Delete a Pahlevan policy from the cluster.",
-		Args:  cobra.ExactArgs(1),
+		Args:  NamedArgs("policy-name"),
+		Example: `  # Stop learning and enforcing for the workloads this policy selects
+  pahlevan policy delete web-app-policy`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			k8sClient, _, _, namespace, _ := GetClients()
+			k8sClient, _, _, namespace, ready := GetClients()
+			if !ready || k8sClient == nil {
+				return errClientsNotReady()
+			}
 			writer := cli.NewOutputWriter("table")
 
 			policyName := args[0]
@@ -424,9 +480,17 @@ func NewPolicyUpdateCommand() *cobra.Command {
 		Use:   "update <policy-name>",
 		Short: "Update a Pahlevan policy",
 		Long:  "Update an existing Pahlevan policy.",
-		Args:  cobra.ExactArgs(1),
+		Args:  NamedArgs("policy-name"),
+		Example: `  # Promote a policy from monitoring to blocking
+  pahlevan policy update web-app-policy --enforcement-mode Blocking
+
+  # Give it longer to learn before it transitions
+  pahlevan policy update web-app-policy --learning-time 30m`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			k8sClient, _, _, namespace, _ := GetClients()
+			k8sClient, _, _, namespace, ready := GetClients()
+			if !ready || k8sClient == nil {
+				return errClientsNotReady()
+			}
 			writer := cli.NewOutputWriter("table")
 
 			policyName := args[0]
@@ -509,9 +573,17 @@ func NewPolicyStatusCommand() *cobra.Command {
 		Use:   "status <policy-name>",
 		Short: "Show policy status",
 		Long:  "Show the current status and progress of a Pahlevan policy.",
-		Args:  cobra.ExactArgs(1),
+		Args:  NamedArgs("policy-name"),
+		Example: `  # Where is this policy in its learning window?
+  pahlevan policy status web-app-policy
+
+  # Keep printing as the phase changes (--follow is accepted too)
+  pahlevan policy status web-app-policy --watch`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			k8sClient, _, _, namespace, _ := GetClients()
+			k8sClient, _, _, namespace, ready := GetClients()
+			if !ready || k8sClient == nil {
+				return errClientsNotReady()
+			}
 			writer := cli.NewOutputWriter("table")
 
 			policyName := args[0]
@@ -543,6 +615,7 @@ func NewPolicyStatusCommand() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "Watch for changes")
+	acceptFollowAsWatch(cmd)
 
 	return cmd
 }

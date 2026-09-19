@@ -163,3 +163,153 @@ func TestInstallManifestCarriesBothVersions(t *testing.T) {
 	}
 	assert.Equal(t, 3, crds, "install.yaml must carry all three CRDs")
 }
+
+// ---------------------------------------------------------------------------
+// Declared expected behavior: the half of the validation the API server does
+// ---------------------------------------------------------------------------
+
+// A kubebuilder marker is a comment until controller-gen turns it into schema,
+// and a marker that does not reach the CRD fails silently in the direction that
+// matters: the API server accepts the object, translation refuses the entry,
+// and the operator's declaration does nothing.
+//
+// These are declarations rather than ordinary rules, which makes it worse than
+// usual. The whole point of the field is to cover an operation nobody has ever
+// observed, so a declaration that was accepted and quietly dropped is not
+// discovered by testing - it is discovered when the nightly job is denied.
+// Rejecting the object at apply time is the only feedback loop that closes
+// before that.
+
+// schemaAt walks the named version's schema to a dotted path, where a segment
+// is a property name, "items" descends into an array's element schema, and the
+// leaf is returned as it appears in the manifest.
+func schemaAt(t *testing.T, c crdFile, version, path string) map[string]interface{} {
+	t.Helper()
+	var node map[string]interface{}
+	for _, v := range versionsOf(t, c) {
+		if v["name"] == version {
+			schema, _ := v["schema"].(map[string]interface{})
+			node, _ = schema["openAPIV3Schema"].(map[string]interface{})
+		}
+	}
+	require.NotNil(t, node, "%s has no %s schema", c.path, version)
+
+	for _, seg := range strings.Split(path, ".") {
+		if seg == "items" {
+			next, ok := node["items"].(map[string]interface{})
+			require.True(t, ok, "%s: no items under %s", c.path, path)
+			node = next
+			continue
+		}
+		props, ok := node["properties"].(map[string]interface{})
+		require.True(t, ok, "%s: no properties while walking to %s", c.path, path)
+		next, ok := props[seg].(map[string]interface{})
+		require.True(t, ok, "%s: %s is not in the schema at %s", c.path, seg, path)
+		node = next
+	}
+	return node
+}
+
+func policyCRD(t *testing.T) crdFile {
+	t.Helper()
+	for _, c := range loadCRDs(t) {
+		if strings.Contains(c.path, "pahlevanpolicies") {
+			return c
+		}
+	}
+	t.Fatal("the PahlevanPolicy CRD is missing from config/crd")
+	return crdFile{}
+}
+
+func TestDeclaredBehaviorValidationReachesTheSchema(t *testing.T) {
+	c := policyCRD(t)
+	const root = "spec.learningConfig.expectedBehavior"
+
+	t.Run("an empty declaration is rejected", func(t *testing.T) {
+		// `expectedBehavior: {}` is almost always a half-written block, and
+		// accepting it lets an operator believe a rare operation is covered
+		// when nothing was written down at all.
+		assert.EqualValues(t, 1, schemaAt(t, c, "v1beta1", root)["minProperties"])
+	})
+
+	t.Run("a path must be absolute and non-empty", func(t *testing.T) {
+		// Enforcement keys on the path the kernel resolves, so a relative path
+		// can never match anything.
+		path := schemaAt(t, c, "v1beta1", root+".files.items.path")
+		assert.Equal(t, "^/", path["pattern"])
+		assert.EqualValues(t, 1, path["minLength"])
+
+		// And a file entry without a path declares nothing at all.
+		items := schemaAt(t, c, "v1beta1", root+".files.items")
+		assert.Contains(t, items["required"], "path")
+	})
+
+	t.Run("an executable must be absolute and non-empty", func(t *testing.T) {
+		execs := schemaAt(t, c, "v1beta1", root+".executables.items")
+		assert.Equal(t, "^/", execs["pattern"])
+		assert.EqualValues(t, 1, execs["minLength"])
+	})
+
+	t.Run("a port is bounded to the port space", func(t *testing.T) {
+		// A port is 16 bits on the wire and this field is an int32, so without
+		// bounds 70000 would be accepted and truncated into port 4464 - a rule
+		// that looks applied and permits something nobody asked for.
+		port := schemaAt(t, c, "v1beta1", root+".networkDestinations.items.port")
+		assert.EqualValues(t, 1, port["minimum"])
+		assert.EqualValues(t, 65535, port["maximum"])
+	})
+
+	t.Run("a destination needs both an address and a port", func(t *testing.T) {
+		items := schemaAt(t, c, "v1beta1", root+".networkDestinations.items")
+		assert.Contains(t, items["required"], "cidr")
+		assert.Contains(t, items["required"], "port")
+		assert.EqualValues(t, 1,
+			schemaAt(t, c, "v1beta1", root+".networkDestinations.items.cidr")["minLength"])
+	})
+
+	t.Run("a protocol is one of two values, listed once", func(t *testing.T) {
+		proto := schemaAt(t, c, "v1beta1", root+".networkDestinations.items.protocol")
+		assert.Equal(t, []interface{}{"TCP", "UDP"}, proto["enum"])
+		// Not inside an allOf: an enum repeated on both the field and its named
+		// type validates identically and reads as a generator bug.
+		assert.NotContains(t, proto, "allOf")
+	})
+}
+
+// The field exists in one version only, and that has to be visible in the
+// manifest rather than only in the Go types. A v1alpha1 policy carrying an
+// expectedBehavior block is not rejected by the API server - unknown fields in
+// a custom resource are pruned, not refused - so it applies cleanly, reports no
+// error, and declares nothing.
+func TestDeclaredBehaviorIsNotServedOnV1Alpha1(t *testing.T) {
+	c := policyCRD(t)
+	learning := schemaAt(t, c, "v1alpha1", "spec.learningConfig")
+	props, ok := learning["properties"].(map[string]interface{})
+	require.True(t, ok)
+	assert.NotContains(t, props, "expectedBehavior",
+		"v1alpha1 must not advertise a field its conversion cannot carry")
+
+	profile := crdFile{}
+	for _, f := range loadCRDs(t) {
+		if strings.Contains(f.path, "containerprofiles") {
+			profile = f
+		}
+	}
+	require.NotEmpty(t, profile.path)
+	for version, wantDeclared := range map[string]bool{"v1alpha1": false, "v1beta1": true} {
+		status := schemaAt(t, profile, version, "status")
+		statusProps, ok := status["properties"].(map[string]interface{})
+		require.True(t, ok)
+		for _, field := range []string{
+			"declaredFiles", "declaredNetworkDestinations",
+			"declaredExecutables", "declaredCapabilities",
+		} {
+			if wantDeclared {
+				assert.Contains(t, statusProps, field, "%s must report %s", version, field)
+				continue
+			}
+			assert.NotContains(t, statusProps, field,
+				"%s must not advertise %s: it has nowhere to carry it", version, field)
+		}
+	}
+}

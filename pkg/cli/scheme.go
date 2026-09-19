@@ -22,6 +22,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 )
 
 var (
@@ -34,6 +35,9 @@ func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 	// Add Pahlevan schemes
 	_ = policyv1alpha1.AddToScheme(scheme)
+	// v1beta1 is the storage version and the only one carrying
+	// learningConfig.expectedBehavior. A client without it decodes nothing.
+	_ = policyv1beta1.AddToScheme(scheme)
 }
 
 // GetScheme returns the runtime scheme with all necessary types registered

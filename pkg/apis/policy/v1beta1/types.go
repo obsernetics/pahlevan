@@ -23,10 +23,17 @@
 //  5. Counts and percentages carry bounds.
 //  6. `status.conditions` is declared a map list keyed by type, which is how
 //     the controller has always treated it.
+//  7. `learningConfig.expectedBehavior` and the `declared*` lists on a
+//     ContainerProfile's status exist only here. They are the one addition
+//     rather than a correction: learning is a window of wall-clock time, so a
+//     workload's once-a-day operation is absent from the baseline for the same
+//     reason an attack is, and there was no way to say in advance which is
+//     which. See ExpectedBehavior.
 //
 // Conversion to and from v1alpha1 lives in the v1alpha1 package, which is the
 // spoke; this package is the hub. Items 1, 2 and 3 above cannot round-trip and
-// are enumerated, with reasons, in v1alpha1's IntentionallyDropped.
+// are enumerated, with reasons, in v1alpha1's IntentionallyDropped; item 7 has
+// no v1alpha1 counterpart at all and is enumerated in IntentionallyAdded.
 package v1beta1
 
 import (
@@ -157,7 +164,148 @@ type LearningConfig struct {
 
 	// LifecycleAware enables lifecycle-based learning transitions
 	LifecycleAware bool `json:"lifecycleAware,omitempty"`
+
+	// ExpectedBehavior declares operations the operator knows the workload
+	// performs but which may not happen during the learning window.
+	//
+	// Learning is a window of wall-clock time, so anything the workload does
+	// once a day is simply absent from the baseline: a nightly batch, a weekly
+	// certificate renewal, a log rotation, a backup that opens a path nothing
+	// else opens. Under Blocking the kernel then refuses it, and from the
+	// kernel's side that refusal is correct - the only evidence against the
+	// operation is that the workload has never done it before, which is exactly
+	// what an attacker produces too. Without this field the operator's only
+	// options are to guess a longer duration, or to let self-healing roll
+	// enforcement back after the job has already been denied at 03:00.
+	//
+	// Declarations are additive. Every entry is merged into the allow-set
+	// alongside what was learned, none can remove a learned entry, and an entry
+	// that cannot be represented exactly is refused with a warning naming the
+	// field rather than widened into something broader.
+	ExpectedBehavior *ExpectedBehavior `json:"expectedBehavior,omitempty"`
 }
+
+// ExpectedBehavior is what an operator asserts a workload does, as against
+// what the agent observed it doing. The two are kept apart everywhere they are
+// reported, because "the workload opened this path" and "somebody said it
+// would" are different grades of evidence and an operator reviewing a profile
+// has to be able to tell them apart.
+//
+// The vocabulary is deliberately the one filePolicy and networkPolicy already
+// use - absolute resolved paths, single-host CIDRs, capability names without
+// the CAP_ prefix - so that declaring an operation and allowing one are not two
+// things to learn. The same limits apply for the same reason: the kernel
+// allow-set is a hash of the exact operation, so a wildcard path or a prefix
+// wider than one host has no representation in it.
+//
+// MinProperties because an `expectedBehavior: {}` that declares nothing is
+// almost always a half-written block, and accepting it silently is how an
+// operator comes to believe a rare operation is covered when nothing was
+// written down at all.
+//
+// +kubebuilder:validation:MinProperties=1
+type ExpectedBehavior struct {
+	// Files are paths the workload opens on a code path the learning window may
+	// not reach.
+	Files []ExpectedFile `json:"files,omitempty"`
+
+	// NetworkDestinations are egress endpoints the workload dials rarely.
+	NetworkDestinations []ExpectedDestination `json:"networkDestinations,omitempty"`
+
+	// Executables are binary paths the workload executes rarely - a backup
+	// tool, a migration runner, a cert-renewal hook. Absolute and fully
+	// resolved, the same rule filePolicy.executableFilter.allowedExecutables
+	// carries, because the kernel matches the path bprm_check_security resolves.
+	//
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern=`^/`
+	Executables []string `json:"executables,omitempty"`
+
+	// Capabilities are Linux capabilities the workload exercises rarely, as
+	// names with or without the CAP_ prefix - the spelling
+	// syscallPolicy.capabilityFilter accepts and the one
+	// containerProfile.status.learnedCapabilities reports. A name outside the
+	// kernel's table is refused at translation, because the API server has no
+	// list to check it against and a typo would otherwise be a declaration that
+	// covers nothing.
+	//
+	// +kubebuilder:validation:items:MinLength=1
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// ExpectedFile declares one path the workload uses.
+//
+// filePolicy draws the read/write line with two lists, readOnlyPaths and
+// writeAllowedPaths. A declaration is a list of operations rather than a list
+// of paths, so the line is drawn per entry instead - but it is the same line,
+// and it means the same thing: reads and writes are separate entries in the
+// kernel allow-set, so declaring a read does not permit a write.
+type ExpectedFile struct {
+	// Path is the fully resolved absolute path. Enforcement keys on the path
+	// the kernel resolves, which follows symlinks, so declaring
+	// "/etc/os-release" grants nothing where it links to /usr/lib/os-release.
+	// Wildcards have no representation in the allow-set and are refused at
+	// translation rather than matched literally and silently never firing.
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^/`
+	Path string `json:"path"`
+
+	// Write declares the workload writes the path as well as reading it, which
+	// is what filePolicy.writeAllowedPaths grants. Omitted means read only,
+	// matching filePolicy.readOnlyPaths.
+	Write bool `json:"write,omitempty"`
+}
+
+// ExpectedDestination declares one egress endpoint the workload dials.
+//
+// It is flatter than a networkPolicy egress rule - one address, one port, one
+// protocol - because a rule's peer selectors and port ranges exist to describe
+// a class of traffic, and a declaration is the opposite: it names the one
+// operation an operator is willing to vouch for. The field names and the
+// single-host rule are the egress rule's, so the same CIDR that works in
+// egressRules works here.
+type ExpectedDestination struct {
+	// CIDR is the destination as a single-host prefix (10.43.12.7/32, or a /128
+	// for IPv6) or a bare address. The allow-set is a hash of the exact
+	// destination and cannot express a prefix, so anything wider is refused at
+	// translation - seeding only the network address would grant one host that
+	// was never declared and none of the others.
+	//
+	// +kubebuilder:validation:MinLength=1
+	CIDR string `json:"cidr"`
+
+	// Port is the destination port.
+	//
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+
+	// Protocol is the transport. Empty means TCP.
+	//
+	// UDP is accepted by the API server and refused at translation: the
+	// allow-set key folds the protocol in, but the decision a policy translates
+	// into carries only (address, port), so a declared UDP destination would be
+	// written into the kernel as a TCP entry - granting a protocol nobody
+	// declared and not granting the one that was. The field exists rather than
+	// being omitted so that limit is visible where the declaration is written,
+	// instead of being a silent assumption about what "port 53" meant.
+	//
+	// The enum lives on TransportProtocol rather than here: repeating it on the
+	// field as well makes controller-gen emit the same enum twice inside an
+	// allOf, which validates identically and reads as a generator bug.
+	Protocol TransportProtocol `json:"protocol,omitempty"`
+}
+
+// TransportProtocol is the transport of a declared destination.
+//
+// +kubebuilder:validation:Enum=TCP;UDP
+type TransportProtocol string
+
+const (
+	TransportProtocolTCP TransportProtocol = "TCP"
+	TransportProtocolUDP TransportProtocol = "UDP"
+)
 
 // EnforcementConfig controls enforcement behavior
 type EnforcementConfig struct {

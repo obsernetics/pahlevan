@@ -38,13 +38,31 @@ func NewStatusCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show Pahlevan operator status",
-		Long:  "Show the current status of the Pahlevan operator and policies in the cluster.",
+		Long: `Show the current status of the Pahlevan operator and policies in the cluster.
+
+This answers "is Pahlevan installed and working here": the operator Deployment
+and agent DaemonSet, whether the CRDs are served, how many policies exist and
+in which phase, and which admission resources are configured.`,
+		Example: `  # Is Pahlevan installed and healthy here?
+  pahlevan status
+
+  # Against another cluster
+  pahlevan status --kubeconfig ~/.kube/staging.yaml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			k8sClient, kubeClient, _, _, ready := GetClients()
 			writer := cli.NewOutputWriter("table")
 
 			if !ready || k8sClient == nil {
-				return fmt.Errorf("kubernetes clients are not initialized; check your kubeconfig and cluster connectivity")
+				return errClientsNotReady()
+			}
+			// status is the one command with no --output of its own, so it
+			// inherits the root's. Silently printing a table to somebody who
+			// asked for JSON is worse than refusing: they would pipe it into
+			// jq and get a parse error instead of an explanation.
+			if f := cmd.Flags().Lookup("output"); f != nil && f.Changed && f.Value.String() != "table" {
+				return fmt.Errorf("pahlevan status prints a report, not a resource, so it has no %s form; "+
+					"for a machine-readable snapshot of the same deployment use: pahlevan debug -o %s",
+					f.Value.String(), f.Value.String())
 			}
 
 			ctx := context.Background()

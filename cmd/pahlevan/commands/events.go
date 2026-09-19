@@ -121,6 +121,7 @@ run where the log lives (on the node, or against a copy of the file).`,
 	flags.BoolVar(&opts.denialsOnly, "denials-only", false, "Only show events the kernel denied")
 	flags.StringVar(&opts.pod, "pod", "", "Only show events attributed to this pod (name, namespace/name, or pod UID)")
 	flags.IntVar(&opts.tail, "tail", 0, "Print only the last N matching events before following (0 means all)")
+	acceptWatchAsFollow(cmd)
 
 	return cmd
 }

@@ -7,34 +7,53 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/obsernetics/pahlevan/pkg/coverage"
 	"github.com/obsernetics/pahlevan/pkg/export"
 )
 
-// View is one of the screens the UI can show.
+// View is one of the screens the console can show.
 type View int
 
 const (
-	ViewEvents View = iota
+	ViewOverview View = iota
+	ViewPolicies
+	ViewProfiles
 	ViewWorkloads
-	ViewDetail
+	ViewEvents
+	ViewSurface
 	ViewCoverage
 	ViewHelp
 )
 
-// views is the tab order. Detail is reachable only by selecting a workload,
-// so it is not in the cycle: tabbing into a screen that says "nothing
-// selected" is a dead end the user has to back out of.
-var views = []View{ViewEvents, ViewWorkloads, ViewCoverage, ViewHelp}
+// views is the tab order, and the order the number keys address. Help is not
+// in it: it is a screen you open and leave, not a place you tab through.
+var views = []View{
+	ViewOverview, ViewPolicies, ViewProfiles, ViewWorkloads,
+	ViewEvents, ViewSurface, ViewCoverage,
+}
 
 func (v View) String() string {
 	switch v {
-	case ViewEvents:
-		return "events"
+	case ViewOverview:
+		return "overview"
+	case ViewPolicies:
+		return "policies"
+	case ViewProfiles:
+		return "profiles"
 	case ViewWorkloads:
 		return "workloads"
-	case ViewDetail:
-		return "detail"
+	case ViewEvents:
+		return "events"
+	case ViewSurface:
+		return "attack surface"
 	case ViewCoverage:
 		return "coverage"
 	case ViewHelp:
@@ -49,7 +68,7 @@ type (
 	EventMsg struct{ Event export.Event }
 	// SourceEndedMsg says the source finished, with the error if it failed.
 	SourceEndedMsg struct{ Err error }
-	// tickMsg drives the clock in the status line.
+	// tickMsg drives the clock in the status bar and the refresh schedule.
 	tickMsg time.Time
 )
 
@@ -79,33 +98,64 @@ type Workload struct {
 // the detail pane, not an audit log; that is what the event exporters are for.
 const deniedWhatCap = 12
 
-// Model is the whole UI state. Update is pure with respect to it: every
+// pane names which half of a split view the keyboard is driving.
+type pane int
+
+const (
+	paneList pane = iota
+	paneDetail
+)
+
+// Model is the whole console state. Update is pure with respect to it: every
 // transition is a function of the model and one message, which is what makes
 // the behaviour testable without a terminal.
 type Model struct {
 	view     View
 	prevView View
+	focus    pane
 
-	events    *ring
-	workloads map[string]*Workload
-	order     []string
-
-	cursor   int
-	offset   int
-	selected string
-
-	paused bool
-	filter string
-	typing bool
-
-	width, height int
-
+	// Event side.
+	events     *ring
+	workloads  map[string]*Workload
+	order      []string
+	paused     bool
+	total      uint64
+	denied     uint64
 	sourceName string
 	ended      bool
 	err        error
-	started    time.Time
-	total      uint64
-	denied     uint64
+
+	// Cluster side. A nil cluster is the replay case: the cluster panes say
+	// so rather than sitting on an empty table that looks like a healthy
+	// cluster with nothing in it.
+	ctx      context.Context
+	cluster  Cluster
+	policies resource[Policy]
+	profiles resource[Profile]
+	surfaces resource[AttackSurface]
+
+	// Cursors are per view. Tabbing away from row 40 of the profiles list and
+	// back again should return to row 40, not to the top.
+	cursors map[View]int
+	offsets map[View]int
+
+	// Widgets. The table is reused across views rather than one per view:
+	// every view sets its own columns and its own window of rows, and seven
+	// live tables would be seven viewports to keep in sync on a resize.
+	tbl    table.Model
+	detail viewport.Model
+	input  textinput.Model
+	help   help.Model
+	spin   spinner.Model
+	prog   progress.Model
+	keys   keyMap
+
+	filtering bool
+	spinning  bool
+
+	width, height int
+	started       time.Time
+	now           func() time.Time
 
 	// quitting short-circuits View so the final frame is not a half-drawn
 	// screen left on the terminal after the program returns.
@@ -116,15 +166,20 @@ type Model struct {
 type Options struct {
 	// Capacity bounds retained events. Zero uses DefaultCapacity.
 	Capacity int
-	// SourceName is shown in the status line.
+	// SourceName is shown in the status bar.
 	SourceName string
+	// Cluster supplies the policy, profile and attack surface views. Nil is
+	// allowed and means there is no cluster to read - `--replay`.
+	Cluster Cluster
+	// Context bounds the cluster reads. Zero uses context.Background.
+	Context context.Context
 	// Now is injectable so tests are not timing-dependent.
 	Now func() time.Time
 }
 
 // DefaultCapacity is the number of events kept for the events view. A few
-// thousand is more scrollback than anyone reads and small enough that the UI's
-// footprint does not depend on the node's syscall rate.
+// thousand is more scrollback than anyone reads and small enough that the
+// console's footprint does not depend on the node's syscall rate.
 const DefaultCapacity = 4096
 
 var nowFn = time.Now
@@ -139,21 +194,55 @@ func New(opts Options) *Model {
 	if now == nil {
 		now = nowFn
 	}
-	return &Model{
-		view:       ViewEvents,
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	in := textinput.New()
+	in.Prompt = "/"
+	in.Placeholder = "filter"
+	// Bounded because it is typed into during an incident and a pasted log
+	// line should not become a filter wider than the terminal.
+	in.CharLimit = 64
+
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(styleAccent))
+
+	m := &Model{
+		view:       ViewOverview,
 		events:     newRing(capacity),
 		workloads:  map[string]*Workload{},
+		cursors:    map[View]int{},
+		offsets:    map[View]int{},
+		ctx:        ctx,
+		cluster:    opts.Cluster,
 		sourceName: opts.SourceName,
-		started:    now(),
+		tbl:        newTable(),
+		detail:     viewport.New(0, 0),
+		input:      in,
+		help:       newHelp(),
+		spin:       sp,
+		prog:       progress.New(progress.WithSolidFill("81"), progress.WithoutPercentage()),
+		keys:       defaultKeys(),
 		width:      80,
 		height:     24,
+		started:    now(),
+		now:        now,
 	}
+	return m
 }
 
 // Init satisfies tea.Model. The tick keeps the elapsed time honest even when
 // no events are arriving, which is itself information: a quiet stream and a
-// dead stream look identical without a clock.
-func (m *Model) Init() tea.Cmd { return tick() }
+// dead stream look identical without a clock. It also drives the cluster
+// refresh, so one timer covers both rather than three competing ones.
+func (m *Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{tick()}
+	if c := m.refreshAll(); c != nil {
+		cmds = append(cmds, c)
+	}
+	return tea.Batch(cmds...)
+}
 
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -168,7 +257,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		return m, tick()
+		// The refresh rides the clock tick and skips anything already in
+		// flight, so a slow API server cannot queue one request per second.
+		return m, tea.Batch(tick(), m.refreshStale())
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		if !m.loading() {
+			// Stop animating once the fetches land. A spinner that keeps
+			// ticking forces a redraw ten times a second for the rest of the
+			// session, on a machine that is usually already busy.
+			m.spinning = false
+			return m, nil
+		}
+		return m, cmd
 
 	case EventMsg:
 		m.ingest(msg.Event)
@@ -179,10 +282,97 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.Err
 		return m, nil
 
+	case policiesMsg:
+		m.policies.loading = false
+		m.policies.err = msg.err
+		m.policies.fetched = m.now()
+		if msg.err == nil {
+			m.policies.items = msg.items
+		}
+		m.clampCursor()
+		return m, nil
+
+	case profilesMsg:
+		m.profiles.loading = false
+		m.profiles.err = msg.err
+		m.profiles.fetched = m.now()
+		if msg.err == nil {
+			m.profiles.items = msg.items
+		}
+		m.clampCursor()
+		return m, nil
+
+	case surfacesMsg:
+		m.surfaces.loading = false
+		m.surfaces.err = msg.err
+		m.surfaces.fetched = m.now()
+		if msg.err == nil {
+			m.surfaces.items = msg.items
+		}
+		m.clampCursor()
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
+}
+
+// loading reports whether any cluster read is in flight.
+func (m *Model) loading() bool {
+	return m.policies.loading || m.profiles.loading || m.surfaces.loading
+}
+
+// refreshAll starts a read of every cluster resource, regardless of age. It is
+// what `r` does and what Init does.
+func (m *Model) refreshAll() tea.Cmd {
+	if m.cluster == nil {
+		return nil
+	}
+	m.policies.loading = true
+	m.profiles.loading = true
+	m.surfaces.loading = true
+	cmds := []tea.Cmd{
+		fetchPolicies(m.ctx, m.cluster),
+		fetchProfiles(m.ctx, m.cluster),
+		fetchSurfaces(m.ctx, m.cluster),
+	}
+	if !m.spinning {
+		m.spinning = true
+		cmds = append(cmds, m.spin.Tick)
+	}
+	return tea.Batch(cmds...)
+}
+
+// refreshStale reads only what has aged out. Every pane draws from the same
+// three lists, so the overview's counts and the policies table can never
+// disagree about what the cluster said.
+func (m *Model) refreshStale() tea.Cmd {
+	if m.cluster == nil {
+		return nil
+	}
+	now := m.now()
+	var cmds []tea.Cmd
+	if m.policies.stale(now, refreshEvery) {
+		m.policies.loading = true
+		cmds = append(cmds, fetchPolicies(m.ctx, m.cluster))
+	}
+	if m.profiles.stale(now, refreshEvery) {
+		m.profiles.loading = true
+		cmds = append(cmds, fetchProfiles(m.ctx, m.cluster))
+	}
+	if m.surfaces.stale(now, refreshEvery) {
+		m.surfaces.loading = true
+		cmds = append(cmds, fetchSurfaces(m.ctx, m.cluster))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	if !m.spinning {
+		m.spinning = true
+		cmds = append(cmds, m.spin.Tick)
+	}
+	return tea.Batch(cmds...)
 }
 
 // ingest folds one event into the model. Paused freezes the event list but not
@@ -258,86 +448,124 @@ func workloadKey(e export.Event) string {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// While typing a filter, most keys are text.
-	if m.typing {
-		switch msg.Type {
-		case tea.KeyEnter, tea.KeyEsc:
-			m.typing = false
-			if msg.Type == tea.KeyEsc {
-				m.filter = ""
-			}
-		case tea.KeyBackspace:
-			if n := len(m.filter); n > 0 {
-				m.filter = m.filter[:n-1]
-			}
-		case tea.KeyCtrlC:
+	// While the filter is focused nearly every key is text, so only the keys
+	// that end the filter are read here. Typing "q" into a filter must not
+	// quit the program.
+	if m.filtering {
+		switch {
+		case key.Matches(msg, m.keys.Quit) && msg.Type == tea.KeyCtrlC:
 			m.quitting = true
 			return m, tea.Quit
-		case tea.KeyRunes, tea.KeySpace:
-			m.filter += string(msg.Runes)
-			if msg.Type == tea.KeySpace {
-				m.filter += " "
-			}
+		case msg.Type == tea.KeyEnter:
+			m.filtering = false
+			m.input.Blur()
+		case msg.Type == tea.KeyEsc:
+			m.filtering = false
+			m.input.Blur()
+			m.input.SetValue("")
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			m.clampCursor()
+			return m, cmd
 		}
 		m.clampCursor()
 		return m, nil
 	}
 
-	switch msg.String() {
-	case "q", "ctrl+c":
+	switch {
+	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
 		return m, tea.Quit
-	case "tab", "l", "right":
+
+	case key.Matches(msg, m.keys.Jump):
+		if n := int(msg.String()[0] - '1'); n >= 0 && n < len(views) {
+			m.setView(views[n])
+		}
+
+	case key.Matches(msg, m.keys.Help):
+		if m.view == ViewHelp {
+			m.setView(m.prevView)
+		} else {
+			m.setView(ViewHelp)
+		}
+
+	case key.Matches(msg, m.keys.NextView):
 		m.cycle(1)
-	case "shift+tab", "h", "left":
+	case key.Matches(msg, m.keys.PrevView):
 		m.cycle(-1)
-	case "1":
-		m.setView(ViewEvents)
-	case "2":
-		m.setView(ViewWorkloads)
-	case "3":
-		m.setView(ViewCoverage)
-	case "?":
-		m.setView(ViewHelp)
-	case "j", "down":
-		m.moveCursor(1)
-	case "k", "up":
-		m.moveCursor(-1)
-	case "pgdown", "ctrl+f":
-		m.moveCursor(m.bodyHeight())
-	case "pgup", "ctrl+b":
-		m.moveCursor(-m.bodyHeight())
-	case "g", "home":
-		m.cursor = 0
-		m.offset = 0
-	case "G", "end":
-		m.cursor = m.rowCount() - 1
-		m.clampCursor()
-	case " ":
-		m.paused = !m.paused
-	case "/":
-		m.typing = true
-		m.filter = ""
-	case "esc":
+
+	case key.Matches(msg, m.keys.Down):
+		m.scroll(1)
+	case key.Matches(msg, m.keys.Up):
+		m.scroll(-1)
+	case key.Matches(msg, m.keys.PageDown):
+		m.scroll(m.bodyHeight())
+	case key.Matches(msg, m.keys.PageUp):
+		m.scroll(-m.bodyHeight())
+	case key.Matches(msg, m.keys.Top):
+		if m.focus == paneDetail {
+			m.detail.GotoTop()
+		} else {
+			m.setCursor(0)
+		}
+	case key.Matches(msg, m.keys.Bottom):
+		if m.focus == paneDetail {
+			m.detail.GotoBottom()
+		} else {
+			m.setCursor(m.rowCount() - 1)
+		}
+
+	case key.Matches(msg, m.keys.Enter):
+		if m.hasDetail() && m.rowCount() > 0 {
+			m.focus = paneDetail
+			m.detail.GotoTop()
+		}
+
+	case key.Matches(msg, m.keys.Back):
 		switch {
-		case m.filter != "":
-			m.filter = ""
-		case m.view == ViewDetail || m.view == ViewHelp:
+		case m.filterText() != "":
+			m.input.SetValue("")
+		case m.focus == paneDetail:
+			m.focus = paneList
+		case m.view == ViewHelp:
 			m.setView(m.prevView)
 		}
-	case "enter":
-		if m.view == ViewWorkloads {
-			if k, ok := m.workloadAt(m.cursor); ok {
-				m.selected = k
-				m.setView(ViewDetail)
-			}
-		}
-	case "c":
+
+	case key.Matches(msg, m.keys.Filter):
+		m.filtering = true
+		m.input.SetValue("")
+		m.focus = paneList
+		return m, m.input.Focus()
+
+	case key.Matches(msg, m.keys.Pause):
+		m.paused = !m.paused
+
+	case key.Matches(msg, m.keys.Clear):
 		m.events.reset()
+
+	case key.Matches(msg, m.keys.Refresh):
 		m.clampCursor()
+		return m, m.refreshAll()
 	}
+
 	m.clampCursor()
 	return m, nil
+}
+
+// scroll moves whichever pane has the focus. With the detail pane focused the
+// same keys scroll it, so a long allow-set can be read without a second set of
+// bindings to remember.
+func (m *Model) scroll(d int) {
+	if m.focus == paneDetail && m.hasDetail() {
+		if d > 0 {
+			m.detail.ScrollDown(d)
+		} else {
+			m.detail.ScrollUp(-d)
+		}
+		return
+	}
+	m.setCursor(m.cursor() + d)
 }
 
 func (m *Model) setView(v View) {
@@ -345,7 +573,8 @@ func (m *Model) setView(v View) {
 		m.prevView = m.view
 	}
 	m.view = v
-	m.cursor, m.offset = 0, 0
+	m.focus = paneList
+	m.clampCursor()
 }
 
 func (m *Model) cycle(d int) {
@@ -359,46 +588,52 @@ func (m *Model) cycle(d int) {
 	m.setView(next)
 }
 
-func (m *Model) moveCursor(d int) {
-	m.cursor += d
+func (m *Model) cursor() int { return m.cursors[m.view] }
+func (m *Model) offset() int { return m.offsets[m.view] }
+
+func (m *Model) setCursor(i int) {
+	m.cursors[m.view] = i
 	m.clampCursor()
 }
 
-// clampCursor keeps the cursor and the scroll window inside the data. Every
-// path that changes the row count or the window height goes through here,
-// because an off-by-one in a viewport is how a UI panics on a resize.
+// clampCursor keeps the cursor and the scroll window inside the data of the
+// current view. Every path that changes the row count or the window height
+// goes through here, because an off-by-one in a viewport is how a UI panics on
+// a resize.
 func (m *Model) clampCursor() {
 	n := m.rowCount()
+	cur, off := m.cursors[m.view], m.offsets[m.view]
 	if n == 0 {
-		m.cursor, m.offset = 0, 0
+		m.cursors[m.view], m.offsets[m.view] = 0, 0
 		return
 	}
-	if m.cursor >= n {
-		m.cursor = n - 1
+	if cur >= n {
+		cur = n - 1
 	}
-	if m.cursor < 0 {
-		m.cursor = 0
+	if cur < 0 {
+		cur = 0
 	}
-	h := m.bodyHeight()
+	h := m.listHeight()
 	if h < 1 {
 		h = 1
 	}
-	if m.cursor < m.offset {
-		m.offset = m.cursor
+	if cur < off {
+		off = cur
 	}
-	if m.cursor >= m.offset+h {
-		m.offset = m.cursor - h + 1
+	if cur >= off+h {
+		off = cur - h + 1
 	}
-	if m.offset > n-1 {
-		m.offset = n - 1
+	if off > n-1 {
+		off = n - 1
 	}
-	if m.offset < 0 {
-		m.offset = 0
+	if off < 0 {
+		off = 0
 	}
+	m.cursors[m.view], m.offsets[m.view] = cur, off
 }
 
 // bodyHeight is the rows available for content: the window minus the header
-// and the status line.
+// and the status bar.
 func (m *Model) bodyHeight() int {
 	h := m.height - chromeHeight
 	if h < 1 {
@@ -407,35 +642,62 @@ func (m *Model) bodyHeight() int {
 	return h
 }
 
-// chromeHeight is the header plus status line plus their separators.
-const chromeHeight = 4
+// chromeHeight is the header row plus the status row.
+const chromeHeight = 2
+
+// listHeight is the rows a table can actually fill: the body, minus its own
+// column header, minus the pane border when there is room for one.
+func (m *Model) listHeight() int {
+	h := m.bodyHeight() - 1 // the table's column header
+	if m.bordered() {
+		h -= 2 // the pane's top and bottom rule
+	}
+	if h < 1 {
+		return 1
+	}
+	return h
+}
 
 func (m *Model) rowCount() int {
 	switch m.view {
-	case ViewEvents:
-		return len(m.filteredEvents())
+	case ViewPolicies:
+		return len(m.filteredPolicies())
+	case ViewProfiles:
+		return len(m.filteredProfiles())
 	case ViewWorkloads:
 		return len(m.filteredWorkloads())
-	case ViewDetail:
-		if w := m.selectedWorkload(); w != nil {
-			return len(w.DeniedWhat)
-		}
-		return 0
+	case ViewEvents:
+		return len(m.filteredEvents())
+	case ViewSurface:
+		return len(m.filteredSurfaces())
+	case ViewCoverage:
+		return len(coverage.Table)
 	}
 	return 0
 }
+
+// hasDetail reports whether the current view has a detail pane to focus.
+func (m *Model) hasDetail() bool {
+	switch m.view {
+	case ViewPolicies, ViewProfiles, ViewWorkloads, ViewSurface, ViewCoverage:
+		return true
+	}
+	return false
+}
+
+func (m *Model) filterText() string { return m.input.Value() }
 
 // filteredEvents returns the events matching the filter, oldest first.
 //
 // Callers that only draw a window should use filteredWindow: this copies the
 // whole ring, and a redraw happens per event, so on a busy node it is the
-// dominant cost in the UI.
+// dominant cost in the console.
 func (m *Model) filteredEvents() []export.Event {
 	all := m.events.slice()
-	if m.filter == "" {
+	needle := strings.ToLower(m.filterText())
+	if needle == "" {
 		return all
 	}
-	needle := strings.ToLower(m.filter)
 	out := all[:0:0]
 	for _, e := range all {
 		if strings.Contains(strings.ToLower(eventHaystack(e)), needle) {
@@ -451,7 +713,7 @@ func (m *Model) filteredEvents() []export.Event {
 // of it: at the default capacity a full copy was 413KB and 330us per frame,
 // once per event, which is a lot of work to render twenty lines.
 func (m *Model) filteredWindow(n int) []export.Event {
-	if m.filter == "" {
+	if m.filterText() == "" {
 		return m.events.last(n)
 	}
 	all := m.filteredEvents()
@@ -463,30 +725,65 @@ func (m *Model) filteredWindow(n int) []export.Event {
 
 func (m *Model) filteredWorkloads() []*Workload {
 	out := make([]*Workload, 0, len(m.order))
-	needle := strings.ToLower(m.filter)
+	needle := strings.ToLower(m.filterText())
 	for _, k := range m.order {
-		w := m.workloads[k]
 		if needle != "" && !strings.Contains(strings.ToLower(k), needle) {
 			continue
 		}
-		out = append(out, w)
+		out = append(out, m.workloads[k])
 	}
 	return out
 }
 
-func (m *Model) workloadAt(i int) (string, bool) {
-	ws := m.filteredWorkloads()
-	if i < 0 || i >= len(ws) {
-		return "", false
+func (m *Model) filteredPolicies() []Policy {
+	needle := strings.ToLower(m.filterText())
+	if needle == "" {
+		return m.policies.items
 	}
-	return ws[i].Key, true
+	out := make([]Policy, 0, len(m.policies.items))
+	for _, p := range m.policies.items {
+		if strings.Contains(policyHaystack(p), needle) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
-func (m *Model) selectedWorkload() *Workload { return m.workloads[m.selected] }
+func (m *Model) filteredProfiles() []Profile {
+	needle := strings.ToLower(m.filterText())
+	if needle == "" {
+		return m.profiles.items
+	}
+	out := make([]Profile, 0, len(m.profiles.items))
+	for _, p := range m.profiles.items {
+		if strings.Contains(profileHaystack(p), needle) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (m *Model) filteredSurfaces() []AttackSurface {
+	needle := strings.ToLower(m.filterText())
+	if needle == "" {
+		return m.surfaces.items
+	}
+	out := make([]AttackSurface, 0, len(m.surfaces.items))
+	for _, a := range m.surfaces.items {
+		if strings.Contains(surfaceHaystack(a), needle) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// Elapsed reports how long the console has been running, measured from the
+// injected clock so a test is not timing-dependent.
+func (m *Model) Elapsed(now time.Time) time.Duration { return now.Sub(m.started) }
 
 // Stream wires a Source into the Bubble Tea program. It owns the goroutine so
 // a caller cannot leak one, and it reports the end of the stream as a message
-// rather than silently stopping, because a UI that stops updating without
+// rather than silently stopping, because a console that stops updating without
 // saying why is indistinguishable from a hung one.
 func Stream(ctx context.Context, src Source, send func(tea.Msg)) {
 	ch := make(chan export.Event, 256)

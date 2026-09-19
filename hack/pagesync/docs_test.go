@@ -186,26 +186,40 @@ func TestTheCommandListHereIsComplete(t *testing.T) {
 	}
 	src := string(b)
 
-	start := strings.Index(src, "cmd.AddCommand(")
+	// Scan the whole of NewRootCommand rather than the AddCommand argument
+	// list. A command built into a variable first - which is what happened
+	// when `ui` grew an Offline wrapper and a reference elsewhere in the
+	// function - is still a registered command, and counting only the
+	// argument list reported it missing.
+	start := strings.Index(src, "func NewRootCommand()")
 	if start < 0 {
-		t.Fatal("cmd/pahlevan/main.go no longer calls cmd.AddCommand; this test cannot see the command list")
+		t.Fatal("cmd/pahlevan/main.go no longer defines NewRootCommand; this test cannot see the command list")
 	}
-	end := strings.Index(src[start:], "\n\treturn cmd")
+	end := strings.Index(src[start:], "\n}\n")
 	if end < 0 {
-		t.Fatal("cannot find the end of the AddCommand block in cmd/pahlevan/main.go")
+		t.Fatal("cannot find the end of NewRootCommand in cmd/pahlevan/main.go")
 	}
 	block := src[start : start+end]
 
-	registered := regexp.MustCompile(`commands\.New\w+Command\(`).FindAllString(block, -1)
+	// Deduplicated: a constructor mentioned twice (assigned, then referenced)
+	// is still one command.
+	seen := map[string]bool{}
+	var registered []string
+	for _, m := range regexp.MustCompile(`commands\.New\w+Command\(`).FindAllString(block, -1) {
+		if !seen[m] {
+			seen[m] = true
+			registered = append(registered, m)
+		}
+	}
 	if len(registered) == 0 {
-		t.Fatal("no command constructors found in the AddCommand block; the shape changed and this test is proving nothing")
+		t.Fatal("no command constructors found in NewRootCommand; the shape changed and this test is proving nothing")
 	}
 
 	if got, want := len(rootForDocs().Commands()), len(registered); got != want {
 		t.Errorf("cmd/pahlevan/main.go registers %d commands but rootForDocs builds %d (line %d).\n"+
 			"Add the new constructor to rootForDocs, or TestEverySubcommandIsDocumented will "+
 			"never notice the command is undocumented.",
-			want, got, lineOf(src, "cmd.AddCommand("))
+			want, got, lineOf(src, "func NewRootCommand()"))
 	}
 }
 

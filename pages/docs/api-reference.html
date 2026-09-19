@@ -264,6 +264,12 @@ every one in a given policy.</p>
 <td style="text-align:center"></td>
 <td><strong>Inert</strong> - stored and displayed; nothing acts on it. LifecycleAware enables lifecycle-based learning transitions</td>
 </tr>
+<tr>
+<td><code>expectedBehavior</code></td>
+<td><code>*ExpectedBehavior</code></td>
+<td style="text-align:center"></td>
+<td>ExpectedBehavior declares operations the operator knows the workload performs but which may not happen during the learning window. Learning is a window of wall-clock time, so anything the workload does once a day is simply absent from the baseline: a nightly batch, a weekly certificate renewal, a log rotation, a backup that opens a path nothing else opens. Under Blocking the kernel then refuses it, and from the kernel's side that refusal is correct - the only evidence against the operation is that the workload has never done it before, which is exactly what an attacker produces too. Without this field the operator's only options are to guess a longer duration, or to let self-healing roll enforcement back after the job has already been denied at 03:00. Declarations are additive. Every entry is merged into the allow-set alongside what was learned, none can remove a learned entry, and an entry that cannot be represented exactly is refused with a warning naming the field rather than widened into something broader.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="enforcementconfig">EnforcementConfig</h2>
@@ -1006,6 +1012,9 @@ every one in a given policy.</p>
 <p>Reachable from the types above; listed so a new one cannot go
 undocumented by omission.</p>
 <ul>
+<li><code>ExpectedBehavior</code></li>
+<li><code>ExpectedDestination</code></li>
+<li><code>ExpectedFile</code></li>
 <li><code>LabelSelector</code></li>
 <li><code>LabelSelectorRequirement</code></li>
 <li><code>LogOutput</code></li>

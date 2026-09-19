@@ -103,14 +103,21 @@ const highRiskThreshold = 60
 // NewAttackSurfaceCommand creates the attack surface command
 func NewAttackSurfaceCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "attack-surface",
-		Short: "Analyze attack surface",
+		Use: "attack-surface",
+		// "Analyze attack surface" said nothing the command name did not.
+		// In a grouped list the Short is the only sentence a reader gets.
+		Short: "Rank workloads by the attack surface the operator computed",
 		Long: `Inspect the attack surface Pahlevan computed for your workloads.
 
 The operator publishes one AttackSurface resource per analyzed workload,
 recording the syscalls, ports, writable paths and capabilities that remain
 reachable, together with a risk score. These commands read those resources
 (and the ContainerProfile baselines that back them) and present them.`,
+		Example: `  # Rank every analyzed workload by risk
+  pahlevan attack-surface analyze --all-namespaces
+
+  # A report to attach to a review
+  pahlevan attack-surface report -A -o markdown --file surface.md`,
 	}
 
 	cmd.AddCommand(
@@ -690,11 +697,6 @@ func orNone(s string) string {
 		return "<none>"
 	}
 	return s
-}
-
-// errClientsNotReady is the shared message for commands that need a cluster.
-func errClientsNotReady() error {
-	return fmt.Errorf("kubernetes clients are not initialized; check your kubeconfig and cluster connectivity")
 }
 
 // --- report ---------------------------------------------------------------

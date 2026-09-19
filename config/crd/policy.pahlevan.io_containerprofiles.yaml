@@ -372,6 +372,37 @@ spec:
               node agent. It is what the kernel enforces once the container is enforcing -
               a first-class, inspectable, git-backupable record.
             properties:
+              declaredCapabilities:
+                description: |-
+                  DeclaredCapabilities are the capabilities permitted by declaration rather
+                  than by observation, spelled without the CAP_ prefix like
+                  LearnedCapabilities.
+                items:
+                  type: string
+                type: array
+              declaredExecutables:
+                description: |-
+                  DeclaredExecutables are the binary paths permitted by declaration rather
+                  than by observation.
+                items:
+                  type: string
+                type: array
+              declaredFiles:
+                description: |-
+                  DeclaredFiles are the paths permitted because the policy declared them
+                  rather than because this container was observed opening them. A declared
+                  write is suffixed " (write)": declaring a write is a materially larger
+                  assertion than declaring a read, and the two must not read alike here.
+                items:
+                  type: string
+                type: array
+              declaredNetworkDestinations:
+                description: |-
+                  DeclaredNetworkDestinations are the ip:port destinations permitted by
+                  declaration rather than by observation.
+                items:
+                  type: string
+                type: array
               denialCount:
                 description: |-
                   DenialCount is the number of in-kernel denials observed since the current

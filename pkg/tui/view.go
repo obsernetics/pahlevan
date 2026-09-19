@@ -5,245 +5,115 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/obsernetics/pahlevan/pkg/coverage"
 	"github.com/obsernetics/pahlevan/pkg/export"
 )
 
-// Styles. Colours are ANSI-256 with sensible fallbacks rather than truecolour
-// hex, because a lot of the terminals this runs in are somebody's ssh session
-// into a jump host, and lipgloss degrades these correctly on a 16-colour term.
-var (
-	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81"))
-	styleTabOn    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("24")).Padding(0, 1)
-	styleTabOff   = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1)
-	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	styleDeny     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
-	styleAllow    = lipgloss.NewStyle().Foreground(lipgloss.Color("114"))
-	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("231")).Background(lipgloss.Color("238"))
-	styleKey      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("222"))
-	styleWarn     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	styleErr      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("203"))
-)
-
-// View renders the current frame.
+// View renders the current frame: one header row, a body, one status row,
+// clamped to exactly the terminal's size.
 func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString(m.header())
-	b.WriteByte('\n')
-	b.WriteString(m.body())
-	b.WriteByte('\n')
-	b.WriteString(m.status())
-	return b.String()
+	w, h := max(1, m.width), max(1, m.height)
+
+	parts := []string{fit(m.headerRow(w), w, 1)}
+	if h >= 3 {
+		parts = append(parts, m.bodyBlock(w, h-2))
+	}
+	if h >= 2 {
+		parts = append(parts, fit(m.statusRow(w), w, 1))
+	}
+	return fit(strings.Join(parts, "\n"), w, h)
 }
 
-func (m *Model) header() string {
-	tabs := make([]string, 0, len(views))
+// headerRow draws the product name and the tabs.
+//
+// It steps down through three labellings rather than letting the tabs run off
+// the edge: a tab strip that is cut short at a narrow width hides the views
+// that exist, and "which screens are there" is the one thing a header has to
+// answer.
+func (m *Model) headerRow(w int) string {
+	name := styleHeader.Render("pahlevan")
+	for _, level := range []int{0, 1, 2} {
+		tabs := m.tabs(level)
+		line := name + " " + tabs
+		if lipgloss.Width(line) <= w {
+			return line
+		}
+		if level == 2 {
+			// Even the shortest labelling does not fit, so drop the product
+			// name before dropping the tabs.
+			return tabs
+		}
+	}
+	return name
+}
+
+func (m *Model) tabs(level int) string {
+	out := make([]string, 0, len(views)+1)
 	for i, v := range views {
-		label := fmt.Sprintf("%d %s", i+1, v)
-		if v == ViewHelp {
-			label = "? help"
-		}
-		if v == m.view || (m.view == ViewDetail && v == ViewWorkloads) {
-			tabs = append(tabs, styleTabOn.Render(label))
-		} else {
-			tabs = append(tabs, styleTabOff.Render(label))
-		}
-	}
-	left := styleHeader.Render("pahlevan") + "  " + strings.Join(tabs, " ")
-	return left + "\n" + styleDim.Render(strings.Repeat("─", max(1, m.width)))
-}
-
-func (m *Model) body() string {
-	switch m.view {
-	case ViewEvents:
-		return m.eventsView()
-	case ViewWorkloads:
-		return m.workloadsView()
-	case ViewDetail:
-		return m.detailView()
-	case ViewCoverage:
-		return m.coverageView()
-	case ViewHelp:
-		return m.helpView()
-	}
-	return ""
-}
-
-func (m *Model) eventsView() string {
-	h := m.bodyHeight()
-	// Following the tail is the common case and needs only the last h events,
-	// so it avoids copying the whole ring on every redraw. Scrolled or paused,
-	// the offset can point anywhere and the full slice is needed.
-	if !m.paused && m.cursor == 0 {
-		evs := m.filteredWindow(h)
-		if len(evs) == 0 {
-			return m.emptyBody("no events yet")
-		}
-		lines := make([]string, 0, len(evs))
-		for _, e := range evs {
-			lines = append(lines, m.eventLine(e, false))
-		}
-		return padTo(strings.Join(lines, "\n"), h)
-	}
-
-	evs := m.filteredEvents()
-	if len(evs) == 0 {
-		return m.emptyBody("no events yet")
-	}
-	start := m.offset
-	if start < 0 {
-		start = 0
-	}
-	end := min(len(evs), start+h)
-
-	lines := make([]string, 0, h)
-	for i := start; i < end; i++ {
-		lines = append(lines, m.eventLine(evs[i], i == m.cursor && (m.paused || m.cursor > 0)))
-	}
-	return padTo(strings.Join(lines, "\n"), h)
-}
-
-func (m *Model) eventLine(e export.Event, selected bool) string {
-	ts := e.Timestamp.Time().Format("15:04:05")
-	verdict := styleAllow.Render("allow")
-	if e.Denied() {
-		verdict = styleDeny.Render("DENY ")
-	}
-	who := e.Process.Comm
-	if who == "" {
-		who = "?"
-	}
-	line := fmt.Sprintf("%s %s %-9s %-14s %s",
-		styleDim.Render(ts), verdict, e.Type, truncate(who, 14), describeEvent(e))
-	line = truncate(line, m.width)
-	if selected {
-		return styleSelected.Render(padRight(line, m.width))
-	}
-	return line
-}
-
-func (m *Model) workloadsView() string {
-	ws := m.filteredWorkloads()
-	h := m.bodyHeight()
-	if len(ws) == 0 {
-		return m.emptyBody("no workloads seen yet")
-	}
-	head := fmt.Sprintf("%-38s %7s %7s %6s %6s %8s %8s",
-		"WORKLOAD", "FILE", "NET", "EXEC", "CAP", "SYSCALL", "DENIED")
-	lines := []string{styleDim.Render(truncate(head, m.width))}
-	end := min(len(ws), m.offset+h-1)
-	for i := m.offset; i < end; i++ {
-		w := ws[i]
-		denied := fmt.Sprintf("%8d", w.Denials)
-		if w.Denials > 0 {
-			denied = styleDeny.Render(denied)
-		}
-		row := fmt.Sprintf("%-38s %7d %7d %6d %6d %8d %s",
-			truncate(w.Key, 38), w.Files, w.Network, w.Execs, w.Caps, w.Syscalls, denied)
-		row = truncate(row, m.width)
-		if i == m.cursor {
-			row = styleSelected.Render(padRight(row, m.width))
-		}
-		lines = append(lines, row)
-	}
-	return padTo(strings.Join(lines, "\n"), h)
-}
-
-func (m *Model) detailView() string {
-	w := m.selectedWorkload()
-	h := m.bodyHeight()
-	if w == nil {
-		return m.emptyBody("no workload selected")
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", styleHeader.Render(w.Key))
-	if w.Node != "" {
-		fmt.Fprintf(&b, "%s\n", styleDim.Render("node "+w.Node))
-	}
-	b.WriteByte('\n')
-
-	// The comparison the project is about: what the workload did, and what was
-	// refused. Both drawn from the same stream, so they cannot disagree.
-	fmt.Fprintf(&b, "%s\n", styleDim.Render("OBSERVED"))
-	fmt.Fprintf(&b, "  files %d   network %d   execs %d   capabilities %d   syscalls %d\n",
-		w.Files, w.Network, w.Execs, w.Caps, w.Syscalls)
-	b.WriteByte('\n')
-	if w.Denials == 0 {
-		fmt.Fprintf(&b, "%s\n  %s\n", styleDim.Render("REFUSED"),
-			styleAllow.Render("nothing refused; every operation was in the learned set"))
-	} else {
-		fmt.Fprintf(&b, "%s  %s\n", styleDim.Render("REFUSED"),
-			styleDeny.Render(fmt.Sprintf("%d", w.Denials)))
-		for i, d := range w.DeniedWhat {
-			line := "  " + truncate(d, max(1, m.width-2))
-			if i == m.cursor {
-				line = styleSelected.Render(padRight(line, m.width))
+		var label string
+		switch level {
+		case 0:
+			label = fmt.Sprintf("%d %s", i+1, v)
+		case 1:
+			if v == m.view {
+				label = fmt.Sprintf("%d %s", i+1, v)
+			} else {
+				label = fmt.Sprintf("%d", i+1)
 			}
-			b.WriteString(line + "\n")
+		default:
+			if v != m.view {
+				continue
+			}
+			label = fmt.Sprintf("%d/%d %s", i+1, len(views), v)
 		}
-		if w.Denials > len(w.DeniedWhat) {
-			fmt.Fprintf(&b, "  %s\n", styleDim.Render(fmt.Sprintf(
-				"and %d earlier denials not shown", w.Denials-len(w.DeniedWhat))))
+		if v == m.view {
+			out = append(out, styleTabOn.Render(label))
+		} else {
+			out = append(out, styleTabOff.Render(label))
 		}
 	}
-	return padTo(strings.TrimRight(b.String(), "\n"), h)
-}
-
-func (m *Model) coverageView() string {
-	h := m.bodyHeight()
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", styleDim.Render(fmt.Sprintf("%-34s %-9s %s", "PROGRAM", "NEEDS LSM", "ATT&CK")))
-	for _, e := range coverage.Table {
-		needs := styleAllow.Render("no ")
-		if e.NeedsLSM {
-			needs = styleWarn.Render("yes")
+	if level == 0 {
+		hint := "? help"
+		if m.view == ViewHelp {
+			out = append(out, styleTabOn.Render(hint))
+		} else {
+			out = append(out, styleTabOff.Render(hint))
 		}
-		ids := make([]string, 0, len(e.Techniques))
-		for _, t := range e.Techniques {
-			ids = append(ids, t.ID)
-		}
-		fmt.Fprintf(&b, "%-34s %-9s %s\n", truncate(e.Hook, 34), needs, strings.Join(ids, " "))
 	}
-	b.WriteByte('\n')
-	b.WriteString(styleDim.Render(
-		"programs needing the BPF LSM require lsm=bpf on the kernel command line"))
-	return padTo(b.String(), h)
+	return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
-func (m *Model) helpView() string {
-	rows := [][2]string{
-		{"tab / shift-tab", "next / previous view"},
-		{"1 2 3 ?", "events, workloads, coverage, help"},
-		{"j k / arrows", "move the cursor"},
-		{"pgup pgdn", "page"},
-		{"g G", "first / last row"},
-		{"enter", "open the selected workload"},
-		{"space", "pause the event list (counters keep running)"},
-		{"/", "filter; enter accepts, esc clears"},
-		{"c", "clear the retained events"},
-		{"esc", "clear the filter, or leave detail and help"},
-		{"q ctrl-c", "quit"},
+func (m *Model) bodyBlock(w, h int) string {
+	var body string
+	switch m.view {
+	case ViewOverview:
+		body = m.overviewBody(w, h)
+	case ViewPolicies:
+		body = m.policiesBody(w, h)
+	case ViewProfiles:
+		body = m.profilesBody(w, h)
+	case ViewWorkloads:
+		body = m.workloadsBody(w, h)
+	case ViewEvents:
+		body = m.eventsBody(w, h)
+	case ViewSurface:
+		body = m.surfaceBody(w, h)
+	case ViewCoverage:
+		body = m.coverageBody(w, h)
+	case ViewHelp:
+		body = m.helpBody(w, h)
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", styleHeader.Render("keys"))
-	for _, r := range rows {
-		fmt.Fprintf(&b, "  %s  %s\n", styleKey.Render(padRight(r[0], 16)), r[1])
-	}
-	fmt.Fprintf(&b, "\n%s\n", styleDim.Render(
-		"this view is a reader; it never changes a policy or a mode"))
-	return padTo(b.String(), m.bodyHeight())
+	return fit(body, w, h)
 }
 
-func (m *Model) emptyBody(msg string) string {
-	return padTo(styleDim.Render("  "+msg), m.bodyHeight())
-}
-
-func (m *Model) status() string {
-	parts := []string{}
+// statusRow is the bottom line: what the session has seen on the left, the
+// generated key hints on the right when there is room for them.
+func (m *Model) statusRow(w int) string {
+	parts := make([]string, 0, 8)
 	if m.paused {
 		parts = append(parts, styleWarn.Render("PAUSED"))
 	}
@@ -254,29 +124,133 @@ func (m *Model) status() string {
 	if d := m.events.dropped; d > 0 {
 		parts = append(parts, styleDim.Render(fmt.Sprintf("%d rolled off", d)))
 	}
-	if m.filter != "" || m.typing {
-		f := "/" + m.filter
-		if m.typing {
-			f += "▏"
-		}
-		parts = append(parts, styleKey.Render(f))
+	if m.filtering {
+		parts = append(parts, m.input.View())
+	} else if f := m.filterText(); f != "" {
+		parts = append(parts, styleKey.Render("/"+f))
+	}
+	if m.loading() {
+		parts = append(parts, m.spin.View()+styleDim.Render(" reading cluster"))
 	}
 	if m.sourceName != "" {
 		parts = append(parts, styleDim.Render(m.sourceName))
 	}
+	parts = append(parts, styleDim.Render(m.Elapsed(m.now()).Round(time.Second).String()))
 	switch {
 	case m.err != nil:
 		parts = append(parts, styleErr.Render("error: "+truncate(m.err.Error(), 60)))
 	case m.ended:
 		parts = append(parts, styleWarn.Render("stream ended"))
 	}
-	line := strings.Join(parts, styleDim.Render(" · "))
-	return styleDim.Render(strings.Repeat("─", max(1, m.width))) + "\n" + truncate(line, m.width)
+
+	left := strings.Join(parts, styleDim.Render(" · "))
+	right := m.help.ShortHelpView(m.keys.ShortHelp())
+	if gap := w - lipgloss.Width(left) - lipgloss.Width(right); gap >= 2 {
+		return left + strings.Repeat(" ", gap) + right
+	}
+	return truncate(left, w)
+}
+
+// tableBlock renders one window of rows through the shared table widget.
+//
+// Only the visible rows are built. Handing the table every row instead would
+// allocate one []string per event per frame, and the frame is rebuilt on every
+// arriving event - on a busy node that is the whole ring, sixty times a
+// second, to draw twenty lines.
+func (m *Model) tableBlock(specs []colSpec, rowsFn func(start, end int) []table.Row, empty string, w, h int) string {
+	if w < 1 || h < 1 {
+		return ""
+	}
+	// The rows go before the columns, every time. The widget is shared across
+	// views, and it re-renders its rows against the current columns the moment
+	// either is set: leaving a ten-column profile row in place while setting
+	// the seven columns of another view indexes off the end of the column
+	// slice and takes the program down.
+	m.tbl.SetRows(nil)
+	m.tbl.SetColumns(fitColumns(w, specs))
+	m.tbl.SetWidth(w)
+	m.tbl.SetHeight(h)
+
+	rowsH := max(0, h-1)
+	total := m.rowCount()
+	start := min(m.offset(), max(0, total-1))
+	end := min(total, start+rowsH)
+	if total == 0 || end <= start {
+		m.tbl.SetRows(nil)
+		head := m.tbl.View()
+		if i := strings.IndexByte(head, '\n'); i >= 0 {
+			head = head[:i]
+		}
+		return fit(head+"\n"+styleDim.Render("  "+empty), w, h)
+	}
+
+	m.tbl.SetRows(rowsFn(start, end))
+	m.tbl.SetCursor(m.cursor() - start)
+	return fit(m.tbl.View(), w, h)
+}
+
+// detailBlock renders scrollable detail through the viewport widget.
+//
+// The content is set here, at render time, rather than in Update: it depends
+// on the pane's width, and the width is not known until the layout has decided
+// how to split the body. SetContent re-clamps the scroll offset itself, so a
+// pane that shrinks under a scrolled viewport cannot scroll past its end.
+func (m *Model) detailBlock(content string, w, h int) string {
+	if w < 1 || h < 1 {
+		return ""
+	}
+	m.detail.Width, m.detail.Height = w, h
+	m.detail.SetContent(content)
+	return fit(m.detail.View(), w, h)
+}
+
+// splitBody lays out a list and its detail pane.
+//
+// Wide enough, they sit side by side and the detail follows the cursor. Narrow,
+// enter swaps the body to the detail alone: a 30-column detail pane beside a
+// 30-column table is two unreadable things instead of one readable one.
+func (m *Model) splitBody(listTitle string, specs []colSpec, rowsFn func(start, end int) []table.Row, empty string,
+	detailTitle string, detailFn func(w int) string, w, h int,
+) string {
+	if !m.split() {
+		if m.focus == paneDetail {
+			dw, dh := m.boxInner(w, h)
+			return m.box(detailTitle, m.detailBlock(detailFn(dw), dw, dh), w, h, true)
+		}
+		lw, lh := m.boxInner(w, h)
+		return m.box(listTitle, m.tableBlock(specs, rowsFn, empty, lw, lh), w, h, true)
+	}
+
+	dw := m.detailWidth()
+	lw := w - dw
+	liw, lih := m.boxInner(lw, h)
+	diw, dih := m.boxInner(dw, h)
+	list := m.box(listTitle, m.tableBlock(specs, rowsFn, empty, liw, lih), lw, h, m.focus == paneList)
+	detail := m.box(detailTitle, m.detailBlock(detailFn(diw), diw, dih), dw, h, m.focus == paneDetail)
+	return lipgloss.JoinHorizontal(lipgloss.Top, list, detail)
+}
+
+// box draws a pane with a border when the terminal has room for one, and the
+// bare content when it does not. The decision is the model's rather than the
+// pane's so that the cursor arithmetic and the drawing agree about how many
+// rows a list actually has.
+func (m *Model) box(title, content string, w, h int, focused bool) string {
+	if !m.bordered() {
+		return fit(content, w, h)
+	}
+	return box(title, content, w, h, focused)
+}
+
+func (m *Model) boxInner(w, h int) (int, int) {
+	if m.bordered() && w >= 8 && h >= 3 {
+		return w - 4, h - 2
+	}
+	return w, h
 }
 
 // describeEvent renders the interesting part of an event in one line. It is
-// shared by the event list and the denial list, so the same operation reads
-// the same way in both.
+// shared by the event list and the per-workload denial list, so the same
+// operation reads the same way in both.
 func describeEvent(e export.Event) string {
 	switch {
 	case e.File != nil:
@@ -328,61 +302,3 @@ func eventHaystack(e export.Event) string {
 	}
 	return b.String()
 }
-
-// Rendering helpers. truncate counts runes rather than bytes: a path with
-// non-ASCII in it should not cut a character in half, and a terminal measures
-// columns, not bytes.
-func truncate(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	// Styled strings carry escape sequences that are not visible width.
-	if lipgloss.Width(s) <= n {
-		return s
-	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n == 1 {
-		return "…"
-	}
-	return string(r[:n-1]) + "…"
-}
-
-func padRight(s string, n int) string {
-	if w := lipgloss.Width(s); w < n {
-		return s + strings.Repeat(" ", n-w)
-	}
-	return s
-}
-
-// padTo makes a block exactly n lines, so the status line does not wander up
-// and down the screen as content changes height.
-func padTo(s string, n int) string {
-	lines := strings.Split(s, "\n")
-	if len(lines) > n {
-		lines = lines[:n]
-	}
-	for len(lines) < n {
-		lines = append(lines, "")
-	}
-	return strings.Join(lines, "\n")
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// Elapsed is exported for the status line in tests.
-func (m *Model) Elapsed(now time.Time) time.Duration { return now.Sub(m.started) }

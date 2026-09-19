@@ -74,6 +74,42 @@ type ContainerProfileStatus struct {
 	// revision asking for privilege the workload has never needed.
 	LearnedCapabilities []string `json:"learnedCapabilities,omitempty"`
 
+	// The declared* lists below mirror the learned* lists above for the entries
+	// that are in this container's allow-set because the governing policy's
+	// spec.learningConfig.expectedBehavior declared them, not because this
+	// container was observed doing them.
+	//
+	// They are separate fields rather than extra entries in the learned lists
+	// because the two are different claims. "The workload opened this path" is
+	// an observation; "somebody said it would" is an assertion, and an operator
+	// auditing a profile - or an incident responder asking how a path came to
+	// be permitted - has to be able to tell which one they are looking at. A
+	// declaration folded into learnedFiles would be indistinguishable from
+	// evidence, which is the one thing a learned baseline is for.
+	//
+	// internal/policy.Declaration.ReportInto writes all four, so the entries
+	// the agent reports and the entries it seeds into the kernel come from one
+	// place and cannot disagree.
+
+	// DeclaredFiles are the paths permitted because the policy declared them
+	// rather than because this container was observed opening them. A declared
+	// write is suffixed " (write)": declaring a write is a materially larger
+	// assertion than declaring a read, and the two must not read alike here.
+	DeclaredFiles []string `json:"declaredFiles,omitempty"`
+
+	// DeclaredNetworkDestinations are the ip:port destinations permitted by
+	// declaration rather than by observation.
+	DeclaredNetworkDestinations []string `json:"declaredNetworkDestinations,omitempty"`
+
+	// DeclaredExecutables are the binary paths permitted by declaration rather
+	// than by observation.
+	DeclaredExecutables []string `json:"declaredExecutables,omitempty"`
+
+	// DeclaredCapabilities are the capabilities permitted by declaration rather
+	// than by observation, spelled without the CAP_ prefix like
+	// LearnedCapabilities.
+	DeclaredCapabilities []string `json:"declaredCapabilities,omitempty"`
+
 	// Counts for quick inspection / printcolumns.
 	SyscallCount int32 `json:"syscallCount,omitempty"`
 	FileCount    int32 `json:"fileCount,omitempty"`

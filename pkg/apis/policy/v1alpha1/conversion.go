@@ -59,12 +59,54 @@ var IntentionallyDropped = map[string]string{
 
 // IntentionallyAdded names every v1beta1 field with no v1alpha1 counterpart.
 //
-// It is empty, and a test keeps it that way unless somebody writes down a
-// reason. A graduation is not the place to introduce a field nothing sets:
-// docs/api-reference.md already has to carry a list of fields the API accepts
-// and nothing acts on, and the way that list stays short is by refusing to add
-// to it here.
-var IntentionallyAdded = map[string]string{}
+// A test keeps it short unless somebody writes down a reason. A graduation is
+// not the place to introduce a field nothing sets: docs/api-reference.md
+// already has to carry a list of fields the API accepts and nothing acts on,
+// and the way that list stays short is by refusing to add to it here.
+//
+// An entry covers the field and everything underneath it, the way
+// IntentionallyDropped does, so declaring a block once does not mean listing
+// every leaf inside it.
+//
+// Every entry below is one-way lossy and has to be, because v1alpha1 has
+// nowhere to put it: a v1beta1 object read as v1alpha1 loses these fields, and
+// a client that reads v1alpha1 and writes it back erases them from the stored
+// object. That is the price of the field existing in one version only. It is
+// bounded by v1beta1 being the storage version and v1alpha1 being deprecated,
+// and it is why docs/policy-reference.md tells operators to write declarations
+// against v1beta1.
+var IntentionallyAdded = map[string]string{
+	"spec.learningConfig.expectedBehavior": "" +
+		"declared expected behavior, and the only field in the graduation that " +
+		"is an addition rather than a correction. Learning is a window of " +
+		"wall-clock time, so an operation the workload performs once a day - a " +
+		"nightly batch, a weekly certificate renewal, a log rotation - is " +
+		"absent from the learned baseline and is refused under Blocking. From " +
+		"the kernel's side it is indistinguishable from an attack: the only " +
+		"evidence against it is that the workload has never done it before. " +
+		"v1alpha1 had no way to state the difference in advance, and the " +
+		"mitigations were guessing a longer duration or letting self-healing " +
+		"roll enforcement back after the job had already been denied.",
+
+	"status.declaredFiles": "" +
+		"the file paths permitted because a policy declared them rather than " +
+		"because this container was observed opening them. Folding them into " +
+		"learnedFiles would make an assertion indistinguishable from evidence, " +
+		"which is the one thing a learned baseline is for.",
+	"status.declaredNetworkDestinations": "" +
+		"the egress destinations permitted by declaration rather than by " +
+		"observation. Kept out of learnedNetworkDestinations so an incident " +
+		"responder asking how a destination came to be permitted gets an answer.",
+	"status.declaredExecutables": "" +
+		"the binaries permitted by declaration rather than by observation. " +
+		"Kept out of learnedExecutables for the same reason: a declared exec is " +
+		"the highest-value entry in a profile to be able to audit.",
+	"status.declaredCapabilities": "" +
+		"the capabilities permitted by declaration rather than by observation. " +
+		"Kept out of learnedCapabilities so admission comparing a pod's " +
+		"requested privilege against what the workload has actually needed is " +
+		"not comparing it against what somebody asserted it would need.",
+}
 
 // ---------------------------------------------------------------------------
 // PahlevanPolicy
@@ -218,6 +260,9 @@ func fromBetaRequirements(in []v1beta1.LabelSelectorRequirement) []LabelSelector
 // Learning and enforcement
 // ---------------------------------------------------------------------------
 
+// toBetaLearningConfig leaves ExpectedBehavior nil: v1alpha1 has no way to
+// declare behavior, so there is nothing to carry up. An operator who wants
+// declarations writes the policy as v1beta1.
 func toBetaLearningConfig(in LearningConfig) v1beta1.LearningConfig {
 	return v1beta1.LearningConfig{
 		Duration:       copyDuration(in.Duration),
@@ -228,6 +273,11 @@ func toBetaLearningConfig(in LearningConfig) v1beta1.LearningConfig {
 	}
 }
 
+// fromBetaLearningConfig drops ExpectedBehavior, which is the one place in the
+// spec conversion where reading a stored object as v1alpha1 loses something a
+// user wrote. There is no v1alpha1 field that means it and no honest place to
+// put it, so it is listed in IntentionallyAdded rather than approximated into
+// an exception, which would be a permanent hole where a declaration was meant.
 func fromBetaLearningConfig(in v1beta1.LearningConfig) LearningConfig {
 	return LearningConfig{
 		Duration:       copyDuration(in.Duration),
@@ -927,6 +977,10 @@ func (dst *ContainerProfile) ConvertFrom(srcRaw conversion.Hub) error {
 		Node:        src.Spec.Node,
 	}
 	s := src.Status
+	// The declared* lists are not carried: v1alpha1 has nowhere to put them,
+	// and inventing somewhere would mean folding declarations into the learned
+	// lists, which is exactly the confusion they exist to prevent. See
+	// IntentionallyAdded.
 	dst.Status = ContainerProfileStatus{
 		Phase:                      string(s.Phase),
 		LearnedSyscalls:            copyInt64s(s.LearnedSyscalls),

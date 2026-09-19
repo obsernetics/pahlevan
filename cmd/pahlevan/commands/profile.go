@@ -51,6 +51,11 @@ A profile is written by the agent on the node where the container ran, and is
 reported on the container's ContainerProfile. Because a pod's seccompProfile
 cannot be changed after admission, applying one is a change you make to the
 workload and roll out; "pahlevan profile patch" prints exactly that change.`,
+		Example: `  # Which containers have a generated profile, and how much it denies
+  pahlevan profile list --all-namespaces
+
+  # The patch that applies one, ready to review
+  pahlevan profile patch payments-api-main -n payments`,
 	}
 	cmd.AddCommand(
 		newProfileListCommand(),
@@ -132,10 +137,18 @@ func newProfileListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List generated seccomp profiles",
+		Example: `  # Profiles in the current namespace
+  pahlevan profile list
+
+  # Every namespace, ranked table
+  pahlevan profile list --all-namespaces
+
+  # Machine readable
+  pahlevan profile list -A -o json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, _, defaultNS, ok := GetClients()
-			if !ok {
-				return fmt.Errorf("no Kubernetes client: check your kubeconfig")
+			if !ok || c == nil {
+				return errClientsNotReady()
 			}
 			if namespace == "" {
 				namespace = defaultNS
@@ -198,11 +211,16 @@ func newProfileGetCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <container-profile>",
 		Short: "Show the generated profile for one container",
-		Args:  cobra.ExactArgs(1),
+		Args:  NamedArgs("container-profile"),
+		Example: `  # The syscall set the container was observed using
+  pahlevan profile get payments-api-main -n payments
+
+  # As JSON
+  pahlevan profile get payments-api-main -n payments -o json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, _, defaultNS, ok := GetClients()
-			if !ok {
-				return fmt.Errorf("no Kubernetes client: check your kubeconfig")
+			if !ok || c == nil {
+				return errClientsNotReady()
 			}
 			if namespace == "" {
 				namespace = defaultNS
@@ -272,11 +290,16 @@ Two things to check before you do. The profile file lives on the node that wrote
 it, so every node that can schedule the workload needs a copy. And the profile
 only permits what the container was observed doing during its learning window;
 a code path that did not run in that window will be denied.`,
-		Args: cobra.ExactArgs(1),
+		Args: NamedArgs("container-profile"),
+		Example: `  # Print the patch
+  pahlevan profile patch payments-api-main -n payments
+
+  # Save it, then apply it yourself after review
+  pahlevan profile patch payments-api-main -n payments > seccomp-patch.yaml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, _, _, defaultNS, ok := GetClients()
-			if !ok {
-				return fmt.Errorf("no Kubernetes client: check your kubeconfig")
+			if !ok || c == nil {
+				return errClientsNotReady()
 			}
 			if namespace == "" {
 				namespace = defaultNS

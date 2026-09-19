@@ -119,6 +119,21 @@ func coveredByDrop(path string) bool {
 	return false
 }
 
+// coveredByAdd is the IntentionallyAdded counterpart of coveredByDrop. Adding
+// a block adds everything inside it, and listing every leaf of
+// spec.learningConfig.expectedBehavior would turn one written reason into a
+// dozen copies of it that nobody reads and that go stale independently.
+func coveredByAdd(path string) bool {
+	for added := range IntentionallyAdded {
+		if path == added ||
+			strings.HasPrefix(path, added+".") ||
+			strings.HasPrefix(path, added+"[") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEveryV1Alpha1FieldIsCarriedOrDocumented(t *testing.T) {
 	kinds := []struct {
 		name  string
@@ -163,7 +178,7 @@ func TestEveryV1Alpha1FieldIsCarriedOrDocumented(t *testing.T) {
 				if _, ok := alpha[p]; ok {
 					continue
 				}
-				if _, ok := IntentionallyAdded[p]; ok {
+				if coveredByAdd(p) {
 					continue
 				}
 				unexplained = append(unexplained, p)
@@ -224,4 +239,15 @@ func TestVersionsShareTheGroup(t *testing.T) {
 	assert.Equal(t, GroupVersion.Group, v1beta1.GroupVersion.Group)
 	assert.Equal(t, "v1alpha1", GroupVersion.Version)
 	assert.Equal(t, "v1beta1", v1beta1.GroupVersion.Version)
+}
+
+// The audience for IntentionallyAdded is somebody who read a policy as
+// v1alpha1, saw a field missing, and needs to know whether that is a bug or the
+// design. "Taste" is not an answer to that question.
+func TestAddedFieldsCarryARealReason(t *testing.T) {
+	require.NotEmpty(t, IntentionallyAdded)
+	for path, reason := range IntentionallyAdded {
+		assert.GreaterOrEqual(t, len(reason), 40, "%s: the reason is too short to be one", path)
+		assert.NotContains(t, strings.ToLower(reason), "tidy", "%s: taste is not a reason", path)
+	}
 }

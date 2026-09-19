@@ -46,7 +46,11 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
 - Interactive shell capture, for the builtins that produce no exec, no open and
   no connect.
 - Container-breakout detection by comparing the working directory's mount
-  namespace with the task's, refused in every mode including learning.
+  namespace with the task's. Refused in every enforcing mode, `Audit`
+  included - auditing an escape would mean watching it proceed. During
+  learning it is reported and deliberately not added to the allow-set, so the
+  exploit cannot become permanent for that cgroup, but it is not refused:
+  nothing is refused during learning.
 - Command-line arguments, working directory and four levels of ancestry on exec
   events; the immediate parent on file, network and capability events.
 - Read versus write as separate allow-set entries, so a learned read does not

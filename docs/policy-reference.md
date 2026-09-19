@@ -6,8 +6,8 @@ operation that falls outside that baseline. This document explains what each
 block means and what it costs to get wrong.
 
 The authoritative list of fields is [`api-reference.md`](api-reference.md),
-which is generated from `pkg/apis/policy/v1alpha1/types.go` and therefore cannot
-describe a field that does not exist. This document is the prose companion: what
+which is generated from `pkg/apis/policy/v1beta1/types.go` - the stored version -
+and therefore cannot describe a field that does not exist. This document is the prose companion: what
 the fields do, which combinations contradict each other, and which are accepted
 by the API server and acted on by nothing.
 
@@ -155,6 +155,106 @@ it has no effect in any deployment. `lifecycleAware` is stored and displayed and
 nothing acts on it; a restarted container gets a new cgroup id and therefore a
 new baseline whether it is set or not. Both are reported by
 `pahlevan policy explain`.
+
+### Declaring what the window will not see
+
+Learning is a window of wall-clock time, so anything the workload does once a
+day is not in the baseline. A nightly batch, a weekly certificate renewal, a log
+rotation, a backup that opens a path nothing else opens: a fifty minute window
+never sees them, and under `Blocking` the kernel refuses them. That refusal is
+correct from the kernel's side. The only evidence against the operation is that
+the workload has never done it before, which is exactly what an attacker
+produces too.
+
+`expectedBehavior` is how an operator states the difference in advance.
+
+```yaml
+apiVersion: policy.pahlevan.io/v1beta1
+kind: PahlevanPolicy
+spec:
+  learningConfig:
+    duration: "10m"
+    expectedBehavior:
+      files:
+      - path: /var/lib/app/nightly.db
+        write: true
+      - path: /etc/ssl/renewed.pem
+      networkDestinations:
+      - cidr: 10.43.12.7/32
+        port: 5432
+      executables:
+      - /usr/bin/pg_dump
+      capabilities:
+      - DAC_OVERRIDE
+```
+
+Each entry is merged into the kernel allow-set alongside what was learned, at
+the moment the container starts enforcing, so the rare operation is permitted
+when it finally happens. The alternatives this replaces are guessing a longer
+`duration` and hoping the job runs inside it, or letting self-healing roll
+enforcement back after the job has already been denied at 03:00.
+
+The vocabulary is the one `filePolicy` and `networkPolicy` already use. A path
+is absolute and fully resolved, as in `allowedPaths`. `write: true` grants the
+write and the read it needs, which is what `writeAllowedPaths` does; omitting it
+grants the read only, which is `readOnlyPaths`. A `cidr` is a single host, the
+same rule an `egressRules` peer obeys. A capability is written with or without
+the `CAP_` prefix, as in `capabilityFilter`.
+
+Three properties are worth being precise about, because they are what make a
+declaration safe to write.
+
+**It can only add.** A declaration is merged into the allow list and never into
+a deny list, so it cannot remove something the workload was actually observed
+doing, and it cannot be used to quietly disable enforcement. Removing something
+is what `filePolicy.deniedPaths` and the other deny lists are for, where removal
+is visible as such.
+
+**It is never widened.** The allow-set is a hash of the exact operation, so an
+entry that cannot be represented exactly is refused at translation with a
+warning naming the field, rather than being approximated into something broader.
+Refused: a relative path, a wildcard path, a CIDR covering more than one host, a
+port outside 1-65535, a capability name the kernel does not have, and `protocol:
+UDP` - the allow-set entry a declaration is seeded as carries only the address
+and port and is written for TCP, so a UDP declaration would permit TCP to a
+destination nobody declared and still deny the UDP that was. One refused entry
+does not discard the others, so five good paths and one typo give five seeded
+entries and one warning rather than a policy that declares nothing.
+
+Those warnings are reported the way every other translation warning is: the node
+agent logs them once per policy generation, naming the field. Note that
+`pahlevan policy explain` cannot show them yet - it decodes policies strictly as
+`v1alpha1`, so it rejects an `expectedBehavior` block outright rather than
+explaining it.
+
+**It stays an assertion.** A declared entry is reported separately from a
+learned one, on the governed container's profile:
+
+```console
+$ kubectl get containerprofile web-0 -o yaml
+status:
+  learnedFiles:
+  - /etc/nginx/nginx.conf
+  declaredFiles:
+  - /var/lib/app/nightly.db (write)
+  declaredExecutables:
+  - /usr/bin/pg_dump
+```
+
+`learned*` is what the container did. `declared*` is what somebody said it would
+do. An auditor, or anyone asking how a path came to be permitted, needs to be
+able to tell the two apart, and once an entry is in the kernel allow-set they
+are indistinguishable - the map holds a hash, not a provenance. A declared write
+carries a `(write)` suffix, because declaring a write is a much larger assertion
+than declaring a read.
+
+One constraint on where this can be written. `expectedBehavior` exists in
+`v1beta1` only; `v1alpha1` has no field that means it. The API server prunes
+unknown fields rather than rejecting them, so the block written under
+`policy.pahlevan.io/v1alpha1` applies cleanly, reports no error and declares
+nothing - and a client that reads a `v1beta1` policy as `v1alpha1` and writes it
+back erases the declaration from the stored object. Write policies that declare
+behaviour against `v1beta1`, which is the stored version anyway.
 
 ## Enforcement
 

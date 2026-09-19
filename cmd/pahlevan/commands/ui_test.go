@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -248,7 +249,12 @@ func TestWorkloadKeyForMatchesTheInteractiveViewsGrouping(t *testing.T) {
 			m := tui.New(tui.Options{})
 			m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 			m.Update(tui.EventMsg{Event: e})
-			m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+			// The number keys address the tab order, so the digit for the
+			// workloads screen is derived from the view constant rather than
+			// written out: a screen inserted before it moves the digit, and a
+			// hardcoded "2" then silently asserts against a different table.
+			workloadsKey := strconv.Itoa(int(tui.ViewWorkloads) + 1)
+			m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(workloadsKey)})
 			assert.Contains(t, m.View(), tc.want,
 				"the interactive view groups this event under a different name")
 		})

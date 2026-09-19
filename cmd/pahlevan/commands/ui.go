@@ -68,16 +68,26 @@ writes escape codes into a pipe is worse than one with no interface at all.
 	return cmd
 }
 
-// interactive decides whether to draw. Every reason to fall back is checked
-// here rather than scattered, so the rule is one thing a reader can verify.
-//
-// NO_COLOR is honoured as a fallback signal rather than only as a palette
-// switch: somebody who sets it in a pipeline wants plain text, and a
-// full-screen alternate-buffer UI is not plain text.
+// interactive decides whether `pahlevan ui` draws. The flag is the only part
+// of the rule that belongs to this command; everything else is the general
+// question Interactive answers, and there is exactly one copy of it.
 func interactive(opts *uiOptions, out io.Writer) bool {
 	if opts.noTUI {
 		return false
 	}
+	return Interactive(out)
+}
+
+// Interactive reports whether a full-screen view may be drawn to out. Every
+// reason to fall back is checked here rather than scattered, so the rule is
+// one thing a reader can verify - and the root command reuses it to decide
+// what a bare `pahlevan` does, rather than keeping a second copy that can
+// drift from this one.
+//
+// NO_COLOR is honoured as a fallback signal rather than only as a palette
+// switch: somebody who sets it in a pipeline wants plain text, and a
+// full-screen alternate-buffer UI is not plain text.
+func Interactive(out io.Writer) bool {
 	if os.Getenv("CI") != "" || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return false
 	}

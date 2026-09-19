@@ -63,6 +63,7 @@ controls the learning phase
 | `minSamples` | `*int32` |  | MinSamples specifies minimum number of samples before transitioning. Bounded below by 1: zero means "transition with no evidence at all", which is a policy that enforces an empty baseline and kills the workload on its first syscall. Negative was accepted and compared against a count that can never be less than it, so it silently meant the same thing. |
 | `autoTransition` | `bool` |  | AutoTransition enables automatic transition to enforcement |
 | `lifecycleAware` | `bool` |  | **Inert** - stored and displayed; nothing acts on it. LifecycleAware enables lifecycle-based learning transitions |
+| `expectedBehavior` | `*ExpectedBehavior` |  | ExpectedBehavior declares operations the operator knows the workload performs but which may not happen during the learning window. Learning is a window of wall-clock time, so anything the workload does once a day is simply absent from the baseline: a nightly batch, a weekly certificate renewal, a log rotation, a backup that opens a path nothing else opens. Under Blocking the kernel then refuses it, and from the kernel's side that refusal is correct - the only evidence against the operation is that the workload has never done it before, which is exactly what an attacker produces too. Without this field the operator's only options are to guess a longer duration, or to let self-healing roll enforcement back after the job has already been denied at 03:00. Declarations are additive. Every entry is merged into the allow-set alongside what was learned, none can remove a learned entry, and an entry that cannot be represented exactly is refused with a warning naming the field rather than widened into something broader. |
 
 ## EnforcementConfig
 
@@ -271,6 +272,9 @@ provides attack surface analysis
 Reachable from the types above; listed so a new one cannot go
 undocumented by omission.
 
+- `ExpectedBehavior`
+- `ExpectedDestination`
+- `ExpectedFile`
 - `LabelSelector`
 - `LabelSelectorRequirement`
 - `LogOutput`
