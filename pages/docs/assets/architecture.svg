@@ -3,11 +3,11 @@
     <style>
       .card{fill:#0e1729;stroke:#28344b;stroke-width:1.5}
       .grp{fill:#0b1220;stroke:#1f2a40;stroke-width:1.5;stroke-dasharray:6 5}
-      .title{fill:#e6edf7;font-size:20px;font-weight:700}
-      .h{fill:#7dd3fc;font-size:15px;font-weight:700}
-      .bt{fill:#e6edf7;font-size:14px;font-weight:700}
-      .s{fill:#93a4c0;font-size:12px}
-      .lbl{fill:#9fb3d1;font-size:12px;font-style:italic}
+      .title{fill:#e6edf7;font-size:23px;font-weight:700}
+      .h{fill:#7dd3fc;font-size:17px;font-weight:700}
+      .bt{fill:#e6edf7;font-size:16px;font-weight:700}
+      .s{fill:#93a4c0;font-size:13.5px}
+      .lbl{fill:#9fb3d1;font-size:13.5px;font-style:italic}
       .accent{fill:#38bdf8;font-weight:700}
       .edge{stroke:#5b7099;stroke-width:2.5;fill:none}
     </style>
@@ -79,37 +79,37 @@
   <rect x="470" y="340" width="430" height="250" rx="12" fill="#0b1220" stroke="#28344b" stroke-width="1.5"/>
   <text x="490" y="364" class="h">Linux kernel &#183; eBPF (CO-RE)</text>
 
-  <text x="490" y="384" class="s" font-size="10">BPF LSM &#8212; refuses in-kernel, needs lsm=bpf</text>
+  <text x="490" y="384" class="s" font-size="11.5">BPF LSM &#8212; refuses in-kernel, needs lsm=bpf</text>
   <rect x="490" y="392" width="190" height="40" rx="8" class="card"/>
-  <text x="502" y="408" class="bt" font-size="11.5">lsm/file_open</text>
-  <text x="502" y="424" class="s" font-size="10">read/write <tspan class="accent">&#8594; EPERM</tspan></text>
+  <text x="502" y="408" class="bt" font-size="13">lsm/file_open</text>
+  <text x="502" y="424" class="s" font-size="11.5">read/write <tspan class="accent">&#8594; EPERM</tspan></text>
 
   <rect x="690" y="392" width="190" height="40" rx="8" class="card"/>
-  <text x="702" y="408" class="bt" font-size="11.5">lsm/socket_connect</text>
-  <text x="702" y="424" class="s" font-size="10">egress <tspan class="accent">&#8594; EPERM</tspan></text>
+  <text x="702" y="408" class="bt" font-size="13">lsm/socket_connect</text>
+  <text x="702" y="424" class="s" font-size="11.5">egress <tspan class="accent">&#8594; EPERM</tspan></text>
 
   <rect x="490" y="440" width="190" height="40" rx="8" class="card"/>
-  <text x="502" y="456" class="bt" font-size="11.5">lsm/bprm_check</text>
-  <text x="502" y="472" class="s" font-size="10">exec <tspan class="accent">&#8594; EPERM</tspan></text>
+  <text x="502" y="456" class="bt" font-size="13">lsm/bprm_check</text>
+  <text x="502" y="472" class="s" font-size="11.5">exec <tspan class="accent">&#8594; EPERM</tspan></text>
 
   <rect x="690" y="440" width="190" height="40" rx="8" class="card"/>
-  <text x="702" y="456" class="bt" font-size="11.5">lsm/capable</text>
-  <text x="702" y="472" class="s" font-size="10">capability <tspan class="accent">&#8594; EPERM</tspan></text>
+  <text x="702" y="456" class="bt" font-size="13">lsm/capable</text>
+  <text x="702" y="472" class="s" font-size="11.5">capability <tspan class="accent">&#8594; EPERM</tspan></text>
 
-  <text x="490" y="502" class="s" font-size="10">no BPF LSM needed &#8212; works on stock kernels</text>
+  <text x="490" y="502" class="s" font-size="11.5">no BPF LSM needed &#8212; works on stock kernels</text>
   <rect x="490" y="510" width="190" height="34" rx="8" class="card"/>
-  <text x="502" y="524" class="bt" font-size="11.5">tracepoint/sys_enter</text>
-  <text x="502" y="538" class="s" font-size="10">every syscall, with args</text>
+  <text x="502" y="524" class="bt" font-size="13">tracepoint/sys_enter</text>
+  <text x="502" y="538" class="s" font-size="11.5">every syscall, with args</text>
 
   <rect x="690" y="510" width="190" height="34" rx="8" class="card"/>
-  <text x="702" y="524" class="bt" font-size="11.5">kprobe/commit_creds</text>
-  <text x="702" y="538" class="s" font-size="10">escalation, no execve</text>
+  <text x="702" y="524" class="bt" font-size="13">kprobe/commit_creds</text>
+  <text x="702" y="538" class="s" font-size="11.5">escalation, no execve</text>
 
   <rect x="490" y="552" width="190" height="34" rx="8" class="card"/>
-  <text x="502" y="566" class="bt" font-size="11.5">uretprobe/readline</text>
-  <text x="502" y="580" class="s" font-size="10">shell builtins</text>
+  <text x="502" y="566" class="bt" font-size="13">uretprobe/readline</text>
+  <text x="502" y="580" class="s" font-size="11.5">shell builtins</text>
 
   <rect x="690" y="552" width="190" height="34" rx="8" fill="#0d1526" stroke="#28344b" stroke-width="1.2" stroke-dasharray="4 3"/>
-  <text x="702" y="566" class="bt" font-size="11.5">generic kprobe</text>
-  <text x="702" y="580" class="s" font-size="10">any symbol, no rebuild</text>
+  <text x="702" y="566" class="bt" font-size="13">generic kprobe</text>
+  <text x="702" y="580" class="s" font-size="11.5">any symbol, no rebuild</text>
 </svg>
