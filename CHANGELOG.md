@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The architecture diagram on the landing page was stale and clipped.** It
+  showed three eBPF programs long after there were seven, so a reader saw a
+  third of what Pahlevan does. One label was anchored at its right-hand end at
+  `x=150` and was about 154px wide, so it began at roughly `x=-16` and rendered
+  as "earning / enforcement status". And the status arrow started 12px above
+  the agent box, in empty space, at the same x as the arrow going the other
+  way, so the round trip read as one line doubled back. The diagram is redrawn
+  with all seven programs, split by whether they need `lsm=bpf`, and tests now
+  fail if a detector is missing from it, if any label would render outside the
+  canvas, or if a connector does not join two boxes.
+
 - **A check that the website shows every release.** The changelog page carries
   one article per release, written as prose rather than as a marked span, so
   pagesync had nothing to check and reported the site up to date while it was
