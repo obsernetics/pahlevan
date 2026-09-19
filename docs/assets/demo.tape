@@ -91,9 +91,9 @@ Enter
 Sleep 2400ms
 
 # 12) what the seven programs cover
-Type "pahlevan ui"
+Type "pahlevan"
 Enter
-Sleep 4s
+Sleep 13s
 
 Type "pahlevan coverage"
 Enter
