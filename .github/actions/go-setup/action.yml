@@ -16,20 +16,26 @@ runs:
   steps:
     # actions/setup-go caches ~/go/pkg/mod AND ~/.cache/go-build itself, and
     # keys them on the Go version plus the hash of the dependency file. That
-    # replaces two hand-rolled actions/cache steps that used to cost ~15s of
-    # restore and ~12s of save per run:
+    # replaces two hand-rolled actions/cache steps that cost a measured 10-19s
+    # of restore and up to 15s of save on every single run:
     #
     #   * the module cache was keyed on hashFiles('**/go.sum') without the Go
     #     version, so a toolchain bump silently reused objects built by the old
     #     compiler.
     #   * the build cache was keyed on hashFiles('**/*.go'). Every commit that
     #     touches any Go file changes that hash, so the key NEVER hit exactly;
-    #     it always fell back to a restore-key and then always uploaded a fresh
-    #     ~200MB entry at the end of the job. That upload is pure cost, and it
-    #     evicted the module cache out of the repository's 10GB cache budget.
+    #     it always fell back to a restore-key and then always uploaded a
+    #     fresh entry at the end of the job. That upload is pure cost, and a
+    #     new build cache per commit is what pushes older entries - the module
+    #     cache among them - out of the repository's 10GB cache budget.
     #
     # Keying on go.sum instead means the cache is written once per dependency
     # change rather than once per commit.
+    #
+    # cache-dependency-path is the root go.sum specifically, not the default
+    # '**/go.sum'. There is a second module at hack/vm/smoke that nothing in
+    # this pipeline builds; the default glob would throw the whole cache away
+    # whenever its dependencies moved.
     - name: Install Go and restore the shared caches
       uses: actions/setup-go@v7
       with:

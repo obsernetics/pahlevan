@@ -279,12 +279,37 @@ jobs:
         run: |
           "${RUNNER_TEMP}/actionlint" -color
 
-      # The "CI" gate below is the single check branch protection requires, so
-      # a bug that makes it pass while a job is red would be invisible. These
+      # The "CI" gate below is meant to be the one check branch protection
+      # requires, so a bug that lets it pass while a job is red is invisible
+      # by construction: nothing else is watching. These
       # cases feed the gate's own script contrived job results and assert the
       # exit codes, on every run, for about a second.
       - name: Prove the CI gate fails when a dependency fails
         run: bash .github/actions/require-success/selftest.sh
+
+      # The other half of the gate's correctness: the logic is only as good as
+      # the list it is given. A job added to this file but forgotten in the
+      # gate's `needs:` can fail with the required check still green.
+      - name: Check the CI gate depends on every job
+        run: |
+          set -euo pipefail
+          # PyYAML ships on the hosted image, but a self-hosted runner is not
+          # a reason for this check to go red on something unrelated.
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          python3 - <<'EOF'
+          import sys, yaml
+          jobs = yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]
+          declared = set(jobs["ci"]["needs"])
+          expected = set(jobs) - {"ci"}
+          missing = expected - declared
+          extra = declared - expected
+          if missing:
+              print(f"::error::the CI gate does not depend on: {sorted(missing)}")
+          if extra:
+              print(f"::error::the CI gate depends on jobs that do not exist: {sorted(extra)}")
+          sys.exit(1 if (missing or extra) else 0)
+          EOF
+          echo "The CI gate depends on every job in the workflow."
 
   cross-compile:
     name: Cross-compile arm64
@@ -405,7 +430,10 @@ jobs:
     name: CI
     runs-on: ubuntu-latest
     if: always()
-    needs: [changes, build, test, test-race, lint, cross-compile, push-image]
+    # Every other job in the file, `release` included. A job that is not a
+    # dependency here is a job whose failure this check cannot see, so the
+    # `lint` job asserts this list stays complete.
+    needs: [changes, build, test, test-race, lint, cross-compile, push-image, release]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
