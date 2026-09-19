@@ -7,7 +7,11 @@ description: >
 
 inputs:
   needs:
-    description: The JSON of the caller's `needs` context, i.e. ${{ toJSON(needs) }}.
+    # No expression syntax in this description. GitHub evaluates expressions even
+    # inside an input's description, and in a composite action the `needs`
+    # context does not exist, so writing the call out here failed the whole
+    # action at load time and took the CI gate down with every job green.
+    description: The caller's `needs` context serialised as JSON with toJSON.
     required: true
 
 runs:

@@ -68,5 +68,20 @@ else
   fail=$((fail + 1))
 fi
 
+# Every case above runs the script directly, so none of them loads action.yml
+# the way a runner does - which is how an expression written into an input's
+# description took the gate down with every job green. GitHub evaluates
+# expressions in any string it templates, descriptions included, and inside a
+# composite action the `needs` context does not exist. So no expression may
+# appear anywhere in the action's metadata except where an input is consumed.
+bad=$(grep -n '\${{' "${here}/action.yml" | grep -v 'inputs\.' || true)
+if [ -z "${bad}" ]; then
+  printf 'ok    action.yml templates no expression outside its inputs\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL  action.yml evaluates an expression a composite action cannot resolve:\n%s\n' "${bad}"
+  fail=$((fail + 1))
+fi
+
 printf '\n%s passed, %s failed\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ]
