@@ -251,10 +251,16 @@ polish item.
   Ingesting the Kubernetes audit stream and correlating it with the node events
   a policy already produces would close the gap between "somebody did this to
   the cluster" and "this happened inside the container".
-- **Planned: DNS and L7 parsing.** Destinations inside the cluster are named
-  from Services, pods and nodes, which costs no DNS query. Destinations
-  *outside* the cluster, which are the ones that matter in an exfiltration,
-  are reported as an address and nothing else.
+- **In progress: DNS and L7 parsing.** `pkg/netname` names the destinations the
+  cluster map cannot. Address ranges are classified and labelled - private,
+  CGNAT, link-local, the cluster CIDR, and the cloud metadata endpoints, which
+  are matched exactly rather than by prefix so ordinary link-local traffic is
+  not reported as a workload going looking for credentials. Naming never blocks
+  the event path, never overrides a Service name, never changes an enforcement
+  decision, and reverse DNS is off by default: a PTR query tells an attacker
+  they were seen and lands on a nameserver they may control.
+  Still missing: nothing captures DNS answers yet, so the passive naming path
+  has no producer and a public address is still reported as an address.
 - **Planned: ancestry matchable at any depth.** Exec events carry four levels,
   and `processFilter.parentProcesses` enforces on the first hop only. A policy
   cannot say "denied if any ancestor was a shell". A process cache keyed by a

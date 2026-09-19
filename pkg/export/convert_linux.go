@@ -5,6 +5,7 @@
 package export
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
@@ -118,7 +119,7 @@ func FromNetworkEvent(e *ebpf.NetworkEvent, now time.Time) *Event {
 		Network: &NetworkInfo{
 			SourceIP:        src,
 			SourcePort:      e.SrcPort,
-			DestinationIP:   ipv4String(e.DstIP),
+			DestinationIP:   destinationIP(e),
 			DestinationPort: e.DstPort,
 			Protocol:        protocolName(e.Protocol),
 			ProtocolNumber:  e.Protocol,
@@ -214,4 +215,27 @@ func FromCapabilityEvent(e *ebpf.CapabilityEvent, now time.Time) *Event {
 // 1.0.0.127.
 func ipv4String(addr uint32) string {
 	return ebpf.IPv4String(addr)
+}
+
+// familyINet6 is AF_INET6 as the data plane reports it. Spelled out here rather
+// than pulled from x/sys so this file keeps the same dependencies it had.
+const familyINet6 = 10
+
+// destinationIP renders the destination, whichever address family it arrived
+// in.
+//
+// This used to render e.DstIP unconditionally. On an AF_INET6 event that field
+// is zero - the address is in DstIP6 - so every IPv6 destination left the agent
+// as "0.0.0.0". Unnamable, unsearchable, and indistinguishable from every other
+// IPv6 destination on the node, which on a dual stack cluster is most of the
+// egress there is.
+func destinationIP(e *ebpf.NetworkEvent) string {
+	if e.Family == familyINet6 {
+		if addr, ok := netip.AddrFromSlice(e.DstIP6[:]); ok {
+			// Unmap so a v4-mapped destination that came through a v6 socket
+			// reads as the v4 address it is, and matches the cluster map.
+			return addr.Unmap().String()
+		}
+	}
+	return ipv4String(e.DstIP)
 }

@@ -98,6 +98,13 @@ could install it. Its changes are released here.
 
 ### Fixed
 
+- **Every IPv6 destination left the agent as `0.0.0.0`.** The export path
+  rendered the v4 field unconditionally, but on an `AF_INET6` event the address
+  is in the v6 field and the v4 one is zero. On a dual-stack cluster that is
+  most of the egress there is, and it was unnamable, unsearchable and
+  indistinguishable from every other v6 destination on the node. `pkg/ebpf`
+  already handled the family; the export path did not.
+
 - **The released `install.yaml` pinned nothing.** It is the file attached to
   every release, and `docs/packages.md` points at
   `releases/download/<version>/install.yaml` as the immutable tag recommended

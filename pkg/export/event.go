@@ -337,6 +337,19 @@ type AttributionFunc func(cgroupID uint64) (KubernetesRef, bool)
 // traffic at exactly the wrong moment.
 type DestinationFunc func(ip net.IP, port uint16) (name, kind, portName string)
 
+// ExternalNameFunc names a destination the cluster map could not, which is to
+// say a destination outside the cluster - the one that matters in an
+// exfiltration. It returns "" when nothing is known, and the event then carries
+// the address alone, exactly as before.
+//
+// Like DestinationFunc it runs on the export path, so it must return
+// immediately. An implementation that wants to resolve a name must do it in the
+// background and serve this call from a cache: an exporter stalled on a
+// resolver during an incident is worse than one that prints an address.
+// pkg/netname provides such an implementation, and (*netname.Namer).Name
+// satisfies this signature directly.
+type ExternalNameFunc func(ip net.IP) string
+
 // SyscallName renders a syscall number using the generated table in
 // pkg/seccomp, falling back to syscall_<nr> for numbers it does not know.
 func SyscallName(nr uint64) string {

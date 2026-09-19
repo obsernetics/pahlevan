@@ -31,6 +31,7 @@ import (
 	"github.com/obsernetics/pahlevan/pkg/export"
 	"github.com/obsernetics/pahlevan/pkg/grpcapi"
 	"github.com/obsernetics/pahlevan/pkg/metrics"
+	"github.com/obsernetics/pahlevan/pkg/netname"
 	"github.com/obsernetics/pahlevan/pkg/observability"
 
 	corev1 "k8s.io/api/core/v1"
@@ -326,6 +327,9 @@ func main() {
 
 	// Event export: JSON-lines file, webhook and/or OTLP logs, so events leave
 	// the process for `pahlevan events`, log shippers, SIEMs and Loki.
+	externalNamer := netname.New(netname.Options{})
+	defer externalNamer.Close()
+
 	exportPipeline, err := export.New(export.Config{
 		Tee:          grpcTee,
 		FilePath:     exportFile,
@@ -335,6 +339,11 @@ func main() {
 			d, _ := netResolver.Lookup(ip, port)
 			return d.String(), string(d.Kind), d.PortName
 		},
+		// Names the destinations the cluster map cannot: the ones outside the
+		// cluster, which are the ones that matter in an exfiltration. It fills
+		// only the hole the map leaves and never overrides a Service name, and
+		// it never blocks the event path on a lookup.
+		External:            externalNamer.Name,
 		SlackWebhookURL:     slackWebhook,
 		PagerDutyRoutingKey: pagerDutyKey,
 		PagerDutySeverity:   pagerDutySeverity,
