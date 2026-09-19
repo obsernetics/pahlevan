@@ -31,6 +31,24 @@ SEED_ISO="${CACHE_DIR}/seed.iso"
 # hold.
 DISK_SIZE="${PAHLEVAN_VM_DISK:-20G}"
 
+# qemu's write-cache mode for the guest disk. The default is writeback, which
+# still honours the guest's flushes - and dpkg flushes after almost every file
+# it unpacks, so provisioning spends much of its time waiting on the host's
+# disk. "unsafe" drops those flushes, which is exactly right for a disposable
+# CI guest and exactly wrong for a workstation disk that is reused across
+# reboots, so CI opts in and the default does not.
+DISK_CACHE="${PAHLEVAN_VM_DISK_CACHE:-writeback}"
+
+# --- Guest Go toolchain ---------------------------------------------------
+# The apt Go in noble is too old for this repo, so the guest gets an upstream
+# tarball. It is fetched on the HOST into CACHE_DIR rather than by cloud-init
+# inside the guest: a host file can be restored by actions/cache, a guest
+# download cannot, and it is ~80MB pulled fresh on every CI provision.
+GO_VERSION="${PAHLEVAN_VM_GO_VERSION:-1.25.13}"
+GO_TARBALL_NAME="go${GO_VERSION}.linux-amd64.tar.gz"
+GO_TARBALL="${CACHE_DIR}/${GO_TARBALL_NAME}"
+GO_TARBALL_URL="https://go.dev/dl/${GO_TARBALL_NAME}"
+
 # --- SSH -----------------------------------------------------------------
 # Default 2223 (2222 is a common default and may be taken by another local VM);
 # override with PAHLEVAN_VM_SSH_PORT.
@@ -46,6 +64,11 @@ VM_LOGFILE="${CACHE_DIR}/vm-serial.log"
 VM_MEM="${PAHLEVAN_VM_MEM:-4096}"
 VM_CPUS="${PAHLEVAN_VM_CPUS:-4}"
 QEMU_MONITOR="${CACHE_DIR}/qemu-monitor.sock"
+# How long up.sh will wait for a guest that has provisioned AND rebooted onto
+# the bpf-LSM cmdline. One budget for the whole sequence rather than a fixed
+# iteration count per phase, so a slow apt mirror eats into the same clock a
+# slow boot does instead of each getting its own generous allowance.
+VM_READY_TIMEOUT="${PAHLEVAN_VM_READY_TIMEOUT:-900}"
 
 # Force the bpf LSM active in the guest via the kernel cmdline (set through
 # GRUB by cloud-init). The host does NOT have bpf in its lsm list; the guest

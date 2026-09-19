@@ -103,3 +103,31 @@ snyk-*.json
 charts/*/charts/
 charts/*/Chart.lock
 charts/*/requirements.lock
+
+# ---------------------------------------------------------------------------
+# Large artifacts that were being shipped to the daemon on every build.
+# ---------------------------------------------------------------------------
+
+# The QEMU test harness cache. This was the whole story: `docker build .` in a
+# tree that has run `make vm-test` sent a 15.1GB context - a 14.4GB provisioned
+# guest disk, the 596MB cloud image and a 45MB source tarball - before the
+# daemon could read line one of the Dockerfile. It also holds a qemu monitor
+# socket, which the daemon cannot put in a tar at all:
+#   Can't add file .vmcache/qemu-monitor.sock to tar: sockets not supported
+.vmcache/
+*.qcow2
+*.img
+*.iso
+
+# The generated copy of docs/ that Pages publishes, demo GIF included. Nothing
+# in the image reads it, and the GIF alone is 2.8MB that changes on re-render.
+pages/
+
+# Test sources and fixtures. `go build ./cmd/...` never compiles a _test.go,
+# and leaving them in the context meant a test-only commit invalidated the
+# COPY layer and forced a full recompile of the image in CI.
+**/*_test.go
+**/testdata/
+
+# Agent and editor state.
+.claude/

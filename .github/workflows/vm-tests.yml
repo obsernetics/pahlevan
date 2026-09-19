@@ -70,6 +70,11 @@ jobs:
       PAHLEVAN_VM_DISK: 12G
       PAHLEVAN_VM_MEM: 6144
       PAHLEVAN_VM_CPUS: 4
+      # The guest disk dies with the runner, so there is nothing for qemu to
+      # protect by honouring the guest's flushes - and dpkg flushes after
+      # almost every file it unpacks, which is most of what provisioning does.
+      # Never set this on a workstation, where the disk is reused.
+      PAHLEVAN_VM_DISK_CACHE: unsafe
 
     steps:
       - name: Checkout
@@ -104,10 +109,19 @@ jobs:
           sudo chown "$(id -u):$(id -g)" "$PAHLEVAN_VM_CACHE"
           df -h /mnt /
 
-      # Only the base cloud image, which is 600MB and identical between runs.
-      # The provisioned disk is not cached: it is several gigabytes, it embeds
-      # a guest SSH key, and rebuilding it is what proves the harness still
-      # works from nothing.
+      # Only the base cloud image, which is 596MB and identical between runs.
+      #
+      # The provisioned disk is not cached. Measured with qemu-img: 2.05GB
+      # allocated right after a provision with the old package list, 3.3GB
+      # after the trimmed provision plus one test run (Go module and build
+      # caches land in it), and 14.4GB on a long-lived workstation guest. That
+      # does squeeze under GitHub's 10GB per-repo cache budget, but it would be
+      # a third of it, shared with every Go cache in ci.yml, so LRU eviction
+      # would thrash the caches that actually hit. It also embeds a guest SSH
+      # key, and rebuilding it is what proves the harness works from nothing.
+      #
+      # What is cacheable is everything the provision downloads: the cloud
+      # image here and the Go tarball below.
       - name: Cache the Ubuntu cloud image
         uses: actions/cache@v6
         with:
@@ -115,6 +129,20 @@ jobs:
           # Monthly, because the "current" image the harness downloads moves
           # and a cache pinned forever would test an ever older guest.
           key: vm-base-noble-${{ github.workflow }}-2026-09
+
+      # cloud-init used to curl this inside the guest, where no cache can
+      # reach it. up.sh fetches it on the host instead - in the background,
+      # overlapping the guest's boot - so it lands in the cache directory and
+      # a hit here removes an 80MB download from every provision.
+      - name: Cache the guest Go toolchain tarball
+        uses: actions/cache@v6
+        with:
+          path: /mnt/vmcache/go*.linux-amd64.tar.gz
+          # env.sh is where GO_VERSION lives, so a version bump invalidates
+          # this without anyone having to remember to edit the key.
+          key: vm-go-${{ hashFiles('hack/vm/env.sh') }}
+          restore-keys: |
+            vm-go-
 
       - name: Boot the VM and confirm the bpf LSM is active
         run: |

@@ -30,4 +30,7 @@ if ! vm_is_running; then
   exit 1
 fi
 
-exec scp "${SCP_OPTS[@]}" "${RECURSIVE[@]}" "${LOCAL}" "${SSH_USER}@${SSH_HOST}:${REMOTE}"
+# -C (compress) because the thing this mostly carries is vm-test's src.tar:
+# ~45MB of source that gzips to a fraction of that, crossing qemu's user-mode
+# NAT, which is slower than the CPU spent compressing it.
+exec scp -C "${SCP_OPTS[@]}" "${RECURSIVE[@]}" "${LOCAL}" "${SSH_USER}@${SSH_HOST}:${REMOTE}"
