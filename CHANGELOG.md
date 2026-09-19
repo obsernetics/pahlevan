@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A check that the website shows every release.** The changelog page carries
+  one article per release, written as prose rather than as a marked span, so
+  pagesync had nothing to check and reported the site up to date while it was
+  missing an entire release: 3.3.3's version strings updated, because markers
+  own those, and the page went on badging 3.3.2 as current with no 3.3.3
+  article at all. A reader would have concluded 3.3.3 did not exist. Tests now
+  fail if a released version has no article, if the site shows an article for a
+  version the changelog does not document, or if the "Current" badge is not on
+  the newest release.
+
 - **A check that a merged release was actually tagged.** The scheduled
   maintenance agent runs as the GitHub App, which cannot create tag refs, so it
   merges a release PR and the tag never appears: no tag, no release, no image,

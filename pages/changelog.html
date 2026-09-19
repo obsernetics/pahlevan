@@ -184,9 +184,37 @@ docker inspect --format '{{index .RepoDigests 0}}' \
 
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.3.3</h3>
+                        <span class="release-date">2026-09-14</span>
+                        <span class="release-pill">Current</span>
+                    </div>
+                    <p class="release-summary">
+                        A dependency batch, and three copies of the same selector matcher
+                        collapsed into one.
+                    </p>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li>Batched three dependency bumps onto one change rather than merging them one at a time:
+                                <code>golang.org/x/term</code> to 0.46.0, <code>github.com/onsi/ginkgo/v2</code> to
+                                2.32.2, and <code>sigs.k8s.io/controller-runtime</code> to 0.25.1.
+                                controller-runtime 0.25.1 still declares go 1.26.0 and <code>k8s.io/api</code> v0.37.0,
+                                matching what this module already used, so the bump carried no transitive Kubernetes
+                                skew.</li>
+                            <li>Unified three byte-for-byte identical label-selector matchers, one in each of the
+                                policy, learner and attack-surface reconcilers, into a single <code>matchesSelector</code>
+                                function. Only the first had a full test table; the other two sat at 16.7% and 33.3%
+                                coverage and could silently drift from each other on the next edit. The shared
+                                implementation has one table-driven test and a benchmark, and
+                                <code>internal/controller</code> coverage moved from 74.6% to 79.1%.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.3.2</h3>
                         <span class="release-date">2026-09-07</span>
-                        <span class="release-pill">Current</span>
                     </div>
                     <p class="release-summary">
                         The manifest attached to a release now pins that release. 3.3.1 was merged
