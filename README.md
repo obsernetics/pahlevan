@@ -30,7 +30,7 @@ destinations. It uses maybe sixty of the kernel's four hundred syscalls, and it
 will use exactly those sixty for as long as the image is deployed.
 
 Pahlevan watches a container do all of that, once, and then refuses everything
-else — in the kernel, at the moment of the attempt, with `EPERM`.
+else, in the kernel, at the moment of the attempt, with `EPERM`.
 
 Nobody writes a rule. There is no rule to write. The container already told you
 what it does; the only question was whether anything was listening.
@@ -43,7 +43,7 @@ what it does; the only question was whether anything was listening.
 ## What that buys you
 
 **An attacker inherits your baseline, not root.** A command-injection bug in a
-Python service gets an attacker `python3` — because the service runs `python3`
+Python service gets an attacker `python3`, because the service runs `python3`
 constantly and it is in the allow-set. What it does not get them is
 `/etc/shadow`, an egress to an address the workload never dialed, a binary
 dropped in `/tmp`, or `CAP_SYS_ADMIN`. Every one of those is refused before the
@@ -66,7 +66,7 @@ A baseline narrow enough to stop an attacker is narrow enough to stop you.
 
 If you `kubectl exec` into a production pod and run `curl`, Pahlevan will deny
 it, because the workload never ran `curl` and Pahlevan cannot tell your hands
-from someone else's. That is not a bug being worked around — it is the same
+from someone else's. That is not a bug being worked around - it is the same
 mechanism working correctly, and every honest evaluation of this tool has to
 start there.
 
@@ -106,7 +106,7 @@ Two of those are worth pointing at directly.
 
 **`commit_creds`** is the single function through which any task's credentials
 change. A local-root exploit that overwrites a `cred` struct and calls it
-directly makes no syscall a syscall monitor could see — but it lands here, and
+directly makes no syscall a syscall monitor could see - but it lands here, and
 it lands with no `execve` underway to explain it, which is what separates it
 from `sudo` doing its job. It reports by default and kills only for workloads
 you have explicitly marked as never legitimately escalating, because the only
@@ -117,6 +117,14 @@ process rather than denying one operation.
 KUBECONFIG=…`, `history -c` are shell builtins: they change what a session is
 doing and produce no exec, no open, no connect. An exec-based monitor watches
 somebody work through them and reports nothing but the shell's own process.
+
+An eighth program covers what those seven do not: a generic kprobe, compiled
+once, that the operator points at any kernel function a policy names, with no
+rebuild and no new image. Up to five arguments are captured and up to
+four selectors ANDed against them, or against the calling uid, gid or pid. It
+cannot refuse a call, because a kprobe fires alongside the function rather than
+in place of it, so its actions are report, audit, kill and signal, and a policy
+asking it to deny is refused at load rather than quietly downgraded.
 
 ## Architecture
 
@@ -129,6 +137,14 @@ the kernel. A leader-elected **operator** Deployment drives the policy
 lifecycle, status aggregation and CEL admission, with no host access and no
 mutating webhook. If the operator is down, enforcement already installed in the
 kernel keeps working. Detail: [`docs/architecture.md`](docs/architecture.md).
+
+Events leave the agent as JSON lines to a file, an HTTP webhook, OTLP logs, or
+a gRPC stream, all behind a bounded queue that drops and counts rather than
+stalling the ring-buffer readers. Denials can also go straight to a Slack
+incoming webhook, PagerDuty, or a Go template you write: denials only by
+default, deduplicated per finding over a window, and grouped one message per
+batch, because a channel that receives one message per file open gets muted
+within the hour.
 
 ## Quick start
 
@@ -170,9 +186,24 @@ pahlevan profile get pod-<uid> -o yaml           # one container's learned profi
 
 `policy explain` is the one to run first, and it is the only one of the three
 that needs no cluster. It tells you which fields of a policy translate into
-kernel state and which are ignored — including the ones that look like they
+kernel state and which are ignored, including the ones that look like they
 work. More in [`examples/`](examples) and
 [`docs/policy-reference.md`](docs/policy-reference.md).
+
+`pahlevan ui` opens the same data as an interactive view: a live event list,
+per-workload counts of what was observed against what was refused, and the
+coverage table. It reads the agent's gRPC stream, or a captured JSON-lines file
+with `--replay`, and changes nothing, so it cannot be the thing that turns
+enforcement off during an incident. Piped, redirected, under CI or with
+`--no-tui` it prints a plain summary rather than drawing a screen, so a
+pipeline gets text instead of escape codes.
+
+The rest is one command per question: `pahlevan status` and `pahlevan
+attack-surface` for what the operator has concluded, `pahlevan events`,
+`pahlevan logs` and `pahlevan metrics` for what the agents are reporting,
+`pahlevan debug` for whether this kernel can enforce at all, `pahlevan
+coverage` for the ATT&CK mapping, and `pahlevan version` and `pahlevan
+completion` for the binary itself.
 
 ## Measured, not asserted
 
@@ -194,7 +225,7 @@ runs.
 
 ## Requirements
 
-- **Kubernetes 1.24+** — the user-namespace operator needs 1.30+.
+- **Kubernetes 1.24+**; the user-namespace operator needs 1.30+.
 - **Linux 5.8+** for observation: CO-RE, ring buffer, `CAP_BPF`.
 - **Go 1.26+** to build from source. Running the published image needs nothing.
 - **`CONFIG_BPF_LSM` with `lsm=bpf`** on the kernel command line for in-kernel
@@ -235,7 +266,7 @@ target.
 ## Honest status
 
 One maintainer. A `v1alpha1` API. No public production adopters yet. The
-learning model has a conceptual limit no amount of engineering removes — a
+learning model has a conceptual limit no amount of engineering removes - a
 workload that is already compromised when learning begins gets its malicious
 behaviour baselined along with everything else.
 
