@@ -231,7 +231,6 @@ func TestReleaseMarkupMatchesTheSite(t *testing.T) {
 		`<h3 class="release-version">`,
 		`<span class="release-date">`,
 		`<span class="release-pill">Current</span>`,
-		`<span class="release-pill">In progress</span>`,
 		`<div class="change-group">`,
 		`<h4 class="added">Added</h4>`,
 		`<h4 class="changed">Changed</h4>`,
@@ -293,5 +292,42 @@ func TestAnEmptyUnreleasedSectionIsNotPublished(t *testing.T) {
 	}
 	if !strings.Contains(articles, `<span class="release-pill">Current</span>`) {
 		t.Error("the only release is not badged Current")
+	}
+}
+
+// The "In progress" article is tested against a fixture, not the live
+// CHANGELOG.md. Whether [Unreleased] has anything in it depends on where in the
+// release cycle the tree happens to be: it has content between releases and is
+// empty straight after one is cut. Asserting the pill against the real file
+// made the test pass on every ordinary day and fail on the one commit that
+// cuts a release - which is how it stopped the 3.4.0 release.
+func TestUnreleasedWorkIsShownAsInProgress(t *testing.T) {
+	t.Parallel()
+	got := RenderReleases([]release{
+		{Version: unreleased, Groups: []changeGroup{{Kind: "Added", Items: []string{"a thing"}}}},
+		{Version: "1.0.0", Date: "2026-01-01", Groups: []changeGroup{{Kind: "Fixed", Items: []string{"a bug"}}}},
+	})
+	if !strings.Contains(got, `<span class="release-pill">In progress</span>`) {
+		t.Error("unreleased work is not badged In progress")
+	}
+	if !strings.Contains(got, `<span class="release-pill">Current</span>`) {
+		t.Error("the newest release lost its Current badge when unreleased work sits above it")
+	}
+}
+
+// And the other direction, which is the generator's deliberate choice: an
+// empty [Unreleased] publishes nothing, because an "In progress" article with
+// nothing under it tells a reader work is happening and then shows them none.
+func TestAnEmptyUnreleasedSectionPublishesNoArticle(t *testing.T) {
+	t.Parallel()
+	got := RenderReleases([]release{
+		{Version: unreleased},
+		{Version: "1.0.0", Date: "2026-01-01", Groups: []changeGroup{{Kind: "Fixed", Items: []string{"a bug"}}}},
+	})
+	if strings.Contains(got, "In progress") {
+		t.Error("an empty [Unreleased] section was published as an In progress article with nothing in it")
+	}
+	if !strings.Contains(got, `<span class="release-pill">Current</span>`) {
+		t.Error("the release below an empty [Unreleased] lost its Current badge")
 	}
 }

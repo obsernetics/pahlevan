@@ -68,7 +68,7 @@
             <p>
                 What changed in each Pahlevan release, and every artifact you can install:
                 a distroless container image on GHCR, a Helm chart, and a single-file
-                Kubernetes manifest. The current release is <strong><!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></strong>.
+                Kubernetes manifest. The current release is <strong><!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></strong>.
             </p>
             <div class="hero-actions">
                 <a href="#changelog" class="btn btn-primary">Read the changelog</a>
@@ -82,7 +82,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Packages</span>
-                <h2>Three ways to install <!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></h2>
+                <h2>Three ways to install <!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></h2>
                 <p>
                     One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
                     <code>pahlevan-operator</code> (the leader-elected Deployment), and the
@@ -104,22 +104,22 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     </div>
                     <p class="qs-note">
                         The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
-                        DaemonSet. Swap <code>latest</code> for <code><!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code> to pin a release.
+                        DaemonSet. Swap <code>latest</code> for <code><!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code> to pin a release.
                     </p>
                 </div>
                 <div class="qs-col">
                     <h3>Container image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code></pre>
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code></pre>
                     </div>
                     <h3>Verifying the image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync-->
-docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync-->
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync-->
+docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync-->
 
 # Digest to pin in air-gapped or regulated environments
 docker inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code></pre>
+  ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code></pre>
                     </div>
                 </div>
             </div>
@@ -138,7 +138,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <td>Most recent build of the default branch</td>
                         </tr>
                         <tr>
-                            <th scope="row"><code><!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code></th>
+                            <th scope="row"><code><!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code></th>
                             <td>Immutable release tag, recommended for production</td>
                         </tr>
                         <tr>
@@ -176,8 +176,9 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
-                        <h3 class="release-version">Unreleased</h3>
-                        <span class="release-pill">In progress</span>
+                        <h3 class="release-version">3.4.0</h3>
+                        <span class="release-date">2026-09-19</span>
+                        <span class="release-pill">Current</span>
                     </div>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
@@ -200,7 +201,6 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.3.3</h3>
                         <span class="release-date">2026-09-14</span>
-                        <span class="release-pill">Current</span>
                     </div>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
