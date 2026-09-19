@@ -90,3 +90,6 @@ docs/assets/diagrams/*.png
 /pahlevan-agent
 /pahlevan-operator
 /pahlevan-dashboard
+/sitegen
+/scenario
+/actionlint
