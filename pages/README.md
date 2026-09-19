@@ -1,147 +1,71 @@
 # Pahlevan GitHub Pages
 
-This directory contains the GitHub Pages website for the Pahlevan project.
+The published site: <https://obsernetics.github.io/pahlevan/>
 
-## Structure
+## What is hand-written and what is generated
+
+Two of these files are designed by hand. The rest are derived from the
+repository, because a fact with two copies drifts, and on this site it did:
+the changelog page went on badging 3.3.2 as the current release with no 3.3.3
+article at all, while the version strings around it were already correct.
 
 ```
 pages/
-├── index.html           # Main landing page
-├── docs.html           # Documentation portal
-├── charts.html         # Helm charts listing
-├── assets/             # Static assets
-│   ├── css/           # Stylesheets
-│   ├── js/            # JavaScript
-│   └── *.svg          # Icons and images
-├── charts/            # Helm repository
-│   └── index.yaml     # Chart index
-└── README.md          # This file
+├── index.html            # hand-written: the landing page and its inline architecture SVG
+├── changelog.html        # hand-written, except the release articles (generated)
+├── docs/                 # GENERATED from docs/*.md - do not edit
+│   ├── index.html        #   the documentation index
+│   ├── <topic>.html      #   one page per docs/<topic>.md
+│   └── assets/           #   diagrams the documents embed
+├── assets/               # hand-written CSS, JS, icons; demo.gif is copied from docs/
+└── charts/               # the Helm repository (packaged by the release workflow)
 ```
 
-## Features
+Nothing under `pages/docs/`, and nothing between the
+`<!--pahlevan:sitegen releases-->` markers in `changelog.html`, should be
+edited by hand: the next generator run overwrites it.
 
-### 🏠 Landing Page (`index.html`)
-- Modern, responsive design
-- Interactive terminal demo
-- Feature showcase
-- Quick installation guides
-- Links to documentation and charts
+## The two generators
 
-### 📚 Documentation Portal (`docs.html`)
-- References existing documentation in `../docs/`
-- Organized by categories
-- Quick reference section
-- Links to GitHub source
+| Command | Owns |
+|---|---|
+| `go run ./hack/pagesync -write` | individual borrowed values inside `<!--pahlevan:sync ...-->` spans: the release version, the benchmark counts, the demo GIF |
+| `go run ./hack/sitegen -write` | whole pages: every `docs/*.md`, the documentation index, and the release articles built from `CHANGELOG.md` |
 
-### Package Helm Charts (`charts.html`)
-- Chart listing and metadata
-- Installation instructions
-- Configuration examples
-- Links to chart source code
+Both have a `-check` that exits non-zero when the published site no longer
+matches its sources, and both run on every pull request that touches a source
+they read. `make pages-sync` runs both; `make pages-check` checks both.
 
-## Integration with Repository
+Adding a document is enough: drop a `docs/<topic>.md` in, run `make site`, and
+it is published, indexed and linked. A test iterates the real directory, so a
+document that produces no page fails the build rather than quietly existing
+only on GitHub.
 
-The GitHub Pages site integrates with the main repository:
+## Local development
 
-- **Documentation**: Links to markdown files in `docs/`
-- **Helm Charts**: References charts in `charts/`
-- **Releases**: Automated updates from GitHub releases
-- **CI/CD**: Deployed via `.github/workflows/pages.yml`
+```bash
+cd pages/
+python3 -m http.server 8000
+# http://localhost:8000
+```
 
-## Local Development
-
-1. **Serve locally**:
-   ```bash
-   # Simple HTTP server
-   cd pages/
-   python3 -m http.server 8000
-
-   # Or with Node.js
-   npx http-server -p 8000
-
-   # Or with PHP
-   php -S localhost:8000
-   ```
-
-2. **Open in browser**:
-   ```
-   http://localhost:8000
-   ```
+Edit `assets/css/main.css` for styling - the generated documentation pages use
+the same stylesheet as the hand-written ones on purpose, so a change to the
+site's look reaches all of them. Bump the `?v=N` cache buster in `index.html`,
+`changelog.html` and `hack/sitegen/layout.go` together when the stylesheet
+changes, or returning visitors keep the old one.
 
 ## Deployment
 
-The site is automatically deployed when:
-- Changes are pushed to `main` branch in `pages/`, `docs/`, or `charts/` directories
-- A new release is published
-- Manually triggered via GitHub Actions
+`.github/workflows/pages.yml` deploys on a push to `main`, on a published
+release, weekly, and on demand. It refuses to deploy from a pull request, so a
+fork cannot publish. Before the upload it re-runs both generators, so the
+published site matches the repository even if a change reached `main` without
+one.
 
-### Deployment Process
+## Helm repository
 
-1. **Build**: Copy pages content and generate Helm index
-2. **Validate**: Basic HTML and link validation
-3. **Deploy**: GitHub Pages deployment
-4. **Notify**: Slack notification on success
+The site also serves the chart repository:
 
-## Customization
-
-### Styling
-- Edit `assets/css/main.css` for styling changes
-- Uses CSS custom properties for theming
-- Mobile-first responsive design
-
-### Content
-- **Homepage**: Edit `index.html`
-- **Documentation**: Edit `docs.html` or add new pages
-- **Charts**: Edit `charts.html`
-
-### Navigation
-- Update navigation links in each HTML file
-- Consistent header/footer across pages
-
-## Helm Repository
-
-The site serves as a Helm repository at:
-- **Repository URL**: `https://obsernetics.github.io/pahlevan/`
-- **Chart Index**: `https://obsernetics.github.io/pahlevan/charts/index.yaml`
-
-### Adding Charts
-Charts are automatically packaged and indexed from the `charts/` directory in the main repository.
-
-## Performance
-
-- **Lightweight**: Minimal dependencies, optimized assets
-- **Fast Loading**: Efficient CSS and JavaScript
-- **CDN**: Delivered via GitHub Pages CDN
-- **Caching**: Proper cache headers for static assets
-
-## SEO & Accessibility
-
-- **Meta Tags**: Complete OpenGraph and Twitter Card metadata
-- **Semantic HTML**: Proper heading structure and landmarks
-- **Alt Text**: Images include descriptive alt text
-- **Mobile**: Responsive design for all device sizes
-
-## Monitoring
-
-- **GitHub Insights**: Repository traffic and engagement
-- **Performance**: Core Web Vitals monitoring
-- **Uptime**: GitHub Pages uptime monitoring
-
-## Contributing
-
-1. Fork the repository
-2. Make changes to files in `pages/`
-3. Test locally
-4. Submit a pull request
-
-### Guidelines
-- Maintain mobile responsiveness
-- Follow existing design patterns
-- Update navigation consistently
-- Test all links and functionality
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/obsernetics/pahlevan/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/obsernetics/pahlevan/discussions)
-- **Documentation**: Links to `docs/` directory
+- Repository: `https://obsernetics.github.io/pahlevan/charts`
+- Index: `https://obsernetics.github.io/pahlevan/charts/index.yaml`

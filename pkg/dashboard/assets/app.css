@@ -1,0 +1,194 @@
+/*
+ * Every colour is a variable so the diagrams the server renders and the tables
+ * the page builds agree on what "denied" looks like. The SVG that arrives from
+ * /api/diagram/* carries class attributes and no style attributes, because
+ * style-src in the Content-Security-Policy has no 'unsafe-inline': the classes
+ * below are what make those diagrams anything other than black on white.
+ *
+ * The font stack is the system stack. A web font would mean an external
+ * origin, which is the one thing this page does not do.
+ */
+:root {
+  color-scheme: light dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e2229;
+  --line: #2b313c;
+  --fg: #e6e9ef;
+  --dim: #98a1b0;
+  --accent: #58a6ff;
+  --ok: #56d364;
+  --warn: #e3b341;
+  --deny: #f4796b;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand-name { font-weight: 700; letter-spacing: 0.04em; }
+.brand-sub { color: var(--dim); margin-left: 8px; font-size: 12px; }
+
+.auth { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.auth-label { color: var(--dim); font-size: 12px; }
+
+input[type="password"] {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  min-width: 220px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+button {
+  background: var(--accent);
+  color: #06121f;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); }
+
+.status {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.status.error { color: var(--deny); }
+
+.tabs { display: flex; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.tab { background: transparent; color: var(--dim); border: 1px solid transparent; }
+.tab.active { background: var(--panel-2); color: var(--fg); border-color: var(--line); }
+
+main { padding: 16px; max-width: 1200px; }
+.view[hidden] { display: none; }
+
+h1 { font-size: 20px; margin: 0 0 12px; }
+h2 { font-size: 16px; margin: 24px 0 8px; }
+h3 { font-size: 13px; margin: 16px 0 6px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; }
+
+p { margin: 0 0 10px; max-width: 70ch; }
+.hint { color: var(--dim); font-size: 13px; }
+code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+.cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  min-width: 140px;
+}
+.card-value { font-size: 22px; font-weight: 700; }
+.card-label { color: var(--dim); font-size: 12px; }
+.card.deny .card-value { color: var(--deny); }
+.card.ok .card-value { color: var(--ok); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+tbody tr:hover { background: var(--panel-2); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.mono, .mono { font-family: var(--mono); font-size: 12px; }
+
+.link { color: var(--accent); cursor: pointer; text-decoration: underline; background: none; border: 0; padding: 0; font: inherit; }
+
+.pill { border-radius: 999px; padding: 1px 8px; font-size: 12px; border: 1px solid var(--line); }
+.pill-enforcing { color: var(--ok); border-color: var(--ok); }
+.pill-learning { color: var(--accent); border-color: var(--accent); }
+.pill-mixed { color: var(--warn); border-color: var(--warn); }
+.pill-failed { color: var(--deny); border-color: var(--deny); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 6px;
+  word-break: break-all;
+}
+
+.reason { color: var(--dim); }
+.denied { color: var(--deny); font-weight: 600; }
+
+/* Diagram styling. These selectors are the contract with pkg/dashboard/svg.go:
+   the server emits class attributes and nothing else, so a class renamed there
+   without being renamed here produces an unstyled, unreadable diagram. */
+svg { max-width: 100%; height: auto; }
+svg text { font-family: var(--font); font-size: 12px; fill: var(--fg); }
+
+.flow-box { fill: var(--panel-2); stroke: var(--line); stroke-width: 1; }
+.flow-done { stroke: var(--ok); }
+.flow-active { stroke: var(--accent); stroke-width: 2; }
+.flow-failed { stroke: var(--deny); stroke-width: 2; }
+.flow-pending { stroke: var(--line); }
+.flow-name { font-weight: 700; font-size: 13px; }
+.flow-state { fill: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.flow-detail { fill: var(--dim); font-size: 11px; }
+.flow-arrow { stroke: var(--line); stroke-width: 2; fill: none; }
+.flow-arrow-head { fill: var(--line); }
+
+.bar-track { fill: var(--panel-2); }
+.bar-fill { fill: var(--accent); }
+.bar-label { fill: var(--dim); }
+.bar-count { font-variant-numeric: tabular-nums; }
+.bar-empty { fill: var(--dim); }
+
+.tree-line { stroke: var(--line); stroke-width: 1; fill: none; }
+.tree-dot { fill: var(--accent); }
+.tree-dot-denied { fill: var(--deny); }
+.tree-label { font-family: var(--mono); font-size: 12px; }
+.tree-denied { fill: var(--deny); font-size: 11px; }
+.tree-note { fill: var(--dim); font-size: 11px; }
+
+.footer {
+  padding: 16px;
+  color: var(--dim);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 640px) {
+  .topbar { flex-direction: column; align-items: flex-start; }
+  input[type="password"] { min-width: 0; width: 100%; }
+  .auth { width: 100%; }
+}

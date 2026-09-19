@@ -1,0 +1,162 @@
+# The optional dashboard. Nothing here is installed by install.yaml, by
+# `kubectl apply -k deploy/base`, or by a default Helm install - a cluster that
+# never asks for it runs exactly the bytes it ran before.
+#
+# It is a reader: it holds no kernel access, no host mounts and no privilege,
+# and it reaches the API server exactly the way any other client does. The
+# agent stays the only privileged component, which is the whole reason this can
+# be a browser-facing process at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pahlevan-dashboard
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+    app.kubernetes.io/component: dashboard
+spec:
+  # Two replicas because the dashboard holds no state: every view is rebuilt
+  # from the API server on request, so a rolling update or a lost node costs a
+  # reconnect and nothing else.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pahlevan-dashboard
+        app.kubernetes.io/part-of: pahlevan
+        app.kubernetes.io/component: dashboard
+    spec:
+      serviceAccountName: pahlevan-dashboard
+      # The projected token is what the dashboard presents when it creates a
+      # TokenReview or a SubjectAccessReview, so it has to be mounted. It is
+      # also the only credential in the pod: there is no session secret and no
+      # user database to steal.
+      automountServiceAccountToken: true
+      # No host namespaces. Stated explicitly rather than left to the default,
+      # because this is the line that separates the dashboard from the agent:
+      # a process serving a browser must not be able to see, or be reached
+      # from, the node's namespaces.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      # User namespaces (KEP-127): in-container root maps to an unprivileged
+      # host UID. The container already runs as 65532, so this is the second
+      # layer. Set to true on clusters without UserNamespaces support.
+      hostUsers: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: dashboard
+        # The dashboard ships as its own image. A cluster that never enables it
+        # never pulls these bytes, and the agent image does not grow an HTTP
+        # server and a bundle of static assets it has no use for.
+        image: ghcr.io/obsernetics/pahlevan-dashboard:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        # TLS only. The server refuses to start without a certificate and key
+        # unless --insecure is passed on purpose: the browser sends a
+        # Kubernetes bearer token on every request, and a token on a plaintext
+        # connection is a token you have published to every host on the path.
+        - --addr=:8443
+        - --tls-cert=/etc/pahlevan/tls/tls.crt
+        - --tls-key=/etc/pahlevan/tls/tls.key
+        # Mutual TLS, if the thing in front of the dashboard can present a
+        # client certificate. It narrows who may open a connection at all,
+        # before any token is checked.
+        # - --tls-client-ca=/etc/pahlevan/tls/ca.crt
+        #
+        # Restrict accepted tokens to an audience. Without it any token the
+        # API server recognises is accepted, including a projected token a
+        # pod holds for something else entirely, which makes the dashboard a
+        # credential relay.
+        # - --audience=pahlevan-dashboard
+        #
+        # There is no flag that makes the dashboard writable. The package
+        # registers reads and refuses every other method before a handler
+        # runs; changing a policy stays a kubectl operation under the
+        # operator's own credentials.
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          privileged: false
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        ports:
+        - name: https
+          containerPort: 8443
+        # A TCP probe rather than an HTTP one, because the listener is TLS and
+        # every route on it requires a bearer token: an httpGet probe would
+        # have to be told to skip verification and would still be answered
+        # 401, which the kubelet counts as a failure and which would restart a
+        # perfectly healthy pod every period. Accepting a connection is what
+        # liveness is actually about here - the process is up and the
+        # certificate loaded.
+        livenessProbe:
+          tcpSocket:
+            port: https
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          tcpSocket:
+            port: https
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        env:
+        - name: PAHLEVAN_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PAHLEVAN_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: tls
+          mountPath: /etc/pahlevan/tls
+          readOnly: true
+        # readOnlyRootFilesystem leaves the process no writable path at all,
+        # and Go's os.CreateTemp and the TLS stack both expect one. An
+        # emptyDir is the whole allowance: it dies with the pod and touches
+        # nothing on the node.
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      # Supply the pair yourself, or let cert-manager issue it into this
+      # secret. There is no self-signed fallback: a dashboard that generates
+      # its own certificate teaches its users to click through a warning,
+      # which is the same as teaching them to accept a proxy.
+      - name: tls
+        secret:
+          secretName: pahlevan-dashboard-tls
+          defaultMode: 0400
+      - name: tmp
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: pahlevan-dashboard
+              topologyKey: kubernetes.io/hostname
+      nodeSelector:
+        kubernetes.io/os: linux

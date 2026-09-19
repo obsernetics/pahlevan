@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pahlevan</title>
+<!--
+  Two rules govern this file and both are enforced by tests.
+
+  There is no inline script anywhere, not even a one-line bootstrap: the
+  Content-Security-Policy has no 'unsafe-inline' in script-src, so an inline
+  script would silently not run, and the moment one is added the policy has to
+  be weakened for everybody.
+
+  There is no reference to an external origin: no CDN, no font service, no
+  analytics. Every byte this page loads comes from the same binary that serves
+  it, which is what makes "the dashboard cannot phone home" a property rather
+  than an intention.
+-->
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-name">pahlevan</span>
+    <span class="brand-sub">read-only dashboard</span>
+  </div>
+  <div class="auth">
+    <label class="auth-label" for="token">Kubernetes token</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="paste a bearer token">
+    <button id="connect" type="button">Connect</button>
+    <button id="forget" type="button" class="secondary">Forget</button>
+  </div>
+</header>
+
+<p id="status" class="status" role="status"></p>
+
+<nav class="tabs" id="tabs">
+  <button type="button" class="tab" data-view="overview">Overview</button>
+  <button type="button" class="tab" data-view="workloads">Workloads</button>
+  <button type="button" class="tab" data-view="denials">Denied</button>
+</nav>
+
+<main id="main">
+  <section id="view-overview" class="view" hidden></section>
+  <section id="view-workloads" class="view" hidden></section>
+  <section id="view-workload" class="view" hidden></section>
+  <section id="view-denials" class="view" hidden></section>
+  <section id="view-welcome" class="view">
+    <h1>What each workload actually does</h1>
+    <p>
+      This dashboard is read-only. It cannot change a policy, a mode or a
+      profile, and it has no endpoint that would.
+    </p>
+    <p>
+      It has no accounts of its own either. Paste a Kubernetes bearer token
+      above and every read is checked against that identity with a
+      <code>SubjectAccessReview</code>, so you see exactly the namespaces your
+      own RBAC allows and nothing else. The token stays in this tab and is sent
+      only in the <code>Authorization</code> header.
+    </p>
+    <p class="hint">
+      A token for your own user:
+      <code>kubectl create token &lt;serviceaccount&gt;</code>, or whatever your
+      cluster's identity provider issues.
+    </p>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>All assets are served from the dashboard binary. No external origin, no inline script.</span>
+</footer>
+</body>
+</html>

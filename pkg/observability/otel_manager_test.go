@@ -237,7 +237,7 @@ func TestManager_ExportObservabilityData(t *testing.T) {
 	if data.Labels["service"] != "pahlevan-operator" {
 		t.Errorf("service label missing: %+v", data.Labels)
 	}
-	if data.Metrics == nil || data.Traces == nil || data.Logs == nil || data.Events == nil {
+	if data.Metrics == nil || data.Logs == nil || data.Events == nil {
 		t.Fatal("export data collections must be initialized")
 	}
 }

@@ -55,10 +55,27 @@ func TestTheArchitectureDiagramIsValidXML(t *testing.T) {
 	}
 }
 
+// The README carries a second architecture SVG, a separate file from the one
+// inlined on the landing page. Only the landing page was guarded, so this one
+// went on showing three programs and calling the syscall tracepoint a raw
+// tracepoint - the same staleness, in the file nothing was checking.
+func TestTheREADMEDiagramShowsEveryDetector(t *testing.T) {
+	b, err := os.ReadFile("../../docs/assets/architecture.svg")
+	if err != nil {
+		t.Fatalf("reading the README architecture diagram: %v", err)
+	}
+	assertShowsEveryDetector(t, string(b), "docs/assets/architecture.svg")
+}
+
 func TestTheArchitectureDiagramShowsEveryDetector(t *testing.T) {
 	svg := inlineSVG(t)
+	assertShowsEveryDetector(t, svg, "pages/index.html")
+}
+
+func assertShowsEveryDetector(t *testing.T, svg, where string) {
+	t.Helper()
 	for _, e := range coverage.Table {
-		// The diagram shortens the hooks to fit the boxes, so match on the
+		// The diagrams shorten the hooks to fit the boxes, so match on the
 		// distinctive part rather than the full attach point.
 		short := e.Hook
 		if i := strings.LastIndex(short, "/"); i >= 0 {
@@ -69,8 +86,8 @@ func TestTheArchitectureDiagramShowsEveryDetector(t *testing.T) {
 			short = "bprm_check"
 		}
 		if !strings.Contains(svg, short) {
-			t.Errorf("the architecture diagram does not mention %s (%s), so the page shows fewer "+
-				"programs than Pahlevan has", e.Hook, e.Detector)
+			t.Errorf("%s does not mention %s (%s), so it shows fewer programs than Pahlevan has",
+				where, e.Hook, e.Detector)
 		}
 	}
 }

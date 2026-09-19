@@ -139,6 +139,7 @@ type SeccompProfileRef struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:deprecatedversion:warning="policy.pahlevan.io/v1alpha1 ContainerProfile is deprecated; use policy.pahlevan.io/v1beta1"
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=cprof
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`

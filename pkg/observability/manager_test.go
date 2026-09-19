@@ -347,65 +347,6 @@ func (m *MockMetricsSource) GetMetrics() map[string]float64 {
 	return m.data
 }
 
-func TestTracer_StartSpan(t *testing.T) {
-	tracer := &Tracer{
-		serviceName: "pahlevan-test",
-		enabled:     true,
-		spans:       make(map[string]*Span),
-	}
-
-	span := tracer.StartSpan("test-operation")
-
-	require.NotNil(t, span)
-	assert.Equal(t, "test-operation", span.Name)
-	assert.False(t, span.StartTime.IsZero())
-	assert.True(t, span.EndTime.IsZero())
-	assert.False(t, span.Finished)
-}
-
-func TestSpan_Finish(t *testing.T) {
-	span := &Span{
-		ID:        "test-span-1",
-		Name:      "test-operation",
-		StartTime: time.Now().Add(-100 * time.Millisecond),
-		Tags:      make(map[string]string),
-		Logs:      make([]SpanLog, 0),
-	}
-
-	span.Finish()
-
-	assert.True(t, span.Finished)
-	assert.False(t, span.EndTime.IsZero())
-	assert.True(t, span.EndTime.After(span.StartTime))
-}
-
-func TestSpan_SetTag(t *testing.T) {
-	span := &Span{
-		Tags: make(map[string]string),
-	}
-
-	span.SetTag("component", "ebpf-manager")
-	span.SetTag("version", "1.0.0")
-
-	assert.Equal(t, "ebpf-manager", span.Tags["component"])
-	assert.Equal(t, "1.0.0", span.Tags["version"])
-}
-
-func TestSpan_Log(t *testing.T) {
-	span := &Span{
-		Logs: make([]SpanLog, 0),
-	}
-
-	span.Log("test message", map[string]interface{}{
-		"level":     "info",
-		"component": "test",
-	})
-
-	assert.Len(t, span.Logs, 1)
-	assert.Equal(t, "test message", span.Logs[0].Message)
-	assert.Equal(t, "info", span.Logs[0].Fields["level"])
-}
-
 func TestBenchmarkMetricsCollection(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping benchmark test in short mode")

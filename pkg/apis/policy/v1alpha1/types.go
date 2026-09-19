@@ -634,6 +634,7 @@ type WorkloadReference struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:deprecatedversion:warning="policy.pahlevan.io/v1alpha1 PahlevanPolicy is deprecated; use policy.pahlevan.io/v1beta1"
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`

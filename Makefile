@@ -91,22 +91,31 @@ proto: ## Regenerate the gRPC API from api/v1alpha1/events.proto (needs protoc)
 .PHONY: api-docs
 api-docs: ## Regenerate the CRD section of docs/api-reference.md from the Go types
 	@go run ./hack/apidocs > /tmp/pahlevan-api.md
-	@python3 - <<'PY'
-	import io
-	gen = open('/tmp/pahlevan-api.md').read()
-	cur = open('docs/api-reference.md').read()
-	i = cur.index('## Metrics, events and the CLI')
-	open('docs/api-reference.md','w').write(gen + '\n' + cur[i:])
-	PY
+# One line, because make runs one shell per recipe line: the here-document this
+# replaced was split across seven of them, so bash only ever saw its first line
+# and the target failed with "here-document delimited by end-of-file". The
+# generated prefix is replaced and the hand-written sections after the boundary
+# are kept.
+	@python3 -c 'gen = open("/tmp/pahlevan-api.md").read(); cur = open("docs/api-reference.md").read(); i = cur.index("## Metrics, events and the CLI"); open("docs/api-reference.md", "w").write(gen + "\n" + cur[i:])'
 	@echo "regenerated the CRD section of docs/api-reference.md"
 
 .PHONY: pages-check
 pages-check: ## Fail if the GitHub Pages site has drifted from its sources
 	go run ./hack/pagesync -check
+	go run ./hack/sitegen -check
 
 .PHONY: pages-sync
 pages-sync: ## Re-derive the values the GitHub Pages site borrows, and copy the GIF
 	go run ./hack/pagesync -write
+	go run ./hack/sitegen -write
+
+.PHONY: site
+site: ## Regenerate the documentation pages and release articles on the site
+	go run ./hack/sitegen -write
+
+.PHONY: site-check
+site-check: ## Fail if the generated site no longer matches docs/ and CHANGELOG.md
+	go run ./hack/sitegen -check
 
 .PHONY: demo-gif
 demo-gif: ## Re-render docs/assets/demo.gif from the vhs tape (needs vhs + ffmpeg)
