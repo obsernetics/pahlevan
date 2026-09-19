@@ -7,64 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-09-19
+
+The console, and the first answer to rare behaviour. Learning is a wall-clock
+window, so something a workload does once a day was never in its baseline and
+was refused like an attack. This release lets an operator declare it, and lets
+Pahlevan find a CronJob's schedule and learn for long enough to see it.
+
 ### Added
 
-- **`pahlevan ui`, an interactive view of what the agents are reporting.** Every
-  command printed and exited, so watching a workload learn meant reading a
-  redrawn line, and comparing learned against enforcing meant two commands and a
-  diff done in your head. The view is a Bubble Tea screen over the gRPC stream
-  that already exists: a live event list, per-workload counts of what was
-  observed and what was refused, a detail pane per workload, and the ATT&CK
-  coverage table read from `pkg/coverage` rather than retyped.
-
-  It is a reader - it never changes a policy, a mode or a profile, so it cannot
-  be the thing that turns enforcement off during an incident. It does not break
-  scripts: every existing command keeps its exact output, and without a terminal
-  (piped, redirected, `CI`, `NO_COLOR`, `TERM=dumb`, or `--no-tui`) it prints a
-  plain greppable summary instead of drawing. Retained events live in a
-  fixed-capacity ring, because a slice that only appends turns the UI into a
-  memory leak that grows with the node's syscall rate; evictions are counted and
-  shown. `--replay` takes the JSON-lines the file sink writes, so a UI problem is
-  reproducible from a capture with no cluster.
-
-- **The architecture diagram on the landing page was stale and clipped.** It
-  showed three eBPF programs long after there were seven, so a reader saw a
-  third of what Pahlevan does. One label was anchored at its right-hand end at
-  `x=150` and was about 154px wide, so it began at roughly `x=-16` and rendered
-  as "earning / enforcement status". And the status arrow started 12px above
-  the agent box, in empty space, at the same x as the arrow going the other
-  way, so the round trip read as one line doubled back. The diagram is redrawn
-  with all seven programs, split by whether they need `lsm=bpf`, and tests now
-  fail if a detector is missing from it, if any label would render outside the
-  canvas, or if a connector does not join two boxes.
-
-- **A check that the website shows every release.** The changelog page carries
-  one article per release, written as prose rather than as a marked span, so
-  pagesync had nothing to check and reported the site up to date while it was
-  missing an entire release: 3.3.3's version strings updated, because markers
-  own those, and the page went on badging 3.3.2 as current with no 3.3.3
-  article at all. A reader would have concluded 3.3.3 did not exist. Tests now
-  fail if a released version has no article, if the site shows an article for a
-  version the changelog does not document, or if the "Current" badge is not on
-  the newest release.
-
-- **A check that a merged release was actually tagged.** The scheduled
-  maintenance agent runs as the GitHub App, which cannot create tag refs, so it
-  merges a release PR and the tag never appears: no tag, no release, no image,
-  while `CHANGELOG.md` and the website both announce the version as current.
-  `v3.1.0` sat untagged for five days; `v3.3.1` and `v3.3.3` were each
-  announced while nothing could install them. The agent's prompt was rewritten
-  twice and it happened again both times, so this is a check rather than
-  another reminder: a six-hourly workflow compares the `VERSION` in `main`'s
-  Makefile against the pushed tags and opens an issue when a release has been
-  merged without one.
+- **An interactive console.** Bare `pahlevan` in a terminal opens it: overview,
+  policies, profiles, workloads, events, attack surface and coverage, reading
+  the cluster and the agent's event stream. It is read-only by construction and
+  cannot change a policy or a mode. Piped or redirected it prints help instead,
+  so scripts keep working.
+- **Declared expected behaviour.** `learningConfig.expectedBehavior` lists
+  files, destinations, executables and capabilities a workload uses rarely.
+  They are seeded into the allow-set, additively and never wider than declared,
+  and reported on the profile as declared rather than learned.
+- **Cycle-aware learning windows.** Pahlevan walks a pod's owners to its
+  CronJob, reads the schedule, and raises the learning window to one full
+  interval. A declared window is never lowered; the discovered one is capped at
+  seven days, past which the answer is to declare the rare operation.
+- **The `v1beta1` API**, now the storage version. `v1alpha1` is still served,
+  deprecated, and converts field by field; six paths that cannot round-trip are
+  listed and tested.
+- **Names for external destinations.** Private ranges, CGNAT, link-local, the
+  cluster CIDR and cloud metadata endpoints are labelled. Naming never blocks
+  the event path, and reverse DNS is off by default.
+- **Tracing that shows something**: reconcile, the learning window, profile
+  generation, and eBPF load and attach per program. The per-event path is
+  deliberately untraced, and a test enforces it.
+- **An optional dashboard**, off by default and absent from `install.yaml`.
+  Reads are authorised per request with a `SubjectAccessReview`; no writes, no
+  cluster-admin, TLS required, no external origins.
+- **Documentation published on the site**, generated from `docs/`, with release
+  articles generated from this file.
+- A scheduled check that opens an issue when a merged release was never tagged.
 
 ### Changed
 
-- The roadmap has a **Version 4** section: an interactive CLI, an optional and
-  deliberately unprivileged dashboard, and the two changes that have to break
-  to stop being temporary - the API graduating to `v1beta1`, and enforcement no
-  longer requiring `lsm=bpf` on the kernel command line.
+- **CI runs its checks in parallel**: about 12 minutes to about 8 for a code
+  change, and about 30 seconds for a documentation-only one.
+- The image builds from a 10 MB context instead of 15 GB, and a fresh VM
+  provisions in 44 seconds instead of 88.
+- The documentation was rewritten against the code. It had described LSM hooks,
+  policy fields, metrics, subcommands and error messages that do not exist.
+- The README is shorter and the architecture diagrams show all eight programs,
+  in larger type.
+
+### Fixed
+
+- **Every IPv6 destination was exported as `0.0.0.0`.**
+- `--kubeconfig` was passed as a context name, so it could silently select the
+  wrong cluster. `--context` is now honoured too.
+- A replay lost the rest of a capture on one malformed line.
+- `pahlevan ui > /dev/null` was treated as a terminal.
+
+### Removed
+
+- Three pieces of tracing that implied a capability they did not have: a second
+  tracer nothing read, an always-empty `Traces` field, and a tracer provider with
+  no span processors that reported tracing as enabled.
 
 ## [3.3.3] - 2026-09-14
 
@@ -97,13 +101,6 @@ could install it. Its changes are released here.
   `softprops/action-gh-release` to v3) rather than merging one at a time.
 
 ### Fixed
-
-- **Every IPv6 destination left the agent as `0.0.0.0`.** The export path
-  rendered the v4 field unconditionally, but on an `AF_INET6` event the address
-  is in the v6 field and the v4 one is zero. On a dual-stack cluster that is
-  most of the egress there is, and it was unnamable, unsearchable and
-  indistinguishable from every other v6 destination on the node. `pkg/ebpf`
-  already handled the family; the export path did not.
 
 - **The released `install.yaml` pinned nothing.** It is the file attached to
   every release, and `docs/packages.md` points at

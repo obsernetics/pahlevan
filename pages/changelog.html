@@ -68,7 +68,7 @@
             <p>
                 What changed in each Pahlevan release, and every artifact you can install:
                 a distroless container image on GHCR, a Helm chart, and a single-file
-                Kubernetes manifest. The current release is <strong><!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></strong>.
+                Kubernetes manifest. The current release is <strong><!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></strong>.
             </p>
             <div class="hero-actions">
                 <a href="#changelog" class="btn btn-primary">Read the changelog</a>
@@ -82,7 +82,7 @@
         <div class="container">
             <div class="section-header">
                 <span class="eyebrow">Packages</span>
-                <h2>Three ways to install <!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></h2>
+                <h2>Three ways to install <!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></h2>
                 <p>
                     One distroless image contains <code>pahlevan-agent</code> (the per-node DaemonSet),
                     <code>pahlevan-operator</code> (the leader-elected Deployment), and the
@@ -104,22 +104,22 @@ helm install pahlevan pahlevan/pahlevan-operator \
                     </div>
                     <p class="qs-note">
                         The manifest carries the CRDs, RBAC, the operator Deployment, and the agent
-                        DaemonSet. Swap <code>latest</code> for <code><!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code> to pin a release.
+                        DaemonSet. Swap <code>latest</code> for <code><!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code> to pin a release.
                     </p>
                 </div>
                 <div class="qs-col">
                     <h3>Container image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code></pre>
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code></pre>
                     </div>
                     <h3>Verifying the image</h3>
                     <div class="code-block">
-                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync-->
-docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync-->
+                        <pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync-->
+docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync-->
 
 # Digest to pin in air-gapped or regulated environments
 docker inspect --format '{{index .RepoDigests 0}}' \
-  ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code></pre>
+  ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code></pre>
                     </div>
                 </div>
             </div>
@@ -138,7 +138,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <td>Most recent build of the default branch</td>
                         </tr>
                         <tr>
-                            <th scope="row"><code><!--pahlevan:sync version-->v3.3.3<!--/pahlevan:sync--></code></th>
+                            <th scope="row"><code><!--pahlevan:sync version-->v3.4.0<!--/pahlevan:sync--></code></th>
                             <td>Immutable release tag, recommended for production</td>
                         </tr>
                         <tr>
@@ -176,22 +176,47 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
-                        <h3 class="release-version">Unreleased</h3>
-                        <span class="release-pill">In progress</span>
+                        <h3 class="release-version">3.4.0</h3>
+                        <span class="release-date">2026-09-19</span>
+                        <span class="release-pill">Current</span>
                     </div>
+                    <p class="release-summary">The console, and the first answer to rare behaviour. Learning is a wall-clock window, so something a workload does once a day was never in its baseline and was refused like an attack. This release lets an operator declare it, and lets Pahlevan find a CronJob's schedule and learn for long enough to see it.</p>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
                         <ul>
-                            <li><p><strong><code>pahlevan ui</code>, an interactive view of what the agents are reporting.</strong> Every command printed and exited, so watching a workload learn meant reading a redrawn line, and comparing learned against enforcing meant two commands and a diff done in your head. The view is a Bubble Tea screen over the gRPC stream that already exists: a live event list, per-workload counts of what was observed and what was refused, a detail pane per workload, and the ATT&amp;CK coverage table read from <code>pkg/coverage</code> rather than retyped.</p> <p>It is a reader - it never changes a policy, a mode or a profile, so it cannot be the thing that turns enforcement off during an incident. It does not break scripts: every existing command keeps its exact output, and without a terminal (piped, redirected, <code>CI</code>, <code>NO_COLOR</code>, <code>TERM=dumb</code>, or <code>--no-tui</code>) it prints a plain greppable summary instead of drawing. Retained events live in a fixed-capacity ring, because a slice that only appends turns the UI into a memory leak that grows with the node's syscall rate; evictions are counted and shown. <code>--replay</code> takes the JSON-lines the file sink writes, so a UI problem is reproducible from a capture with no cluster.</p></li>
-                            <li><strong>The architecture diagram on the landing page was stale and clipped.</strong> It showed three eBPF programs long after there were seven, so a reader saw a third of what Pahlevan does. One label was anchored at its right-hand end at <code>x=150</code> and was about 154px wide, so it began at roughly <code>x=-16</code> and rendered as &quot;earning / enforcement status&quot;. And the status arrow started 12px above the agent box, in empty space, at the same x as the arrow going the other way, so the round trip read as one line doubled back. The diagram is redrawn with all seven programs, split by whether they need <code>lsm=bpf</code>, and tests now fail if a detector is missing from it, if any label would render outside the canvas, or if a connector does not join two boxes.</li>
-                            <li><strong>A check that the website shows every release.</strong> The changelog page carries one article per release, written as prose rather than as a marked span, so pagesync had nothing to check and reported the site up to date while it was missing an entire release: 3.3.3's version strings updated, because markers own those, and the page went on badging 3.3.2 as current with no 3.3.3 article at all. A reader would have concluded 3.3.3 did not exist. Tests now fail if a released version has no article, if the site shows an article for a version the changelog does not document, or if the &quot;Current&quot; badge is not on the newest release.</li>
-                            <li><strong>A check that a merged release was actually tagged.</strong> The scheduled maintenance agent runs as the GitHub App, which cannot create tag refs, so it merges a release PR and the tag never appears: no tag, no release, no image, while <code>CHANGELOG.md</code> and the website both announce the version as current. <code>v3.1.0</code> sat untagged for five days; <code>v3.3.1</code> and <code>v3.3.3</code> were each announced while nothing could install them. The agent's prompt was rewritten twice and it happened again both times, so this is a check rather than another reminder: a six-hourly workflow compares the <code>VERSION</code> in <code>main</code>'s Makefile against the pushed tags and opens an issue when a release has been merged without one.</li>
+                            <li><strong>An interactive console.</strong> Bare <code>pahlevan</code> in a terminal opens it: overview, policies, profiles, workloads, events, attack surface and coverage, reading the cluster and the agent's event stream. It is read-only by construction and cannot change a policy or a mode. Piped or redirected it prints help instead, so scripts keep working.</li>
+                            <li><strong>Declared expected behaviour.</strong> <code>learningConfig.expectedBehavior</code> lists files, destinations, executables and capabilities a workload uses rarely. They are seeded into the allow-set, additively and never wider than declared, and reported on the profile as declared rather than learned.</li>
+                            <li><strong>Cycle-aware learning windows.</strong> Pahlevan walks a pod's owners to its CronJob, reads the schedule, and raises the learning window to one full interval. A declared window is never lowered; the discovered one is capped at seven days, past which the answer is to declare the rare operation.</li>
+                            <li><strong>The <code>v1beta1</code> API</strong>, now the storage version. <code>v1alpha1</code> is still served, deprecated, and converts field by field; six paths that cannot round-trip are listed and tested.</li>
+                            <li><strong>Names for external destinations.</strong> Private ranges, CGNAT, link-local, the cluster CIDR and cloud metadata endpoints are labelled. Naming never blocks the event path, and reverse DNS is off by default.</li>
+                            <li><strong>Tracing that shows something</strong>: reconcile, the learning window, profile generation, and eBPF load and attach per program. The per-event path is deliberately untraced, and a test enforces it.</li>
+                            <li><strong>An optional dashboard</strong>, off by default and absent from <code>install.yaml</code>. Reads are authorised per request with a <code>SubjectAccessReview</code>; no writes, no cluster-admin, TLS required, no external origins.</li>
+                            <li><strong>Documentation published on the site</strong>, generated from <code>docs/</code>, with release articles generated from this file.</li>
+                            <li>A scheduled check that opens an issue when a merged release was never tagged.</li>
                         </ul>
                     </div>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
                         <ul>
-                            <li>The roadmap has a <strong>Version 4</strong> section: an interactive CLI, an optional and deliberately unprivileged dashboard, and the two changes that have to break to stop being temporary - the API graduating to <code>v1beta1</code>, and enforcement no longer requiring <code>lsm=bpf</code> on the kernel command line.</li>
+                            <li><strong>CI runs its checks in parallel</strong>: about 12 minutes to about 8 for a code change, and about 30 seconds for a documentation-only one.</li>
+                            <li>The image builds from a 10 MB context instead of 15 GB, and a fresh VM provisions in 44 seconds instead of 88.</li>
+                            <li>The documentation was rewritten against the code. It had described LSM hooks, policy fields, metrics, subcommands and error messages that do not exist.</li>
+                            <li>The README is shorter and the architecture diagrams show all eight programs, in larger type.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li><strong>Every IPv6 destination was exported as <code>0.0.0.0</code>.</strong></li>
+                            <li><code>--kubeconfig</code> was passed as a context name, so it could silently select the wrong cluster. <code>--context</code> is now honoured too.</li>
+                            <li>A replay lost the rest of a capture on one malformed line.</li>
+                            <li><code>pahlevan ui &gt; /dev/null</code> was treated as a terminal.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="removed">Removed</h4>
+                        <ul>
+                            <li>Three pieces of tracing that implied a capability they did not have: a second tracer nothing read, an always-empty <code>Traces</code> field, and a tracer provider with no span processors that reported tracing as enabled.</li>
                         </ul>
                     </div>
                 </article>
@@ -200,7 +225,6 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.3.3</h3>
                         <span class="release-date">2026-09-14</span>
-                        <span class="release-pill">Current</span>
                     </div>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
@@ -226,7 +250,6 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="change-group">
                         <h4 class="fixed">Fixed</h4>
                         <ul>
-                            <li><strong>Every IPv6 destination left the agent as <code>0.0.0.0</code>.</strong> The export path rendered the v4 field unconditionally, but on an <code>AF_INET6</code> event the address is in the v6 field and the v4 one is zero. On a dual-stack cluster that is most of the egress there is, and it was unnamable, unsearchable and indistinguishable from every other v6 destination on the node. <code>pkg/ebpf</code> already handled the family; the export path did not.</li>
                             <li><strong>The released <code>install.yaml</code> pinned nothing.</strong> It is the file attached to every release, and <code>docs/packages.md</code> points at <code>releases/download/&lt;version&gt;/install.yaml</code> as the immutable tag recommended for production. It shipped <code>image: ghcr.io/obsernetics/pahlevan:latest</code>, so that path pulled a tag that moves on every merge to main. The generator now stamps the release version into the manifest; <code>deploy/base</code> keeps <code>:latest</code> on purpose, because it is a kustomize base and an overlay sets its own tag.</li>
                             <li>Nothing regenerated or verified <code>install.yaml</code> in CI, so it could drift from the <code>deploy/base</code> and <code>config/crd</code> sources it claims to be generated from. <code>hack/install</code> now fails if it has drifted, if it does not pin the version the Makefile declares, if the kustomize base grows a hardcoded version, or if the docs send readers to a different release than the manifest deploys.</li>
                             <li><strong>A data race in <code>Manager.SetAction</code>.</strong> It read the four eBPF collection pointer fields directly to decide which hooks to skip, with no lock held, while <code>Load</code> only ever writes them under the manager's mutex. A policy transition landing while the agent is loading or reloading its eBPF objects raced on those reads; confirmed with <code>-race</code> against a concurrent reload and fixed by having <code>SetAction</code> go through the four per-hook setters, which already take the read lock, rather than reading the fields itself. A regression test reproduces the race on purpose rather than relying on a scheduler to find it again.</li>
