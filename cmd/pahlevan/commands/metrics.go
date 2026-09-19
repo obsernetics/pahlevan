@@ -140,6 +140,7 @@ process collectors.`,
 	flags.StringVar(&opts.path, "path", opts.path, "HTTP path of the metrics endpoint")
 	flags.BoolVarP(&opts.watch, "watch", "w", false, "Re-scrape on an interval until interrupted")
 	flags.DurationVar(&opts.interval, "interval", opts.interval, "Interval between scrapes when --watch is set")
+	acceptFollowAsWatch(cmd)
 
 	return cmd
 }

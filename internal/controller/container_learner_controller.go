@@ -248,12 +248,28 @@ func (r *ContainerLearnerReconciler) policyAppliesToPod(policy *policyv1alpha1.P
 	return matchesSelector(pod.Labels, policy.Spec.Selector)
 }
 
+// startLearningForContainer opens the learning window for one container.
+//
+// Traced because this is the start of the clock every later decision is
+// measured against: if enforcement arrives too early for a workload, the
+// answer is almost always that the window opened later than expected - on a
+// pod restart, or after a policy was edited - and the span's timestamp is the
+// only record of when it actually opened.
 func (r *ContainerLearnerReconciler) startLearningForContainer(
 	ctx context.Context,
 	containerID string,
 	trackingInfo *ContainerTrackingInfo,
 	policies []*policyv1alpha1.PahlevanPolicy,
-) error {
+) (err error) {
+	ctx, span := observability.StartSpan(ctx, observability.SpanLearningStart,
+		observability.AttrNamespace.String(trackingInfo.PodNamespace),
+		observability.AttrPod.String(trackingInfo.PodName),
+		observability.AttrContainerID.String(containerID),
+		observability.AttrWorkload.String(trackingInfo.WorkloadName),
+		observability.AttrWorkloadKind.String(trackingInfo.WorkloadKind),
+		observability.AttrPolicyCount.Int(len(policies)))
+	defer func() { observability.EndSpan(span, err) }()
+
 	logger := log.FromContext(ctx)
 	logger.Info("Starting learning for container", "containerID", containerID)
 
@@ -261,6 +277,10 @@ func (r *ContainerLearnerReconciler) startLearningForContainer(
 	// it there is nothing to start, so treat this as a no-op rather than
 	// dereferencing a nil learner.
 	if r.SyscallLearner == nil {
+		// Recorded rather than silent: a node whose learner never came up
+		// learns nothing, and the pod looks healthy throughout.
+		observability.AddEvent(span, observability.EventDegraded,
+			observability.AttrReason.String("syscall learner not configured"))
 		return nil
 	}
 
@@ -273,13 +293,13 @@ func (r *ContainerLearnerReconciler) startLearningForContainer(
 
 	// Start learning with the syscall learner
 	for _, policy := range policies {
-		if err := r.SyscallLearner.StartLearning(ctx, containerID, workloadRef, policy); err != nil {
-			return fmt.Errorf("failed to start learning: %w", err)
+		if serr := r.SyscallLearner.StartLearning(ctx, containerID, workloadRef, policy); serr != nil {
+			return fmt.Errorf("failed to start learning: %w", serr)
 		}
 	}
 
 	// Record lifecycle event
-	if err := r.SyscallLearner.RecordLifecycleEvent(
+	if lerr := r.SyscallLearner.RecordLifecycleEvent(
 		containerID,
 		learner.EventContainerStarted,
 		map[string]string{
@@ -287,14 +307,24 @@ func (r *ContainerLearnerReconciler) startLearningForContainer(
 			"namespace": trackingInfo.PodNamespace,
 			"workload":  trackingInfo.WorkloadName,
 		},
-	); err != nil {
-		logger.Error(err, "Failed to record lifecycle event")
+	); lerr != nil {
+		logger.Error(lerr, "Failed to record lifecycle event")
 	}
 
 	return nil
 }
 
-func (r *ContainerLearnerReconciler) stopLearningForContainer(ctx context.Context, containerID string) error {
+// stopLearningForContainer closes the learning window for one container.
+//
+// Paired with startLearningForContainer so a trace shows the window's two
+// ends. A window that is never closed - the container went away without the
+// reconciler noticing - shows up as a start span with no matching stop, which
+// no counter would ever reveal.
+func (r *ContainerLearnerReconciler) stopLearningForContainer(ctx context.Context, containerID string) (err error) {
+	_, span := observability.StartSpan(ctx, observability.SpanLearningStop,
+		observability.AttrContainerID.String(containerID))
+	defer func() { observability.EndSpan(span, err) }()
+
 	logger := log.FromContext(ctx)
 	logger.Info("Stopping learning for container", "containerID", containerID)
 
@@ -304,8 +334,8 @@ func (r *ContainerLearnerReconciler) stopLearningForContainer(ctx context.Contex
 	}
 
 	// Stop learning with the syscall learner
-	if err := r.SyscallLearner.StopLearning(containerID); err != nil {
-		return fmt.Errorf("failed to stop learning: %w", err)
+	if serr := r.SyscallLearner.StopLearning(containerID); serr != nil {
+		return fmt.Errorf("failed to stop learning: %w", serr)
 	}
 
 	return nil

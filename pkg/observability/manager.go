@@ -61,6 +61,13 @@ type Manager struct {
 	dashboards    map[string]*Dashboard
 	alertRules    map[string]*AlertRule
 	stopCh        chan struct{}
+	// flushTimeout overrides shutdownTimeout for this manager. Zero means the
+	// production constant. It exists so a test can prove the flush is bounded
+	// without waiting out the full five seconds of OTLP retries against an
+	// unreachable collector - the property under test is "Shutdown returns at
+	// its deadline instead of hanging", which does not depend on how long that
+	// deadline is.
+	flushTimeout time.Duration
 }
 
 // Config defines observability configuration
@@ -132,7 +139,6 @@ type Exporter interface {
 // ObservabilityData contains all observability data
 type ObservabilityData struct {
 	Metrics   map[string]*MetricData
-	Traces    []*TraceData
 	Logs      []*LogData
 	Events    []*EventData
 	Timestamp time.Time
@@ -161,35 +167,15 @@ const (
 	MetricTypeSummary   MetricType = "summary"
 )
 
-// TraceData represents trace information
-type TraceData struct {
-	TraceID   string
-	SpanID    string
-	Operation string
-	StartTime time.Time
-	EndTime   time.Time
-	Duration  time.Duration
-	Status    TraceStatus
-	Tags      map[string]string
-	Events    []*TraceEvent
-	Parent    *TraceData
-	Children  []*TraceData
-}
-
-// TraceStatus defines trace status
-type TraceStatus string
-
-const (
-	TraceStatusOK    TraceStatus = "ok"
-	TraceStatusError TraceStatus = "error"
-)
-
-// TraceEvent represents events within a trace
-type TraceEvent struct {
-	Time       time.Time
-	Name       string
-	Attributes map[string]string
-}
+// Trace data is deliberately absent from ObservabilityData.
+//
+// This struct used to carry a Traces []*TraceData field, and a parallel
+// TraceData/TraceEvent/TraceStatus type hierarchy modelling spans by hand.
+// Nothing ever populated it: ExportObservabilityData allocated an empty slice
+// and handed it to every registered exporter forever. A custom exporter
+// written against that field would have shipped zero traces and had no way to
+// tell that from a quiet cluster. Traces leave this process through the OTLP
+// span exporter, which is the only path that has ever carried one.
 
 // LogData represents log information
 type LogData struct {
@@ -730,6 +716,23 @@ func (m *Manager) initializeTracing(res *resource.Resource) error {
 			wantedReader(m.config.TracingExporters))
 	}
 
+	// No exporter means no tracing, and the manager must say so rather than
+	// pretend.
+	//
+	// This used to build a TracerProvider regardless, so a process with no
+	// tracing exporter configured still reported TracingEnabled() == true,
+	// still installed itself as the global provider, and still made every
+	// span-start pay a sampler decision and an allocation - to feed a provider
+	// with zero span processors, which dropped every span on the floor. A
+	// capability that is advertised and absent is worse than one that is
+	// absent, because it stops anyone from looking for the real reason their
+	// traces are empty.
+	if len(exporters) == 0 {
+		DisableTracing()
+		log.Log.V(1).Info("no tracing exporter configured; tracing is off and no spans will be recorded")
+		return nil
+	}
+
 	// Create span processors
 	var processors []sdktrace.SpanProcessor
 	for _, exporter := range exporters {
@@ -758,6 +761,12 @@ func (m *Manager) initializeTracing(res *resource.Resource) error {
 		"pahlevan.io/operator",
 		trace.WithInstrumentationVersion(m.config.ServiceVersion),
 	)
+
+	// Hand the provider to the package-level tracer so the eBPF manager, the
+	// enforcement engine and the reconcilers can start spans without every one
+	// of them having to be threaded a *Manager. Those packages must not import
+	// a manager instance just to be observable.
+	SetTracerProvider(m.tracerProvider)
 
 	return nil
 }
@@ -794,6 +803,14 @@ func (m *Manager) Start(ctx context.Context) error {
 // Losing the last batch of spans is much cheaper than that.
 const shutdownTimeout = 5 * time.Second
 
+// shutdownDeadline is the bound this manager applies to the final flush.
+func (m *Manager) shutdownDeadline() time.Duration {
+	if m.flushTimeout > 0 {
+		return m.flushTimeout
+	}
+	return shutdownTimeout
+}
+
 // Shutdown flushes and stops every provider.
 //
 // Each provider is shut down even if an earlier one failed, and the errors are
@@ -803,7 +820,7 @@ const shutdownTimeout = 5 * time.Second
 func (m *Manager) Shutdown() error {
 	close(m.stopCh)
 
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), m.shutdownDeadline())
 	defer cancel()
 
 	var errs []string
@@ -813,6 +830,11 @@ func (m *Manager) Shutdown() error {
 		}
 	}
 	if m.tracerProvider != nil {
+		// Turn the package tracer off before the flush, not after: a span
+		// started against a provider that is mid-shutdown is recorded into a
+		// processor that will never export it, which is the silent data loss
+		// this whole change exists to remove.
+		DisableTracing()
 		if err := m.tracerProvider.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Sprintf("tracer provider: %v", err))
 		}
@@ -1050,7 +1072,6 @@ func (m *Manager) createDefaultAlertRules() error {
 func (m *Manager) ExportObservabilityData() (*ObservabilityData, error) {
 	data := &ObservabilityData{
 		Metrics:   make(map[string]*MetricData),
-		Traces:    make([]*TraceData, 0),
 		Logs:      make([]*LogData, 0),
 		Events:    make([]*EventData, 0),
 		Timestamp: time.Now(),
@@ -1081,7 +1102,10 @@ func (m *Manager) StartSpan(ctx context.Context, name string, attrs ...attribute
 	tr := m.tracer
 	m.mu.RUnlock()
 	if tr == nil {
-		tr = otel.Tracer("pahlevan.io/operator")
+		// Fall back to the process tracer rather than the OTel global one, so
+		// a manager built without tracing behaves identically to the rest of
+		// the codebase: no provider means no span, not a span nobody exports.
+		return StartSpan(ctx, name, attrs...)
 	}
 	ctx, span := tr.Start(ctx, name)
 	if len(attrs) > 0 {

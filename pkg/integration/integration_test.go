@@ -147,6 +147,61 @@ func (m *MockLearningEngine) HandleCapabilityEvent(event *ebpf.CapabilityEvent) 
 	return nil
 }
 
+// syscallCount is the part of a SyscallStatistics these tests assert on.
+// Copying only the scalars keeps the snapshot below free of the statistics'
+// internal maps, which the handler goroutines keep writing.
+type syscallCount struct {
+	totalCalls uint64
+	uniquePids int
+}
+
+// profileSnapshot is a lock-safe copy of a learning profile.
+type profileSnapshot struct {
+	exists      bool
+	containerID string
+	syscalls    map[uint64]syscallCount
+}
+
+// snapshot copies a container's profile under the same lock the handler
+// goroutines write with.
+//
+// The tests used to sleep a fixed interval and then read
+// profile.ObservedSyscalls straight off the pointer GetProfile returns, which
+// is a data race against any handler that had not finished - the sleep hid it
+// rather than removed it.
+func (m *MockLearningEngine) snapshot(containerID string) profileSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	profile, ok := m.profiles[containerID]
+	if !ok {
+		return profileSnapshot{}
+	}
+	out := profileSnapshot{
+		exists:      true,
+		containerID: profile.ContainerID,
+		syscalls:    make(map[uint64]syscallCount, len(profile.ObservedSyscalls)),
+	}
+	for nr, st := range profile.ObservedSyscalls {
+		out.syscalls[nr] = syscallCount{totalCalls: st.TotalCalls, uniquePids: st.UniquePids}
+	}
+	return out
+}
+
+// awaitProfile polls until a container's recorded syscalls satisfy done, and
+// returns that snapshot. The handlers run as goroutines, so the tests have to
+// wait for them; polling returns as soon as the events have landed instead of
+// always paying a fixed sleep.
+func (m *MockLearningEngine) awaitProfile(t *testing.T, containerID string, done func(profileSnapshot) bool) profileSnapshot {
+	t.Helper()
+	var got profileSnapshot
+	require.Eventually(t, func() bool {
+		got = m.snapshot(containerID)
+		return done(got)
+	}, 5*time.Second, time.Millisecond,
+		"the learning engine never reached the expected state for %s (last seen: %+v)", containerID, &got)
+	return got
+}
+
 func (m *MockLearningEngine) GetProfile(containerID string) *learner.LearningProfile {
 	args := m.Called(containerID)
 	if args.Get(0) != nil {
@@ -262,22 +317,25 @@ func TestPahlevanSystemIntegration(t *testing.T) {
 	// Simulate events during learning phase
 	for _, event := range syscallEvents {
 		ebpfManager.SimulateSyscallEvent(event)
-		time.Sleep(10 * time.Millisecond) // Small delay to allow processing
 	}
 
-	// Verify learning occurred
-	profile := learningEngine.GetProfile(containerID)
-	require.NotNil(t, profile)
-	assert.Equal(t, containerID, profile.ContainerID)
-	assert.Contains(t, profile.ObservedSyscalls, uint64(1))  // read
-	assert.Contains(t, profile.ObservedSyscalls, uint64(2))  // write
-	assert.Contains(t, profile.ObservedSyscalls, uint64(3))  // open
-	assert.Contains(t, profile.ObservedSyscalls, uint64(59)) // execve
+	// Verify learning occurred. The five handlers are goroutines, so wait for
+	// the last of them to land - read seen from a second PID is the final
+	// thing to become true - rather than sleeping 10ms per event and hoping.
+	profile := learningEngine.awaitProfile(t, containerID, func(p profileSnapshot) bool {
+		return len(p.syscalls) == 4 && p.syscalls[1].totalCalls == 2
+	})
+	require.True(t, profile.exists)
+	assert.Equal(t, containerID, profile.containerID)
+	assert.Contains(t, profile.syscalls, uint64(1))  // read
+	assert.Contains(t, profile.syscalls, uint64(2))  // write
+	assert.Contains(t, profile.syscalls, uint64(3))  // open
+	assert.Contains(t, profile.syscalls, uint64(59)) // execve
 
 	// Verify syscall statistics
-	readStats := profile.ObservedSyscalls[1]
-	assert.Equal(t, uint64(2), readStats.TotalCalls) // Called by both PIDs
-	assert.Equal(t, 2, readStats.UniquePids)         // Two different PIDs
+	readStats := profile.syscalls[1]
+	assert.Equal(t, uint64(2), readStats.totalCalls) // Called by both PIDs
+	assert.Equal(t, 2, readStats.uniquePids)         // Two different PIDs
 
 	// Cleanup
 	ebpfManager.Stop()
@@ -321,13 +379,13 @@ func TestLearningToEnforcementTransition(t *testing.T) {
 		}
 	}
 
-	// Wait for learning to complete
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify learning profile was created
-	profile := learningEngine.GetProfile(containerID)
-	require.NotNil(t, profile)
-	assert.Len(t, profile.ObservedSyscalls, len(normalSyscalls))
+	// Wait for learning to complete: poll for the profile the handlers build,
+	// which returns as soon as every event has landed.
+	profile := learningEngine.awaitProfile(t, containerID, func(p profileSnapshot) bool {
+		return len(p.syscalls) == len(normalSyscalls)
+	})
+	require.True(t, profile.exists)
+	assert.Len(t, profile.syscalls, len(normalSyscalls))
 
 	// Phase 2: Enforcement phase - detect policy violations
 	// Simulate a suspicious syscall that wasn't seen during learning
@@ -420,17 +478,24 @@ func TestMultiContainerScenario(t *testing.T) {
 		}
 	}
 
-	// Wait for processing
-	time.Sleep(100 * time.Millisecond)
-
-	// Verify each container has its own learning profile
+	// Verify each container has its own learning profile. Waiting per container
+	// for exactly the syscalls it should have seen returns as soon as the
+	// handler goroutines have run, instead of sleeping a fixed 100ms.
 	for containerID, expectedSyscalls := range containers {
-		profile := learningEngine.GetProfile(containerID)
-		require.NotNil(t, profile, "Profile should exist for container %s", containerID)
-		assert.Equal(t, containerID, profile.ContainerID)
+		want := expectedSyscalls
+		profile := learningEngine.awaitProfile(t, containerID, func(p profileSnapshot) bool {
+			for _, nr := range want {
+				if _, ok := p.syscalls[nr]; !ok {
+					return false
+				}
+			}
+			return p.exists
+		})
+		require.True(t, profile.exists, "Profile should exist for container %s", containerID)
+		assert.Equal(t, containerID, profile.containerID)
 
-		for _, syscallNr := range expectedSyscalls {
-			assert.Contains(t, profile.ObservedSyscalls, syscallNr,
+		for _, syscallNr := range want {
+			assert.Contains(t, profile.syscalls, syscallNr,
 				"Container %s should have observed syscall %d", containerID, syscallNr)
 		}
 	}

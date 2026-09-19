@@ -28,7 +28,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="assets/css/main.css?v=5">
+    <link rel="stylesheet" href="assets/css/main.css?v=6">
 
     <!-- Prism.js for code highlighting -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
@@ -49,6 +49,7 @@
                 <a href="#features" class="nav-link">Features</a>
                 <a href="#benchmarks" class="nav-link">Benchmarks</a>
                 <a href="#install" class="nav-link">Install</a>
+                <a href="docs/index.html" class="nav-link">Docs</a>
                 <a href="changelog.html" class="nav-link">Changelog</a>
                 <a href="https://github.com/obsernetics/pahlevan" class="nav-link nav-github" target="_blank" rel="noopener">GitHub &#8599;</a>
             </div>
@@ -77,6 +78,7 @@
                     <em>in-kernel</em> with LSM BPF - no hand-written rules.
                 </p>
                 <div class="hero-actions">
+                    <a href="#cli">CLI</a>
                     <a href="#quickstart" class="btn btn-primary">Quick Start</a>
                     <a href="https://github.com/obsernetics/pahlevan" class="btn btn-outline" target="_blank" rel="noopener">
                         <svg width="18" height="18" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
@@ -221,68 +223,97 @@
                 </p>
             </div>
             <div class="arch-layout">
-                <div class="arch-diagram" role="img" aria-label="Architecture: a PahlevanPolicy CRD feeds a leader-elected operator Deployment running with hostUsers false; the operator pushes desired policy to a privileged DaemonSet agent on each node, which loads eBPF programs (raw_tracepoint/sys_enter, lsm/file_open, lsm/socket_connect) into the kernel and reports status back.">
-                    <svg viewBox="0 0 760 520" xmlns="http://www.w3.org/2000/svg" width="100%" height="auto">
+                <div class="arch-diagram" role="img" aria-label="Architecture: a PahlevanPolicy CRD feeds a leader-elected operator Deployment running with hostUsers false; the operator pushes desired policy down to a privileged DaemonSet agent on each node, and the agent reports learning and enforcement status back up. The agent loads seven eBPF programs scoped per cgroup: four BPF LSM hooks that refuse operations in-kernel with EPERM and need lsm=bpf on the kernel command line (file_open, socket_connect, bprm_check, capable), and three that need no BPF LSM and work on stock kernels (the syscall tracepoint, the commit_creds kprobe, and the readline uretprobe), plus a generic kprobe an operator can point at any kernel symbol without a rebuild.">
+                    <svg viewBox="0 0 760 600" xmlns="http://www.w3.org/2000/svg" width="100%" height="auto">
                         <defs>
                             <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
-                                <stop offset="0" stop-color="#38bdf8"/>
-                                <stop offset="1" stop-color="#818cf8"/>
+                                <stop offset="0%" stop-color="#38bdf8"/>
+                                <stop offset="100%" stop-color="#818cf8"/>
                             </linearGradient>
                             <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
                                 <path d="M0,0 L8,3 L0,6 Z" fill="#64748b"/>
                             </marker>
+                            <marker id="arrowDim" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                                <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+                            </marker>
                         </defs>
 
                         <!-- Control plane -->
-                        <rect x="20" y="20" width="720" height="150" rx="14" fill="#111a30" stroke="#243049"/>
-                        <text x="40" y="46" fill="#7dd3fc" font-size="13" font-family="JetBrains Mono, monospace" letter-spacing="1">CONTROL PLANE</text>
+                        <rect x="20" y="20" width="720" height="150" rx="14" fill="#0f172a" stroke="#1e293b" stroke-width="1.5"/>
+                        <text x="44" y="46" fill="#38bdf8" font-size="13.5" font-weight="700" letter-spacing="1.2" font-family="JetBrains Mono, monospace">CONTROL PLANE</text>
 
-                        <rect x="44" y="60" width="180" height="90" rx="10" fill="#0f1830" stroke="#334155"/>
-                        <text x="134" y="92" fill="#e2e8f0" font-size="14" font-weight="600" text-anchor="middle" font-family="Inter, sans-serif">PahlevanPolicy</text>
-                        <text x="134" y="112" fill="#94a3b8" font-size="12" text-anchor="middle" font-family="Inter, sans-serif">CRD</text>
-                        <text x="134" y="130" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">CEL admission policy</text>
+                        <rect x="44" y="60" width="180" height="90" rx="10" fill="#111c33" stroke="#233150" stroke-width="1.5"/>
+                        <text x="134" y="92" fill="#e2e8f0" font-size="16" font-weight="700" text-anchor="middle" font-family="Inter, sans-serif">PahlevanPolicy</text>
+                        <text x="134" y="112" fill="#94a3b8" font-size="13" text-anchor="middle" font-family="Inter, sans-serif">CRD</text>
+                        <text x="134" y="131" fill="#64748b" font-size="12.5" text-anchor="middle" font-family="Inter, sans-serif">CEL admission policy</text>
 
-                        <rect x="300" y="60" width="416" height="90" rx="10" fill="#0f1830" stroke="url(#accent)"/>
-                        <text x="508" y="88" fill="#e2e8f0" font-size="14" font-weight="600" text-anchor="middle" font-family="Inter, sans-serif">Operator - Deployment (leader-elected)</text>
-                        <text x="508" y="110" fill="#94a3b8" font-size="12" text-anchor="middle" font-family="Inter, sans-serif">hostUsers: false &middot; user namespace &middot; no host access</text>
-                        <text x="508" y="130" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">policy lifecycle &middot; status aggregation &middot; admission</text>
+                        <rect x="300" y="60" width="416" height="90" rx="10" fill="#111c33" stroke="url(#accent)" stroke-width="1.5"/>
+                        <text x="508" y="88" fill="#e2e8f0" font-size="16" font-weight="700" text-anchor="middle" font-family="Inter, sans-serif">Operator &#183; Deployment (leader-elected)</text>
+                        <text x="508" y="109" fill="#94a3b8" font-size="13" text-anchor="middle" font-family="Inter, sans-serif">hostUsers: false &#183; user namespace &#183; no host access</text>
+                        <text x="508" y="129" fill="#64748b" font-size="12.5" text-anchor="middle" font-family="Inter, sans-serif">policy lifecycle &#183; status aggregation &#183; admission</text>
 
-                        <!-- Node -->
-                        <rect x="20" y="200" width="720" height="300" rx="14" fill="#111a30" stroke="#243049"/>
-                        <text x="40" y="226" fill="#7dd3fc" font-size="13" font-family="JetBrains Mono, monospace" letter-spacing="1">EACH NODE</text>
+                        <line x1="224" y1="105" x2="298" y2="105" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
 
-                        <rect x="44" y="242" width="672" height="74" rx="10" fill="#0f1830" stroke="url(#accent)"/>
-                        <text x="380" y="272" fill="#e2e8f0" font-size="14" font-weight="600" text-anchor="middle" font-family="Inter, sans-serif">Agent - privileged DaemonSet</text>
-                        <text x="380" y="294" fill="#94a3b8" font-size="12" text-anchor="middle" font-family="Inter, sans-serif">loads &amp; attaches eBPF &middot; per-cgroup baselines &middot; local enforcement</text>
+                        <!-- Each node -->
+                        <rect x="20" y="200" width="720" height="380" rx="14" fill="#0f172a" stroke="#1e293b" stroke-width="1.5"/>
+                        <text x="44" y="226" fill="#38bdf8" font-size="13.5" font-weight="700" letter-spacing="1.2" font-family="JetBrains Mono, monospace">EACH NODE</text>
+
+                        <rect x="44" y="242" width="672" height="74" rx="10" fill="#111c33" stroke="url(#accent)" stroke-width="1.5"/>
+                        <text x="380" y="270" fill="#e2e8f0" font-size="16" font-weight="700" text-anchor="middle" font-family="Inter, sans-serif">Agent &#183; privileged DaemonSet</text>
+                        <text x="380" y="292" fill="#94a3b8" font-size="13" text-anchor="middle" font-family="Inter, sans-serif">loads &amp; attaches eBPF &#183; per-cgroup baselines &#183; local enforcement</text>
+
+                        <!-- Operator to agent, and agent back to operator. Both ends of both
+                             arrows sit on a box edge, and they run at different x so the
+                             round trip reads as two paths rather than one doubled back. -->
+                        <line x1="508" y1="150" x2="508" y2="238" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+                        <text x="520" y="199" fill="#94a3b8" font-size="12.5" font-family="Inter, sans-serif">desired policy</text>
+
+                        <line x1="360" y1="242" x2="360" y2="154" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrowDim)"/>
+                        <text x="348" y="199" fill="#64748b" font-size="12.5" text-anchor="end" font-family="Inter, sans-serif">learning / enforcement status</text>
 
                         <!-- Kernel -->
-                        <rect x="44" y="336" width="672" height="146" rx="10" fill="#0c1326" stroke="#334155" stroke-dasharray="4 4"/>
-                        <text x="64" y="360" fill="#a5b4fc" font-size="12" font-family="JetBrains Mono, monospace">Linux kernel - eBPF data plane</text>
+                        <rect x="44" y="336" width="672" height="226" rx="10" fill="#0b1220" stroke="#233150" stroke-width="1.5" stroke-dasharray="6 4"/>
+                        <text x="64" y="360" fill="#7dd3fc" font-size="13.5" font-weight="700" font-family="JetBrains Mono, monospace">Linux kernel &#183; eBPF (CO-RE), scoped per cgroup</text>
 
-                        <rect x="64" y="374" width="200" height="92" rx="8" fill="#131f3d" stroke="#334155"/>
-                        <text x="164" y="400" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">raw_tracepoint/</text>
-                        <text x="164" y="416" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">sys_enter</text>
-                        <text x="164" y="440" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">observe all syscalls</text>
-                        <text x="164" y="456" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Inter, sans-serif">dedup per (cgroup, syscall)</text>
+                        <text x="64" y="384" fill="#64748b" font-size="12" letter-spacing="0.8" font-family="JetBrains Mono, monospace">BPF LSM HOOKS - REFUSE IN-KERNEL, NEED lsm=bpf</text>
 
-                        <rect x="280" y="374" width="200" height="92" rx="8" fill="#131f3d" stroke="#334155"/>
-                        <text x="380" y="400" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/file_open</text>
-                        <text x="380" y="424" fill="#f0abfc" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">observe + DENY opens</text>
-                        <text x="380" y="440" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">bpf_d_path &middot; cgroup id</text>
-                        <text x="380" y="456" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Inter, sans-serif">EPERM on unlearned path</text>
+                        <rect x="64" y="394" width="149" height="66" rx="8" fill="#111c33" stroke="#233150" stroke-width="1.2"/>
+                        <text x="138" y="415" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/file_open</text>
+                        <text x="138" y="432" fill="#f472b6" font-size="11.5" text-anchor="middle" font-family="Inter, sans-serif">read/write &#8594; EPERM</text>
+                        <text x="138" y="448" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">bpf_d_path</text>
 
-                        <rect x="496" y="374" width="200" height="92" rx="8" fill="#131f3d" stroke="#334155"/>
-                        <text x="596" y="400" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/socket_connect</text>
-                        <text x="596" y="424" fill="#f0abfc" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">observe + DENY egress</text>
-                        <text x="596" y="440" fill="#94a3b8" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">per-cgroup allow-set</text>
-                        <text x="596" y="456" fill="#64748b" font-size="10.5" text-anchor="middle" font-family="Inter, sans-serif">EPERM on unlearned dest</text>
+                        <rect x="225" y="394" width="149" height="66" rx="8" fill="#111c33" stroke="#233150" stroke-width="1.2"/>
+                        <text x="299" y="415" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/socket_connect</text>
+                        <text x="299" y="432" fill="#f472b6" font-size="11.5" text-anchor="middle" font-family="Inter, sans-serif">egress &#8594; EPERM</text>
+                        <text x="299" y="448" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">IPv4 and IPv6</text>
 
-                        <!-- Connectors -->
-                        <line x1="224" y1="105" x2="298" y2="105" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
-                        <line x1="508" y1="150" x2="508" y2="240" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
-                        <text x="520" y="196" fill="#94a3b8" font-size="11" font-family="Inter, sans-serif">desired policy</text>
-                        <line x1="300" y1="230" x2="300" y2="150" stroke="#475569" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
-                        <text x="150" y="196" fill="#64748b" font-size="11" font-family="Inter, sans-serif" text-anchor="end">learning / enforcement status</text>
+                        <rect x="386" y="394" width="149" height="66" rx="8" fill="#111c33" stroke="#233150" stroke-width="1.2"/>
+                        <text x="460" y="415" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/bprm_check</text>
+                        <text x="460" y="432" fill="#f472b6" font-size="11.5" text-anchor="middle" font-family="Inter, sans-serif">exec &#8594; EPERM</text>
+                        <text x="460" y="448" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">argv &#183; 4 ancestors</text>
+
+                        <rect x="547" y="394" width="149" height="66" rx="8" fill="#111c33" stroke="#233150" stroke-width="1.2"/>
+                        <text x="621" y="415" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">lsm/capable</text>
+                        <text x="621" y="432" fill="#f472b6" font-size="11.5" text-anchor="middle" font-family="Inter, sans-serif">capability &#8594; EPERM</text>
+                        <text x="621" y="448" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">eff &#183; perm &#183; inher</text>
+
+                        <text x="64" y="484" fill="#64748b" font-size="12" letter-spacing="0.8" font-family="JetBrains Mono, monospace">NO BPF LSM REQUIRED - WORK ON STOCK KERNELS</text>
+
+                        <rect x="64" y="494" width="149" height="54" rx="8" fill="#111c33" stroke="#233150" stroke-width="1.2"/>
+                        <text x="138" y="514" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">sys_enter</text>
+                        <text x="138" y="531" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">every syscall, with args</text>
+
+                        <rect x="225" y="494" width="149" height="54" rx="8" fill="#111c33" stroke="#233150" stroke-width="1.2"/>
+                        <text x="299" y="514" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">commit_creds</text>
+                        <text x="299" y="531" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">escalation, no execve</text>
+
+                        <rect x="386" y="494" width="149" height="54" rx="8" fill="#111c33" stroke="#233150" stroke-width="1.2"/>
+                        <text x="460" y="514" fill="#e2e8f0" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">readline</text>
+                        <text x="460" y="531" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">shell builtins</text>
+
+                        <rect x="547" y="494" width="149" height="54" rx="8" fill="#0d1526" stroke="#233150" stroke-width="1.2" stroke-dasharray="4 3"/>
+                        <text x="621" y="514" fill="#94a3b8" font-size="12.5" font-weight="600" text-anchor="middle" font-family="JetBrains Mono, monospace">generic kprobe</text>
+                        <text x="621" y="531" fill="#64748b" font-size="11" text-anchor="middle" font-family="Inter, sans-serif">any symbol, no rebuild</text>
                     </svg>
                 </div>
                 <div class="arch-notes">
@@ -328,7 +359,7 @@
                 </article>
                 <article class="feature-card">
                     <h3>Full syscall observation</h3>
-                    <p>A <code>raw_tracepoint/sys_enter</code> sees every syscall, deduplicated in-kernel per <code>(cgroup, syscall)</code>.</p>
+                    <p>A <code>tracepoint/sys_enter</code> sees every syscall, deduplicated in-kernel per <code>(cgroup, syscall)</code>.</p>
                 </article>
                 <article class="feature-card">
                     <h3>Generated seccomp profiles</h3>
@@ -356,7 +387,7 @@
                 </article>
                 <article class="feature-card">
                     <h3>Destinations have names</h3>
-                    <p>A denial reads <code>prod/postgres:5432</code>, resolved from Services and pods the agent already caches. An address the cluster has never seen is tagged <code>external</code> &mdash; the difference between a misconfiguration and exfiltration.</p>
+                    <p>A denial reads <code>prod/postgres:5432</code>, resolved from Services and pods the agent already caches. An address the cluster has never seen is tagged <code>external</code> - the difference between a misconfiguration and exfiltration.</p>
                 </article>
                 <article class="feature-card">
                     <h3>One resource across three signals</h3>
@@ -411,6 +442,67 @@
     </section>
 
     <!-- QUICK START -->
+    <!-- The terminal UI. It is the thing an operator actually looks at, so it
+         gets a section rather than a line in a feature list. -->
+    <section id="cli" class="section">
+        <div class="container">
+            <div class="section-header">
+                <span class="eyebrow">Command line</span>
+                <h2>A terminal UI over the live event stream</h2>
+                <p class="section-sub">
+                    <code>pahlevan ui</code> is a Bubble Tea view over the agent's gRPC stream: a live
+                    event list, per-workload counts of what was observed against what was refused, a
+                    detail pane per workload, and the ATT&amp;CK coverage table read from the same
+                    source the tool enforces from.
+                </p>
+            </div>
+
+            <div class="code-block">
+                <pre><code class="language-bash">pahlevan  <span style="background:#1e3a5f;color:#e6edf7"> 1 events </span>  2 workloads   3 coverage   ? help
+────────────────────────────────────────────────────────────────────────
+WORKLOAD                             FILE     NET   EXEC    CAP   DENIED
+prod/Deployment/app                   118       6      1      1        6
+kube-system/DaemonSet/cni              12      44      0      0        0
+
+  prod/Deployment/app   node-1
+  OBSERVED  files 118   network 6   execs 1   capabilities 1
+  REFUSED   6
+    read /etc/shadow
+    exec /tmp/xmrig
+    tcp 203.0.113.7:4444
+────────────────────────────────────────────────────────────────────────
+1509 events · 6 denied · node-1:9090</code></pre>
+            </div>
+
+            <div class="arch-notes" style="margin-top: 1.5rem;">
+                <div class="arch-note">
+                    <h3>It reads, and only reads</h3>
+                    <p>
+                        No view changes a policy, a mode or a profile, so the thing you open during an
+                        incident cannot be the thing that turns enforcement off.
+                    </p>
+                </div>
+                <div class="arch-note">
+                    <h3>It does not break your scripts</h3>
+                    <p>
+                        Every other command keeps its exact output. Piped, redirected, or under
+                        <code>CI</code>, <code>NO_COLOR</code>, <code>TERM=dumb</code> or
+                        <code>--no-tui</code>, it prints a plain greppable summary instead of drawing a
+                        screen. A program that writes escape codes into a pipe is worse than one with
+                        no interface at all.
+                    </p>
+                </div>
+                <div class="arch-note">
+                    <h3>Reproducible without a cluster</h3>
+                    <p>
+                        <code>--replay</code> takes the JSON lines the file sink writes, so a problem
+                        you saw on a node can be looked at from a capture, with no cluster attached.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <section id="quickstart" class="section quickstart">
         <div class="container">
             <div class="section-header">
@@ -606,10 +698,10 @@ docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/
                     </div>
                     <div class="footer-section">
                         <h4>Docs</h4>
-                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs" target="_blank" rel="noopener">Documentation</a>
-                        <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/architecture.md" target="_blank" rel="noopener">Architecture</a>
-                        <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/packages.md" target="_blank" rel="noopener">Packages</a>
-                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs/benchmarks" target="_blank" rel="noopener">Benchmarks</a>
+                        <a href="docs/index.html">All documentation</a>
+                        <a href="docs/architecture.html">Architecture</a>
+                        <a href="docs/quick-start.html">Quick start</a>
+                        <a href="docs/packages.html">Packages</a>
                     </div>
                     <div class="footer-section">
                         <h4>Community</h4>
@@ -629,6 +721,6 @@ docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.3.3<!--/
     <!-- Scripts -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    <script src="assets/js/main.js?v=5"></script>
+    <script src="assets/js/main.js?v=6"></script>
 </body>
 </html>

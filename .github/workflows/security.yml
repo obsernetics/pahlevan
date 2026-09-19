@@ -8,15 +8,53 @@ on:
   schedule:
     - cron: '0 2 * * *'  # Daily at 2 AM
 
+permissions:
+  contents: read
+
+# Three scanners, each of which takes minutes. Pushing twice to a pull request
+# used to leave the first set running to completion on a commit nobody will
+# look at again, while the second set queued behind it for a runner.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.7"
+
+# Trivy, govulncheck and CodeQL share no state and produce three independent
+# reports, so they are three jobs rather than three steps: the wall clock is
+# the slowest of them instead of their sum.
 jobs:
   trivy:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       security-events: write
     steps:
     - name: Checkout
       uses: actions/checkout@v7
+
+    - name: Date for the vulnerability database cache key
+      id: dbdate
+      run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+    # Trivy pulls its vulnerability database from a container registry on
+    # every run - hundreds of megabytes before a single file is scanned, and
+    # the step that dominates this job. Upstream rebuilds that database every
+    # six hours, so a key that rolls daily is as fresh as a daily scan needs
+    # and turns every run but the first of the day into a local read.
+    #
+    # The cache lives under RUNNER_TEMP rather than in the workspace, because
+    # scan-ref is '.' and a database inside the workspace is a few hundred MB
+    # of blobs Trivy would then scan.
+    - name: Cache the Trivy vulnerability database
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/trivy-cache
+        key: trivy-db-${{ steps.dbdate.outputs.date }}
+        restore-keys: |
+          trivy-db-
 
     - name: Run Trivy scanner
       uses: aquasecurity/trivy-action@master
@@ -25,6 +63,7 @@ jobs:
         scan-ref: '.'
         format: 'sarif'
         output: 'trivy-results.sarif'
+        cache-dir: ${{ runner.temp }}/trivy-cache
 
     - name: Upload results
       uses: github/codeql-action/upload-sarif@v4
@@ -35,6 +74,15 @@ jobs:
   govulncheck:
     name: Go Vulnerability Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Pinned rather than @latest so the ~/go/bin cache below can actually
+      # hit: with @latest the module proxy is queried and the tool relinked on
+      # every run, which is most of a minute for a check that has not changed.
+      # This pins the *analyser*, not the findings - govulncheck fetches the
+      # vulnerability database from vuln.go.dev at run time either way, so a
+      # vulnerability published this morning is still reported.
+      GOVULNCHECK_VERSION: v1.1.4
     steps:
     - name: Checkout
       uses: actions/checkout@v7
@@ -42,38 +90,40 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@v7
       with:
-        go-version: "1.26.7"
+        go-version: ${{ env.GO_VERSION }}
+        # Replaced by the single cache step below. setup-go's own cache covers
+        # the same two directories, and running both means restoring and
+        # saving several hundred megabytes twice per job.
+        cache: false
 
-    - name: Cache Go modules
-      uses: actions/cache@v6
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-mod-
-
-    - name: Cache Go tools
-      uses: actions/cache@v6
-      with:
-        path: ~/go/bin
-        key: ${{ runner.os }}-go-tools-${{ hashFiles('pkg/ebpf/bpf2go.go') }}
-        restore-keys: |
-          ${{ runner.os }}-go-tools-
-
-    - name: Cache APT packages
+    # One entry for both Go caches. The module cache is what govulncheck
+    # re-downloads; the build cache is what it recompiles to build the call
+    # graph. Keyed on go.sum - not hashFiles('**/*.go'), which walks and
+    # hashes every source file in the repo to produce a key that misses on
+    # every commit by construction.
+    - name: Cache the Go module and build caches
       uses: actions/cache@v6
       with:
         path: |
-          /var/cache/apt/archives
-          /var/lib/apt/lists
-        key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/security.yml') }}
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-security-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
         restore-keys: |
-          ${{ runner.os }}-apt-
+          go-security-${{ runner.os }}-${{ env.GO_VERSION }}-
+
+    - name: Cache the govulncheck binary
+      id: govulncheck-cache
+      uses: actions/cache@v6
+      with:
+        path: ~/go/bin/govulncheck
+        key: govulncheck-${{ runner.os }}-${{ env.GO_VERSION }}-${{ env.GOVULNCHECK_VERSION }}
+
+    - name: Install govulncheck
+      if: steps.govulncheck-cache.outputs.cache-hit != 'true'
+      run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
 
     - name: Run govulncheck
       run: |
-        go install golang.org/x/vuln/cmd/govulncheck@latest
-
         # Retry only a failure to fetch the vulnerability database.
         #
         # govulncheck downloads its index from vuln.go.dev on every run, and
@@ -106,6 +156,7 @@ jobs:
   codeql:
     name: CodeQL
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
@@ -114,49 +165,33 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v7
 
+    # Before the CodeQL init, not after: init inspects the toolchain it will
+    # trace, and with no Go on PATH yet it provisions a second one of its own
+    # choosing - a download this job then does not use.
+    - name: Setup Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        # Same reason as the govulncheck job: one cache step, not two.
+        cache: false
+
+    - name: Cache the Go module and build caches
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-security-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('go.sum') }}
+        restore-keys: |
+          go-security-${{ runner.os }}-${{ env.GO_VERSION }}-
+
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
       with:
         languages: go
-
-    - name: Setup Go
-      uses: actions/setup-go@v7
-      with:
-        go-version: "1.26.7"
-
-    - name: Cache Go modules
-      uses: actions/cache@v6
-      with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-mod-
-
-    - name: Cache Go build
-      uses: actions/cache@v6
-      with:
-        path: ~/.cache/go-build
-        key: ${{ runner.os }}-go-build-${{ hashFiles('**/*.go') }}
-        restore-keys: |
-          ${{ runner.os }}-go-build-
-
-    - name: Cache Go tools
-      uses: actions/cache@v6
-      with:
-        path: ~/go/bin
-        key: ${{ runner.os }}-go-tools-${{ hashFiles('pkg/ebpf/bpf2go.go') }}
-        restore-keys: |
-          ${{ runner.os }}-go-tools-
-
-    - name: Cache APT packages
-      uses: actions/cache@v6
-      with:
-        path: |
-          /var/cache/apt/archives
-          /var/lib/apt/lists
-        key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/security.yml') }}
-        restore-keys: |
-          ${{ runner.os }}-apt-
+        # The build below is the build CodeQL should trace. Left unset, the
+        # action runs its own autobuild as well, compiling the tree twice.
+        build-mode: manual
 
     # Deliberately no cache of pkg/ebpf/*_bpf*.{go,o}: those files are committed
     # to the repo, so a cache can only ever restore stale copies alongside the

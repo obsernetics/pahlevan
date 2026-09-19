@@ -1,0 +1,83 @@
+# Default-deny around the dashboard, with two holes opened on purpose.
+#
+# Without this, every pod in the cluster can reach the dashboard's port. That
+# matters more here than for most services: a workload that is already running
+# attacker code would find, one hop away, a service whose entire job is to
+# describe what every other workload does. The token check still holds - the
+# dashboard answers nothing without a valid bearer token - but an unreachable
+# port cannot be probed for a bug in that check.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pahlevan-dashboard
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+    app.kubernetes.io/component: dashboard
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-dashboard
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Hole 1: whoever is going to front the dashboard. The namespace has to be
+  # labelled by hand, which is the point - an empty `from:` here would be
+  # indistinguishable from having no policy, and there is no label an ingress
+  # controller carries by default that would be safe to guess.
+  #
+  #   kubectl label namespace ingress-nginx pahlevan.io/dashboard-client=true
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          pahlevan.io/dashboard-client: "true"
+    ports:
+    - protocol: TCP
+      port: 8443
+  # Hole 2 is one you may have to open yourself. The kubelet's liveness and
+  # readiness probes arrive from the node's own address, which no
+  # namespaceSelector or podSelector can match. Calico and Cilium both let
+  # host-to-pod traffic through regardless of policy, so probes keep working
+  # as written; if your CNI does not, every probe fails and the kubelet
+  # restarts the pod forever. The fix is an ipBlock naming your node CIDR:
+  #
+  # - from:
+  #   - ipBlock:
+  #       cidr: 10.0.0.0/16   # your nodes, not your pods
+  #   ports:
+  #   - protocol: TCP
+  #     port: 8443
+  egress:
+  # DNS, or the API server hostname never resolves and the dashboard cannot
+  # start. Restricted to the cluster DNS pods rather than opened to port 53
+  # everywhere, so a compromised dashboard cannot tunnel out over DNS to an
+  # arbitrary resolver.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # The API server, which is the only other thing the dashboard talks to. Its
+  # address is cluster-specific and frequently outside the pod network - a
+  # managed control plane sits on a provider address - so it cannot be named
+  # portably here. Narrow this to your API server's address or its endpoint
+  # once you know it: as written, a compromised dashboard could open a
+  # connection to anything on 443 or 6443, including something outside the
+  # cluster.
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 6443

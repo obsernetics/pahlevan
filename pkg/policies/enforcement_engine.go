@@ -31,6 +31,7 @@ import (
 	"github.com/obsernetics/pahlevan/internal/learner"
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
+	"github.com/obsernetics/pahlevan/pkg/observability"
 )
 
 // EnforcementEngine implements adaptive policy generation and enforcement
@@ -491,7 +492,20 @@ func (ee *EnforcementEngine) RegisterContainer(
 	return nil
 }
 
-func (ee *EnforcementEngine) GeneratePolicy(containerID string) (*GeneratedPolicy, error) {
+// GeneratePolicy turns a container's learned profile into an enforceable
+// policy and pushes it into the kernel.
+//
+// This is the span that answers the question operators actually bring: "why
+// does this policy allow/deny what it does". The attributes carry the counts
+// the generated policy came out with and the confidence of the profile behind
+// it, so a policy generated from thirty seconds of traffic is distinguishable
+// from one generated from an hour without opening the CR.
+//
+// Rooted at context.Background() because generation is driven by the
+// engine's own worker queue, not by an inbound request - there is no caller
+// context to be a child of, and inventing one would produce a trace whose
+// parent is whatever reconcile happened to enqueue the action minutes ago.
+func (ee *EnforcementEngine) GeneratePolicy(containerID string) (_ *GeneratedPolicy, err error) {
 	ee.mu.RLock()
 	state, exists := ee.containerPolicies[containerID]
 	ee.mu.RUnlock()
@@ -499,6 +513,14 @@ func (ee *EnforcementEngine) GeneratePolicy(containerID string) (*GeneratedPolic
 	if !exists {
 		return nil, fmt.Errorf("container not found: %s", containerID)
 	}
+
+	ctx, span := observability.StartSpan(context.Background(), observability.SpanProfileGenerate,
+		observability.AttrContainerID.String(containerID),
+		observability.AttrNamespace.String(state.WorkloadRef.Namespace),
+		observability.AttrWorkload.String(state.WorkloadRef.Name),
+		observability.AttrWorkloadKind.String(state.WorkloadRef.Kind),
+		observability.AttrPolicy.String(policyNameOf(state)))
+	defer func() { observability.EndSpan(span, err) }()
 
 	// Get learning profile
 	profile, err := ee.learner.GetProfile(containerID)
@@ -534,9 +556,17 @@ func (ee *EnforcementEngine) GeneratePolicy(containerID string) (*GeneratedPolic
 	state.Statistics.PolicyGenerationCount++
 	ee.mu.Unlock()
 
+	span.SetAttributes(
+		observability.AttrSyscalls.Int(len(policy.SyscallPolicy.AllowedSyscalls)),
+		observability.AttrNetRules.Int(len(policy.NetworkPolicy.EgressRules)+len(policy.NetworkPolicy.IngressRules)),
+		observability.AttrFileRules.Int(len(policy.FilePolicy.AllowedPaths)),
+		observability.AttrQuality.Float64(policy.Quality.Score),
+		observability.AttrConfidence.Float64(policy.Confidence),
+	)
+
 	// Apply policy to eBPF
-	if err := ee.applyPolicyToEBPF(containerID, policy); err != nil {
-		return nil, fmt.Errorf("failed to apply policy to eBPF: %w", err)
+	if aerr := ee.applyPolicyToEBPF(ctx, containerID, policy); aerr != nil {
+		return nil, fmt.Errorf("failed to apply policy to eBPF: %w", aerr)
 	}
 
 	// Update metrics
@@ -590,7 +620,18 @@ func (ee *EnforcementEngine) ProcessViolation(violation *PolicyViolation) error 
 	return nil
 }
 
-func (ee *EnforcementEngine) UpdateLifecyclePhase(containerID string, phase WorkloadLifecyclePhase) error {
+// UpdateLifecyclePhase records a workload moving between lifecycle phases.
+//
+// Traced with the transition recorded as an event, because the phase is what
+// decides whether a policy is rebuilt: a container that moves to Running and
+// does not get its policy adapted is a silent failure, and this span shows
+// both halves of that decision.
+func (ee *EnforcementEngine) UpdateLifecyclePhase(containerID string, phase WorkloadLifecyclePhase) (err error) {
+	_, span := observability.StartSpan(context.Background(), observability.SpanLifecyclePhase,
+		observability.AttrContainerID.String(containerID),
+		observability.AttrPhase.String(string(phase)))
+	defer func() { observability.EndSpan(span, err) }()
+
 	ee.mu.Lock()
 	defer ee.mu.Unlock()
 
@@ -601,9 +642,16 @@ func (ee *EnforcementEngine) UpdateLifecyclePhase(containerID string, phase Work
 
 	oldPhase := state.LifecyclePhase
 	state.LifecyclePhase = phase
+	span.SetAttributes(
+		observability.AttrNamespace.String(state.WorkloadRef.Namespace),
+		observability.AttrWorkload.String(state.WorkloadRef.Name),
+	)
+	observability.RecordPhaseTransition(span, string(oldPhase), string(phase), "LifecycleUpdate")
 
 	// Trigger policy adaptation based on lifecycle changes
 	if ee.shouldAdaptPolicyForLifecycle(oldPhase, phase) {
+		observability.AddEvent(span, "enforcement.policy_update_queued",
+			observability.AttrReason.String("LifecycleChange"))
 		ee.queueEnforcementAction(&EnforcementAction{
 			Type:        ActionTypeUpdatePolicy,
 			ContainerID: containerID,
@@ -635,6 +683,18 @@ func (ee *EnforcementEngine) UnregisterContainer(containerID string) error {
 
 	delete(ee.containerPolicies, containerID)
 	return nil
+}
+
+// policyNameOf is the PahlevanPolicy name behind a container's state, or an
+// empty string when the state predates a policy binding. Guarded because a
+// nil deref while building span attributes would take down the enforcement
+// worker - instrumentation must never be the thing that crashes the process
+// it is describing.
+func policyNameOf(state *ContainerPolicyState) string {
+	if state == nil || state.PahlevanPolicy == nil {
+		return ""
+	}
+	return state.PahlevanPolicy.Name
 }
 
 // Worker functions
@@ -1116,7 +1176,15 @@ func (ee *EnforcementEngine) calculatePolicyComplexity(policy *GeneratedPolicy) 
 	return complexity
 }
 
-func (ee *EnforcementEngine) applyPolicyToEBPF(containerID string, policy *GeneratedPolicy) error {
+// applyPolicyToEBPF is the write into the kernel. Its own span, a child of
+// generation: generating a policy and failing to install it leaves the
+// container running under the previous rules, and the only way to see that
+// from outside is that this span is the one with the error status.
+func (ee *EnforcementEngine) applyPolicyToEBPF(ctx context.Context, containerID string, policy *GeneratedPolicy) (err error) {
+	_, span := observability.StartSpan(ctx, observability.SpanPolicyApply,
+		observability.AttrContainerID.String(containerID))
+	defer func() { observability.EndSpan(span, err) }()
+
 	log.Log.Info("Applying policy to eBPF", "containerID", containerID, "policyVersion", policy.Version)
 
 	if ee.ebpfManager == nil {
@@ -1322,7 +1390,7 @@ func (ee *EnforcementEngine) updateExistingPolicy(containerID string) error {
 	}
 
 	// Apply the updated policy
-	if err := ee.applyPolicyToEBPF(containerID, newPolicy); err != nil {
+	if err := ee.applyPolicyToEBPF(context.Background(), containerID, newPolicy); err != nil {
 		return fmt.Errorf("failed to apply updated policy: %w", err)
 	}
 
@@ -1426,7 +1494,7 @@ func (ee *EnforcementEngine) tightenPolicy(containerID string, violation *Policy
 	tightenedPolicy := ee.createTightenedPolicy(state.GeneratedPolicy, violation)
 
 	// Apply the tightened policy
-	if err := ee.applyPolicyToEBPF(containerID, tightenedPolicy); err != nil {
+	if err := ee.applyPolicyToEBPF(context.Background(), containerID, tightenedPolicy); err != nil {
 		return fmt.Errorf("failed to apply tightened policy: %w", err)
 	}
 
@@ -1729,7 +1797,7 @@ func (ee *EnforcementEngine) rollbackPolicy(containerID string) error {
 	// Restore the previous policy in the data plane (best-effort when the eBPF
 	// manager is available).
 	if ee.ebpfManager != nil {
-		if err := ee.applyPolicyToEBPF(containerID, previous); err != nil {
+		if err := ee.applyPolicyToEBPF(context.Background(), containerID, previous); err != nil {
 			return fmt.Errorf("failed to restore previous policy for container %s: %w", containerID, err)
 		}
 	}

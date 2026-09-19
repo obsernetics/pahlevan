@@ -1,0 +1,327 @@
+{{/*
+The optional dashboard, rendered only when dashboard.enabled is set.
+
+The guard wraps every object in the file, so a default `helm install` renders
+nothing at all here - not a disabled Deployment, not an unused ServiceAccount,
+not an orphan ClusterRole. "Optional" has to mean the objects do not exist,
+because an unused ServiceAccount with a cluster-wide read binding is still a
+credential sitting in the cluster waiting to be borrowed.
+*/}}
+{{- define "pahlevan.dashboardServiceAccountName" -}}
+{{- default (printf "%s-dashboard" (include "pahlevan.fullname" .)) .Values.dashboard.serviceAccountName }}
+{{- end }}
+{{- define "pahlevan.dashboardImage" -}}
+{{- $tag := .Values.dashboard.image.tag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" .Values.dashboard.image.repository $tag }}
+{{- end }}
+{{- if .Values.dashboard.enabled }}
+{{- if .Values.dashboard.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "pahlevan.dashboardServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/component: dashboard
+---
+{{/*
+The entire grant the dashboard holds, written out rather than aliased to
+system:auth-delegator so it can be audited by reading it. Creating a
+TokenReview or a SubjectAccessReview asks the API server a question and
+changes nothing; the CRD reads are cluster-wide because the dashboard serves
+whatever namespaces the viewer's own RBAC allows, and get/list/watch because
+it never writes. No pods, no secrets, no status subresources, no wildcards.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pahlevan.fullname" . }}-dashboard
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-dashboard
+rules:
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
+- apiGroups: ["policy.pahlevan.io"]
+  resources: ["pahlevanpolicies", "containerprofiles", "attacksurfaces"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pahlevan.fullname" . }}-dashboard
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-dashboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pahlevan.fullname" . }}-dashboard
+subjects:
+- kind: ServiceAccount
+  name: {{ include "pahlevan.dashboardServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pahlevan.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/component: dashboard
+spec:
+  replicas: {{ .Values.dashboard.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-dashboard
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "pahlevan.labels" . | nindent 8 }}
+        app.kubernetes.io/name: pahlevan-dashboard
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: dashboard
+      {{- with .Values.dashboard.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "pahlevan.dashboardServiceAccountName" . }}
+      # The projected token is the credential the dashboard presents when it
+      # creates a TokenReview or a SubjectAccessReview. It is also the only
+      # credential in the pod: no session secret, no user database.
+      automountServiceAccountToken: true
+      # No host namespaces. This is the line between the dashboard and the
+      # agent: a process serving a browser must not see, or be reachable from,
+      # the node's namespaces.
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      hostUsers: {{ .Values.dashboard.hostUsers }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: dashboard
+        image: {{ include "pahlevan.dashboardImage" . }}
+        imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+        args:
+        # TLS only. The browser sends a Kubernetes bearer token on every
+        # request, and a token on a plaintext connection is a token you have
+        # published to every host on the path. There is no value that makes
+        # the dashboard writable: the package registers reads and refuses
+        # every other method before a handler runs.
+        - --addr=:8443
+        - --tls-cert=/etc/pahlevan/tls/tls.crt
+        - --tls-key=/etc/pahlevan/tls/tls.key
+        {{- with .Values.dashboard.audiences }}
+        # Restrict accepted tokens to an audience. Without it any token the
+        # API server recognises is accepted, including a projected token a pod
+        # holds for something else, which makes the dashboard a credential
+        # relay.
+        {{- range . }}
+        - --audience={{ . }}
+        {{- end }}
+        {{- end }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          privileged: false
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          {{- toYaml .Values.dashboard.resources | nindent 10 }}
+        ports:
+        - name: https
+          containerPort: 8443
+        # A TCP probe, not an HTTP one: the listener is TLS and every route on
+        # it requires a bearer token, so an httpGet probe would be answered
+        # 401 and the kubelet would restart a healthy pod every period.
+        livenessProbe:
+          tcpSocket:
+            port: https
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          tcpSocket:
+            port: https
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        env:
+        - name: PAHLEVAN_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: PAHLEVAN_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: tls
+          mountPath: /etc/pahlevan/tls
+          readOnly: true
+        # readOnlyRootFilesystem leaves no writable path at all, and the Go
+        # runtime expects one. An emptyDir is the whole allowance: it dies
+        # with the pod and touches nothing on the node.
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tls
+        secret:
+          secretName: {{ .Values.dashboard.tls.secretName }}
+          defaultMode: 0400
+      - name: tmp
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: pahlevan-dashboard
+              topologyKey: kubernetes.io/hostname
+      {{- with .Values.dashboard.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.dashboard.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{/*
+ClusterIP, and the type is not a value. A NodePort would publish the dashboard
+on every node's address and a LoadBalancer would ask for a public IP, so
+`--set dashboard.enabled=true` would mean publishing a view of every
+workload's behaviour. Exposing it is a separate, deliberate act through an
+ingress the operator owns.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pahlevan.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/component: dashboard
+spec:
+  type: ClusterIP
+  ports:
+  - name: https
+    port: {{ .Values.dashboard.service.port }}
+    targetPort: https
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- if .Values.dashboard.networkPolicy.enabled }}
+---
+{{/*
+Default-deny around the dashboard. Without it every pod in the cluster can
+reach a service whose entire job is to describe what every other workload
+does; the token check still holds, but an unreachable port cannot be probed
+for a bug in that check.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pahlevan.fullname" . }}-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/component: dashboard
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-dashboard
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+  - Ingress
+  - Egress
+  {{- if or .Values.dashboard.networkPolicy.allowedNamespaceLabels .Values.dashboard.networkPolicy.allowedNodeCIDRs }}
+  ingress:
+  {{- end }}
+  {{- with .Values.dashboard.networkPolicy.allowedNamespaceLabels }}
+  # Whoever fronts the dashboard, named by their namespace's labels. Left
+  # empty on purpose: there is no label an ingress controller carries by
+  # default that would be safe to guess, and an empty `from:` here would be
+  # indistinguishable from having no policy.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          {{- range $k, $v := . }}
+          # Quoted because a label value is a string: `--set
+          # ...allowedNamespaceLabels.x=true` yields a YAML boolean, and the
+          # API server rejects the NetworkPolicy outright.
+          {{ $k }}: {{ $v | quote }}
+          {{- end }}
+    ports:
+    - protocol: TCP
+      port: 8443
+  {{- end }}
+  {{- with .Values.dashboard.networkPolicy.allowedNodeCIDRs }}
+  # The kubelet's probes arrive from the node's own address, which no
+  # namespaceSelector can match. Calico and Cilium let host-to-pod traffic
+  # through regardless of policy, so this is empty by default; set it to your
+  # node CIDRs (not your pod CIDRs) if your CNI does not, or every probe fails
+  # and the kubelet restarts the pod forever.
+  - from:
+    {{- range . }}
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+    ports:
+    - protocol: TCP
+      port: 8443
+  {{- end }}
+  egress:
+  # DNS, restricted to the cluster's resolver rather than opened to port 53
+  # everywhere, so a compromised dashboard cannot tunnel out to an arbitrary
+  # resolver.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # The API server, the only other thing the dashboard talks to. Narrow
+  # apiServerCIDR to your control plane once you know it.
+  - to:
+    - ipBlock:
+        cidr: {{ .Values.dashboard.networkPolicy.apiServerCIDR }}
+    ports:
+    {{- range .Values.dashboard.networkPolicy.apiServerPorts }}
+    - protocol: TCP
+      port: {{ . }}
+    {{- end }}
+{{- end }}
+{{- end }}

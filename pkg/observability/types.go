@@ -1,7 +1,6 @@
 package observability
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -101,27 +100,14 @@ type MetricsSource interface {
 	GetMetrics() map[string]float64
 }
 
-type Tracer struct {
-	serviceName string
-	enabled     bool
-	spans       map[string]*Span
-}
-
-type Span struct {
-	ID        string
-	Name      string
-	StartTime time.Time
-	EndTime   time.Time
-	Tags      map[string]string
-	Logs      []SpanLog
-	Finished  bool
-}
-
-type SpanLog struct {
-	Timestamp time.Time
-	Message   string
-	Fields    map[string]interface{}
-}
+// There is no hand-rolled tracer here any more.
+//
+// This file used to define a Tracer/Span/SpanLog trio with StartSpan, Finish,
+// SetTag and Log methods. It was a second, parallel tracing implementation
+// that nothing outside its own unit tests ever called: spans were appended to
+// a map that was never read and never pruned, so the only thing it reliably
+// produced was a memory leak in a long-lived operator. Tracing is
+// OpenTelemetry - see tracing.go for StartSpan and the span vocabulary.
 
 // Constructor
 func NewObservabilityManager(config *ObservabilityConfig) *ObservabilityManager {
@@ -224,35 +210,4 @@ func (mc *MetricsCollector) CollectMetrics() map[string]float64 {
 		}
 	}
 	return metrics
-}
-
-func (t *Tracer) StartSpan(name string) *Span {
-	span := &Span{
-		ID:        fmt.Sprintf("span-%d", time.Now().UnixNano()),
-		Name:      name,
-		StartTime: time.Now(),
-		Tags:      make(map[string]string),
-		Logs:      make([]SpanLog, 0),
-		Finished:  false,
-	}
-	t.spans[span.ID] = span
-	return span
-}
-
-func (s *Span) Finish() {
-	s.EndTime = time.Now()
-	s.Finished = true
-}
-
-func (s *Span) SetTag(key, value string) {
-	s.Tags[key] = value
-}
-
-func (s *Span) Log(message string, fields map[string]interface{}) {
-	log := SpanLog{
-		Timestamp: time.Now(),
-		Message:   message,
-		Fields:    fields,
-	}
-	s.Logs = append(s.Logs, log)
 }

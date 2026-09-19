@@ -1,0 +1,27 @@
+# ClusterIP, and only ClusterIP.
+#
+# A NodePort would publish the dashboard on every node's external address the
+# moment it is applied, and a LoadBalancer would ask the cloud provider for a
+# public IP - both of which would make "install the optional dashboard" mean
+# "put a view of every workload's behaviour on the internet". Neither is a
+# decision this project gets to make for a user, so the project ships no
+# manifest that can make it by accident. Exposing the dashboard is a separate,
+# deliberate act through an ingress the operator owns; see docs/dashboard.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pahlevan-dashboard
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+    app.kubernetes.io/component: dashboard
+spec:
+  type: ClusterIP
+  ports:
+  - name: https
+    port: 443
+    targetPort: https
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: pahlevan-dashboard

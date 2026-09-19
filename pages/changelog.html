@@ -28,7 +28,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
     <!-- Styles -->
-    <link rel="stylesheet" href="assets/css/main.css?v=5">
+    <link rel="stylesheet" href="assets/css/main.css?v=6">
 
     <!-- Prism.js for code highlighting -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
@@ -48,6 +48,7 @@
                 <a href="index.html#architecture" class="nav-link">Architecture</a>
                 <a href="index.html#benchmarks" class="nav-link">Benchmarks</a>
                 <a href="index.html#install" class="nav-link">Install</a>
+                <a href="docs/index.html" class="nav-link">Docs</a>
                 <a href="changelog.html" class="nav-link" aria-current="page">Changelog</a>
                 <a href="https://github.com/obsernetics/pahlevan" class="nav-link nav-github" target="_blank" rel="noopener">GitHub &#8599;</a>
             </div>
@@ -172,53 +173,63 @@ docker inspect --format '{{index .RepoDigests 0}}' \
             </div>
 
             <div class="release-list">
+                <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
                         <h3 class="release-version">Unreleased</h3>
                         <span class="release-pill">In progress</span>
                     </div>
-                    <p class="release-summary">
-                        Nothing yet.
-                    </p>
+                    <div class="change-group">
+                        <h4 class="added">Added</h4>
+                        <ul>
+                            <li><p><strong><code>pahlevan ui</code>, an interactive view of what the agents are reporting.</strong> Every command printed and exited, so watching a workload learn meant reading a redrawn line, and comparing learned against enforcing meant two commands and a diff done in your head. The view is a Bubble Tea screen over the gRPC stream that already exists: a live event list, per-workload counts of what was observed and what was refused, a detail pane per workload, and the ATT&amp;CK coverage table read from <code>pkg/coverage</code> rather than retyped.</p> <p>It is a reader - it never changes a policy, a mode or a profile, so it cannot be the thing that turns enforcement off during an incident. It does not break scripts: every existing command keeps its exact output, and without a terminal (piped, redirected, <code>CI</code>, <code>NO_COLOR</code>, <code>TERM=dumb</code>, or <code>--no-tui</code>) it prints a plain greppable summary instead of drawing. Retained events live in a fixed-capacity ring, because a slice that only appends turns the UI into a memory leak that grows with the node's syscall rate; evictions are counted and shown. <code>--replay</code> takes the JSON-lines the file sink writes, so a UI problem is reproducible from a capture with no cluster.</p></li>
+                            <li><strong>The architecture diagram on the landing page was stale and clipped.</strong> It showed three eBPF programs long after there were seven, so a reader saw a third of what Pahlevan does. One label was anchored at its right-hand end at <code>x=150</code> and was about 154px wide, so it began at roughly <code>x=-16</code> and rendered as &quot;earning / enforcement status&quot;. And the status arrow started 12px above the agent box, in empty space, at the same x as the arrow going the other way, so the round trip read as one line doubled back. The diagram is redrawn with all seven programs, split by whether they need <code>lsm=bpf</code>, and tests now fail if a detector is missing from it, if any label would render outside the canvas, or if a connector does not join two boxes.</li>
+                            <li><strong>A check that the website shows every release.</strong> The changelog page carries one article per release, written as prose rather than as a marked span, so pagesync had nothing to check and reported the site up to date while it was missing an entire release: 3.3.3's version strings updated, because markers own those, and the page went on badging 3.3.2 as current with no 3.3.3 article at all. A reader would have concluded 3.3.3 did not exist. Tests now fail if a released version has no article, if the site shows an article for a version the changelog does not document, or if the &quot;Current&quot; badge is not on the newest release.</li>
+                            <li><strong>A check that a merged release was actually tagged.</strong> The scheduled maintenance agent runs as the GitHub App, which cannot create tag refs, so it merges a release PR and the tag never appears: no tag, no release, no image, while <code>CHANGELOG.md</code> and the website both announce the version as current. <code>v3.1.0</code> sat untagged for five days; <code>v3.3.1</code> and <code>v3.3.3</code> were each announced while nothing could install them. The agent's prompt was rewritten twice and it happened again both times, so this is a check rather than another reminder: a six-hourly workflow compares the <code>VERSION</code> in <code>main</code>'s Makefile against the pushed tags and opens an issue when a release has been merged without one.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li>The roadmap has a <strong>Version 4</strong> section: an interactive CLI, an optional and deliberately unprivileged dashboard, and the two changes that have to break to stop being temporary - the API graduating to <code>v1beta1</code>, and enforcement no longer requiring <code>lsm=bpf</code> on the kernel command line.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
+                        <h3 class="release-version">3.3.3</h3>
+                        <span class="release-date">2026-09-14</span>
+                        <span class="release-pill">Current</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li>Batched three dependency bumps onto one PR rather than merging them one at a time: <code>golang.org/x/term</code> 0.45.0 -&gt; 0.46.0, <code>github.com/onsi/ginkgo/v2</code> 2.32.1 -&gt; 2.32.2, and <code>sigs.k8s.io/controller-runtime</code> 0.25.0 -&gt; 0.25.1. controller-runtime 0.25.1 still declares go 1.26.0 and <code>k8s.io/api</code> v0.37.0, matching what this module already used, so the bump carried no transitive Kubernetes skew.</li>
+                            <li>Unified three byte-for-byte identical label-selector matchers, one in each of <code>PahlevanPolicyReconciler</code>, <code>ContainerLearnerReconciler</code> and <code>AttackSurfaceAnalyzerReconciler</code>, into a single <code>matchesSelector</code> function. Only the first had a full test table; the other two sat at 16.7% and 33.3% coverage and could silently drift from each other on the next edit. The shared implementation now has one comprehensive table-driven test and a benchmark; <code>internal/controller</code> coverage moved from 74.6% to 79.1%.</li>
+                        </ul>
+                    </div>
                 </article>
 
                 <article class="release">
                     <div class="release-head">
                         <h3 class="release-version">3.3.2</h3>
                         <span class="release-date">2026-09-07</span>
-                        <span class="release-pill">Current</span>
                     </div>
-                    <p class="release-summary">
-                        The manifest attached to a release now pins that release. 3.3.1 was merged
-                        but never tagged, so it never published; its changes ship here.
-                    </p>
-                    <div class="change-group">
-                        <h4 class="fixed">Fixed</h4>
-                        <ul>
-                            <li><strong>The released <code>install.yaml</code> pinned nothing.</strong> It is the file
-                                attached to every release, and the install docs point at it as the immutable tag
-                                recommended for production, but it shipped <code>pahlevan:latest</code>, so that path
-                                pulled a tag that moves on every merge. The generator stamps the release version in
-                                now, and a test fails if the manifest drifts from its sources, stops pinning, or
-                                disagrees with the version the docs send readers to.</li>
-                            <li><strong>A data race in <code>Manager.SetAction</code>.</strong> It read the four eBPF
-                                collection pointer fields directly to decide which hooks to skip, with no lock held,
-                                while loading only ever writes them under the manager's mutex. A policy transition
-                                landing while the agent is loading or reloading its eBPF objects raced on those reads;
-                                confirmed with <code>-race</code> against a concurrent reload and fixed by routing
-                                through the four per-hook setters, which already take the read lock, instead of
-                                reading the fields itself. A regression test reproduces the race on purpose rather
-                                than relying on a scheduler to find it again.</li>
-                        </ul>
-                    </div>
+                    <p class="release-summary">3.3.1 was merged but never tagged, so it was never published and nothing could install it. Its changes are released here.</p>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
                         <ul>
-                            <li>Batched five open Dependabot GitHub Actions bumps onto one change
-                                (<code>actions/cache</code> to v6, <code>actions/configure-pages</code> to v6,
-                                <code>actions/upload-pages-artifact</code> to v5, <code>actions/deploy-pages</code> to
-                                v5, <code>softprops/action-gh-release</code> to v3) rather than merging one at a
-                                time.</li>
+                            <li>Batched five open Dependabot GitHub Actions bumps onto one PR (<code>actions/cache</code> to v6, <code>actions/configure-pages</code> to v6, <code>actions/upload-pages-artifact</code> to v5, <code>actions/deploy-pages</code> to v5, <code>softprops/action-gh-release</code> to v3) rather than merging one at a time.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li><strong>Every IPv6 destination left the agent as <code>0.0.0.0</code>.</strong> The export path rendered the v4 field unconditionally, but on an <code>AF_INET6</code> event the address is in the v6 field and the v4 one is zero. On a dual-stack cluster that is most of the egress there is, and it was unnamable, unsearchable and indistinguishable from every other v6 destination on the node. <code>pkg/ebpf</code> already handled the family; the export path did not.</li>
+                            <li><strong>The released <code>install.yaml</code> pinned nothing.</strong> It is the file attached to every release, and <code>docs/packages.md</code> points at <code>releases/download/&lt;version&gt;/install.yaml</code> as the immutable tag recommended for production. It shipped <code>image: ghcr.io/obsernetics/pahlevan:latest</code>, so that path pulled a tag that moves on every merge to main. The generator now stamps the release version into the manifest; <code>deploy/base</code> keeps <code>:latest</code> on purpose, because it is a kustomize base and an overlay sets its own tag.</li>
+                            <li>Nothing regenerated or verified <code>install.yaml</code> in CI, so it could drift from the <code>deploy/base</code> and <code>config/crd</code> sources it claims to be generated from. <code>hack/install</code> now fails if it has drifted, if it does not pin the version the Makefile declares, if the kustomize base grows a hardcoded version, or if the docs send readers to a different release than the manifest deploys.</li>
+                            <li><strong>A data race in <code>Manager.SetAction</code>.</strong> It read the four eBPF collection pointer fields directly to decide which hooks to skip, with no lock held, while <code>Load</code> only ever writes them under the manager's mutex. A policy transition landing while the agent is loading or reloading its eBPF objects raced on those reads; confirmed with <code>-race</code> against a concurrent reload and fixed by having <code>SetAction</code> go through the four per-hook setters, which already take the read lock, rather than reading the fields itself. A regression test reproduces the race on purpose rather than relying on a scheduler to find it again.</li>
                         </ul>
                     </div>
                 </article>
@@ -228,71 +239,29 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         <h3 class="release-version">3.3.0</h3>
                         <span class="release-date">2026-09-07</span>
                     </div>
-                    <p class="release-summary">
-                        A kprobe an operator points at any kernel function without a rebuild, and
-                        the kernel tests now run in CI instead of by hand.
-                    </p>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
                         <ul>
-                            <li><strong>A generic kprobe, named at runtime.</strong> One pre-compiled program serves
-                                every probe: each attachment carries an attach cookie holding the probe id, so forty
-                                probes are forty links over one program rather than forty copies of it. Up to five
-                                arguments are captured and up to four selectors are ANDed against them, or against the
-                                calling uid, gid or pid. A kprobe fires alongside the function rather than in place of
-                                it, so it cannot refuse the call, and a policy asking it to is refused at load rather
-                                than quietly downgraded.</li>
-                            <li><strong>The kernel tests run in CI.</strong> Nothing in CI loaded an eBPF program,
-                                because the runner has no bpf LSM, and loading is the step that finds the interesting
-                                failures: three verifier rejections in one week compiled, passed vet, passed the unit
-                                suite, and reached a human only because somebody remembered to run the VM tests by hand.
-                                A change under <code>bpf/</code>, <code>pkg/ebpf/</code> or the harness now boots a guest
-                                with <code>lsm=bpf</code> under KVM and runs all thirty-three through a real verifier,
-                                with a nightly run for breaks arriving from outside those paths. A test asserts the
-                                workflow's path filters cover every file a kernel decides about, so the job cannot go on
-                                reporting success by never running.</li>
+                            <li><strong>A generic kprobe an operator points at any kernel function by name</strong>, with no rebuild. One pre-compiled program serves every probe: each attachment carries a <code>bpf_get_attach_cookie</code> holding the probe id, so forty probes are forty links over one program rather than forty copies of it. Up to five arguments are captured and up to four selectors are ANDed against them, or against the calling uid, gid or pid. Actions are report, audit, kill and signal - a kprobe fires alongside the function rather than in place of it, so it cannot refuse the call, and a policy asking it to is refused at load rather than quietly downgraded.</li>
+                            <li><strong>The kernel tests run in CI.</strong> They needed a VM with <code>lsm=bpf</code> and were run by hand, which meant a verifier rejection reached a human only if somebody remembered. Three did, in one week, and every one of them compiles, passes vet and passes the unit suite. A pull request touching <code>bpf/</code>, <code>pkg/ebpf/</code> or the VM harness now boots a guest under KVM and loads all seven programs through a real verifier, and a nightly run catches a break that arrives from outside those paths. A test asserts the workflow's path filters cover every file a kernel decides about, so the job cannot go on reporting success by never running.</li>
                         </ul>
                     </div>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
                         <ul>
-                            <li><strong>The event decode path is 1.67x faster and allocates 62% less</strong>, from
-                                3772ns and 68 allocations to 2255ns and 26 across the eleven decoders. Fixed-width
-                                kernel fields were being turned into fresh strings per event, so a workload doing
-                                nothing unusual produced garbage proportional to its syscall rate. Process names and
-                                paths are interned through bounded tables read without copying the bytes; argv is
-                                deliberately not, being attacker-influenced input that an unbounded table would turn
-                                into a memory-growth primitive.</li>
-                            <li><strong>Three ATT&amp;CK techniques the coverage table was missing</strong>, each
-                                evidenced by the entry's own description: <code>T1552.001</code> on
-                                <code>lsm/file_open</code>, <code>T1548.001</code> on <code>kprobe/commit_creds</code>,
-                                and <code>T1070.003</code> on <code>uretprobe/readline</code>, whose entry already named
-                                <code>history -c</code> as something it captures.</li>
-                            <li>CI lints its own workflows. A workflow with a malformed expression does not fail loudly:
-                                it is reported under the file's path rather than its name, ends in zero seconds, and
-                                every job it was meant to gate simply never appears, which looks exactly like a workflow
-                                that passed.</li>
+                            <li><strong>The event decode path is 1.67x faster and allocates 62% less</strong>: 3772ns and 68 allocations to 2255ns and 26 across the eleven decoders, measured by the benchmarks in <code>pkg/ebpf</code>. Fixed-width kernel fields were being turned into fresh strings per event, so a workload doing nothing unusual produced garbage proportional to its syscall rate. Process names and paths are now interned through bounded tables read without copying the bytes, and the per-event container id is derived rather than formatted. Argv is deliberately not interned: it is attacker-influenced, and an unbounded table keyed on it is a memory-growth primitive.</li>
+                            <li><code>hack/vm/env.sh</code> takes <code>PAHLEVAN_VM_DISK</code>, and <code>up.sh</code> checks <code>/dev/kvm</code> is usable before booting rather than failing inside qemu with an accelerator error buried in a serial log. The <code>vm-test</code> target honours <code>PAHLEVAN_VM_CACHE</code> instead of hardcoding <code>.vmcache</code>, which worked only for as long as nobody set the variable.</li>
+                            <li><strong>CI lints the workflows.</strong> A workflow with a malformed <code>${{ }}</code> expression does not fail loudly: GitHub reports the run under the file's path instead of its name, ends it in zero seconds, and every job it was supposed to gate simply never appears - which looks exactly like a workflow that passed.</li>
+                            <li><strong>Three ATT&amp;CK techniques the coverage table was missing</strong>, each evidenced by the entry's own description: <code>T1552.001</code> (Credentials In Files) on <code>lsm/file_open</code>, the on-point technique for a per-path open monitor in a cluster where a service-account token is a file; <code>T1548.001</code> (Setuid and Setgid) on <code>kprobe/commit_creds</code>, whose entry already explained that it separates a setuid binary's credential change from an unexplained one; and <code>T1070.003</code> (Clear Command History) on <code>uretprobe/readline</code>, whose entry already named <code>history -c</code> as something it captures.</li>
                         </ul>
                     </div>
                     <div class="change-group">
                         <h4 class="fixed">Fixed</h4>
                         <ul>
-                            <li><strong>A data race in the container tracker.</strong> Discovery runs from two
-                                goroutines and both take the write lock to update the map, but the container count
-                                logged at the end of discovery was read under no lock at all. It surfaced under
-                                <code>-race</code> on a CI runner and would not reproduce in 150 runs on a workstation,
-                                so the regression test calls discovery concurrently on purpose rather than leaving a
-                                scheduler responsible for finding it again.</li>
-                            <li><strong>A failing ring-buffer reader no longer spins.</strong> All eight readers shared
-                                a loop that, on any error other than a closed reader, continued immediately, so a
-                                persistently failing reader burned a core and filled the log as fast as it could produce
-                                errors. The eight copies are one function; a read error is counted, logged once, and
-                                backed off.</li>
-                            <li><strong>The demo recording claimed seven ATT&amp;CK techniques Pahlevan does not
-                                list</strong>, and attributed two more to the wrong hook. Its coverage table is typed by
-                                hand, because it is a recording, and nothing connected it to the real one. It now prints
-                                what <code>pahlevan coverage</code> prints, row for row, and a test fails if it drifts
-                                again.</li>
+                            <li><strong>A failing ring-buffer reader no longer spins.</strong> All eight readers shared a loop that, on any error other than a closed reader, continued immediately - so a persistently failing reader burned a core and filled the log at the rate it could produce errors. The eight copies are one function; a read error is counted on <code>pahlevan_ebpf_read_errors_total</code>, logged once, and backed off 100ms. The loop still exits promptly on stop.</li>
+                            <li><strong>The demo GIF claimed seven ATT&amp;CK techniques Pahlevan does not list</strong>, and attributed two more to the wrong hook. The coverage table in the recording is typed by hand, because it is a recording, and nothing connected it to <code>pkg/coverage</code>. A technique shown in the GIF is a claim about what Pahlevan's data is evidence for, and the GIF is the first thing anyone sees. The recording now prints what <code>pahlevan coverage</code> prints, row for row, and a test fails if it ever shows a technique the table does not have, attributes one to the wrong hook, or drops a detector.</li>
+                            <li>The CI formatting check split its file list on whitespace, so a path containing a space would have been checked as two files that do not exist. Found by the workflow linter this release adds.</li>
+                            <li><strong>A data race in the container tracker.</strong> <code>Start</code> runs discovery from two goroutines - the pod watch and the periodic refresh - and both reach <code>updateContainer</code>, which takes the write lock, so the map itself was safe. The container count logged at the end of discovery was read under no lock at all, racing with those writes. It surfaced on a CI runner under <code>-race</code> and would not reproduce in 150 runs on a workstation, so the regression test calls discovery concurrently on purpose rather than relying on a scheduler to find it again.</li>
                         </ul>
                     </div>
                 </article>
@@ -302,41 +271,22 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         <h3 class="release-version">3.2.0</h3>
                         <span class="release-date">2026-09-06</span>
                     </div>
-                    <p class="release-summary">
-                        Findings now reach the places people actually look, and every direct
-                        dependency is current.
-                    </p>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
                         <ul>
-                            <li><strong>Formatted delivery of findings.</strong> A file, a webhook, OTLP and the gRPC
-                                stream all carry the event envelope, which is the right shape for a collector and the
-                                wrong shape for a person. Three sinks now carry formatted messages instead:
-                                <strong>Slack</strong> (one Block Kit message per batch, with the fallback text set so a
-                                push notification says something useful), <strong>PagerDuty</strong> (one incident per
-                                distinct finding rather than per batch, keyed so the same problem re-triggers rather
-                                than opening another), and <strong>a Go template</strong> for everything else, parsed at
-                                startup so a syntax error names the mistake instead of being logged once per batch while
-                                nothing arrives.</li>
-                            <li>All three send denials only unless <code>--notify-all-events</code> is set, and
-                                deduplicate per finding keyed on the owning <em>workload</em> rather than the pod, so a
-                                rollout does not send one message per replica for a single misconfiguration.</li>
+                            <li><p><strong>Formatted delivery of findings</strong>, closing the item that had been first on the Near term list since 3.0.0. A file, an HTTP webhook, OTLP and the gRPC stream all carry the event envelope, which is the right shape for a collector and the wrong shape for a person. Three sinks now carry formatted messages instead, all ordinary Exporters so they ride the existing bounded queue and drop counting:</p> <ul> <li><strong>Slack</strong> (<code>--notify-slack-webhook</code>): one Block Kit message per batch, with the fallback text set, because without it a push notification says &quot;attachment&quot;.</li> <li><strong>PagerDuty</strong> (<code>--notify-pagerduty-key</code>, <code>--notify-pagerduty-severity</code>): one incident per distinct finding rather than per batch, keyed so the same problem re-triggers the same incident instead of opening another. The incident's source is the workload, not the node.</li> <li><strong>A Go template</strong> (<code>--notify-template-url</code>, <code>--notify-template</code>) for everything else. Parsed at startup, so a syntax error names the mistake rather than being logged once per batch while nothing arrives.</li> </ul> <p>All three send denials only unless <code>--notify-all-events</code> is set, and deduplicate per finding over <code>--notify-dedupe-window</code>, keyed on the owning workload rather than the pod so a rollout does not send one message per replica for a single misconfiguration.</p></li>
                         </ul>
                     </div>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
                         <ul>
-                            <li>Every direct dependency is current: OpenTelemetry 1.46.0, grpc 1.83.2, testify 1.12.1,
-                                and the Kubernetes stack to 0.37.0 with controller-runtime 0.25.0. Both declare the Go
-                                version the module already requires, so unlike the 0.36 move this needed no toolchain
-                                change and broke no API.</li>
+                            <li><strong>Every direct dependency is current.</strong> The OpenTelemetry family to 1.46.0 (log and its exporters to 0.22.0), grpc to 1.83.2, testify to 1.12.1, prometheus/client_model to 0.6.3, ginkgo and gomega, and the Kubernetes stack to 0.37.0 with controller-runtime 0.25.0. Both k8s 0.37 and controller-runtime 0.25 declare the Go version the module already requires, so unlike the 0.36 move this needed no toolchain change and broke no API.</li>
                         </ul>
                     </div>
                     <div class="change-group">
                         <h4 class="fixed">Fixed</h4>
                         <ul>
-                            <li>The 3.1.0 release was merged but never tagged, so the release, its image tags and the
-                                chart never published. Tagged and verified.</li>
+                            <li><strong>The v3.1.0 release was merged but never tagged.</strong> The tag push failed and the release, its image tags and the chart never published. Tagged and verified.</li>
                         </ul>
                     </div>
                 </article>
@@ -346,48 +296,28 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         <h3 class="release-version">3.1.0</h3>
                         <span class="release-date">2026-09-01</span>
                     </div>
-                    <p class="release-summary">
-                        A monthly maintenance release: a new capability, a large jump in test
-                        coverage for the two binaries, and the removal of documentation and code
-                        that had drifted from what the tree actually does.
-                    </p>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
                         <ul>
-                            <li><strong><code>pahlevan coverage</code></strong>, and the <code>pkg/coverage</code>
-                                package behind it: Pahlevan's own mapping of its seven eBPF programs to the
-                                MITRE ATT&amp;CK techniques their observations can help an analyst confirm or
-                                rule out.</li>
+                            <li><strong><code>pahlevan coverage</code></strong>, and the <code>pkg/coverage</code> package behind it: Pahlevan's own mapping of its seven eBPF programs to the MITRE ATT&amp;CK techniques their observations can help an analyst confirm or rule out. Closes the &quot;detection coverage vocabulary&quot; gap ROADMAP.md has carried since 3.0.0 - previously the only way to answer &quot;what does this cover&quot; was reading <code>bpf/*.c</code> one file at a time.</li>
                         </ul>
                     </div>
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
                         <ul>
-                            <li><code>pkg/discovery</code>'s container tracker went from 30.4% to 94.9% test
-                                coverage, after removing a dead scaffold that was never wired into anything
-                                and only tested itself.</li>
-                            <li>The agent's event observer and policy resolver, and the operator's admission
-                                runnables, gained unit tests; the remaining coverage gap in both binaries is
-                                <code>main()</code>, which cannot be unit-tested without a privileged kernel or
-                                a live cluster.</li>
-                            <li><code>docs/architecture.md</code>'s eBPF programs table was stale since the
-                                credential and shell monitors shipped: it named a program that does not exist
-                                and omitted three that do. Now lists all seven with their real hooks.</li>
-                            <li><code>docs/quick-start.md</code> described CRD fields, CLI subcommands and
-                                metric names that never existed or stopped existing releases ago. Corrected
-                                throughout.</li>
+                            <li><code>pkg/discovery</code>'s <code>ContainerTracker</code> (the Kubernetes-facing container discovery used by the integration test harness) now has real unit test coverage: 30.4% to 94.9%, with a removed dead-code scaffold (<code>ContainerScanner</code>, <code>PodInfo</code>, <code>NodeInfo</code>, <code>EventWatcher</code> and friends in <code>pkg/discovery/types.go</code>) that was never wired into anything and only tested itself.</li>
+                            <li><code>cmd/pahlevan-agent</code>'s event observer (<code>agentObserver</code>) and policy resolver's <code>Refresh</code>/<code>PodMeta</code> now have unit test coverage (26.8% to 54.7%); the remaining gap is <code>main()</code> itself, which loads real eBPF programs and cannot be unit-tested on the host.</li>
+                            <li><code>cmd/pahlevan-operator</code>'s two admission runnables were extracted into testable functions (<code>ensureAdmissionOnce</code>, <code>reconcileDerivedAdmissionOnce</code>) with unit tests (0% to 15.3%); behavior is unchanged. The remaining gap is again <code>main()</code>, which requires a live Kubernetes API server.</li>
+                            <li><code>docs/architecture.md</code>'s eBPF programs table was stale since the credential and shell monitors shipped: it listed five programs, including a <code>lsm_monitor.c</code> that does not exist, and was missing <code>capability_monitor.c</code>, <code>cred_monitor.c</code> and <code>shell_monitor.c</code> entirely. Now lists all seven with their real hooks.</li>
+                            <li><code>docs/quick-start.md</code> described a CRD shape and CLI that stopped existing release ago: <code>learning</code>/<code>enforcement</code> spec fields (real names are <code>learningConfig</code>/<code>enforcementConfig</code>), <code>monitor</code>/<code>enforce</code> mode strings (real values are <code>Monitoring</code>/<code>Blocking</code>), a <code>pahlevan debug system-capabilities</code> subcommand that was never implemented, a <code>pahlevan_blocked_events</code> metric that does not exist, and enforcement logs attributed to the operator when they are actually written by the agent DaemonSet. Corrected throughout.</li>
                         </ul>
                     </div>
                     <div class="change-group">
                         <h4 class="removed">Removed</h4>
                         <ul>
-                            <li><code>docs/USAGE.md</code>: unlinked from every other doc and almost entirely
-                                fabricated. Its accurate content already lives in
-                                <code>docs/quick-start.md</code>, <code>docs/policy-reference.md</code> and
-                                <code>docs/deployment.md</code>.</li>
-                            <li><code>pkg/seccomp.Generate</code>, a wrapper with no callers anywhere in the
-                                tree; <code>GenerateWithOverrides(allowed, nil, nil)</code> is the direct
-                                replacement.</li>
+                            <li><code>docs/USAGE.md</code>: unlinked from every other doc, and almost entirely fabricated (invented CLI subcommands like <code>pahlevan debug system-info</code>, <code>pahlevan policy simulate</code>, <code>pahlevan policy apply -f policies/</code>; a <code>pahlevan-config</code> ConfigMap tuning surface that was never built). Its accurate content already lives in <code>docs/quick-start.md</code>, <code>docs/policy-reference.md</code> and <code>docs/deployment.md</code>.</li>
+                            <li><code>pkg/seccomp.Generate</code>, a one-line wrapper around <code>GenerateWithOverrides</code> with no callers anywhere in the tree. <code>GenerateWithOverrides(allowed, nil, nil)</code> is the direct replacement for anyone calling it as a library.</li>
+                            <li><code>internal/controller</code> <code>AttackSurfaceAnalyzerReconciler.syscallNumberToName</code>, an unreachable duplicate of the syscall table <code>pkg/ebpf</code>/<code>pkg/seccomp</code> already maintain.</li>
                         </ul>
                     </div>
                 </article>
@@ -397,52 +327,73 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         <h3 class="release-version">3.0.0</h3>
                         <span class="release-date">2026-08-31</span>
                     </div>
-                    <p class="release-summary">
-                        Two hundred and twenty-five commits since 2.0.0. The theme, unintentionally, is
-                        honesty: a large share of this release is the discovery and removal of things
-                        that looked like they worked and did not.
-                    </p>
+                    <p class="release-summary">Two hundred and twenty-five commits since 2.0.0. The theme, unintentionally, is honesty: a large share of this release is the discovery and removal of things that looked like they worked and did not. Where a feature could be implemented it was; where it could not, it now says so.</p>
+                    <p class="release-summary">This is a major release for two reasons, both listed under Breaking changes: the gRPC event stream will not start unauthenticated any more, and the module now requires Go 1.26.</p>
                     <div class="change-group">
                         <h4>Breaking changes</h4>
                         <ul>
-                            <li><strong>The gRPC event stream refuses to start plaintext and unauthenticated.</strong>
-                                If you run the agent with <code>--grpc-bind-address</code> and no transport security it now
-                                exits at startup. The stream carries every denial on the node, which is a reconnaissance
-                                report. Configure <code>--grpc-tls-cert</code> and <code>--grpc-tls-key</code>, add
-                                <code>--grpc-client-ca</code> for mTLS or <code>--grpc-token</code> for a bearer token, or
-                                pass <code>--grpc-insecure</code> to say the listener is genuinely unreachable. If you never
-                                set <code>--grpc-bind-address</code>, nothing changes.</li>
-                            <li><strong>The module requires Go 1.26.</strong> Anything importing
-                                <code>github.com/obsernetics/pahlevan</code> now needs Go 1.26 or newer. Running the
-                                published image is unaffected.</li>
+                            <li><p><strong>The gRPC event stream refuses to start plaintext and unauthenticated.</strong></p> <p>If you run the agent with <code>--grpc-bind-address</code> and no transport security, it now exits at startup instead of serving. The stream carries every denial on the node - which pods exist, which paths they read, which destinations they dial, the full command line of every exec - and that is a reconnaissance report.</p> <p>Previously it started anyway and logged a warning. The person who forgets the certificate and the person who reads the startup log are rarely the same person, so the warning was not a control.</p> <p>To upgrade, pick one:</p>
+<pre><code class="language-yaml"># mTLS, the right answer in a cluster. cert-manager can issue the pair.
+- --grpc-tls-cert=/etc/pahlevan/tls/tls.crt
+- --grpc-tls-key=/etc/pahlevan/tls/tls.key
+- --grpc-client-ca=/etc/pahlevan/tls/ca.crt
+</code></pre>
+<pre><code class="language-yaml"># TLS plus a bearer token, for a collector that cannot present a certificate.
+- --grpc-tls-cert=/etc/pahlevan/tls/tls.crt
+- --grpc-tls-key=/etc/pahlevan/tls/tls.key
+- --grpc-token=$(PAHLEVAN_GRPC_TOKEN)
+</code></pre>
+<pre><code class="language-yaml"># Or say explicitly that this listener is unreachable and you accept it.
+- --grpc-insecure
+</code></pre>
+<p>A bearer token without TLS is still refused: in cleartext it is a token you have published. If you do not set <code>--grpc-bind-address</code> at all, nothing changes for you - the listener is off by default and always was.</p></li>
+                            <li><p><strong>The module requires Go 1.26.</strong></p> <p><code>go.mod</code> declares <code>go 1.26.0</code>, so anything importing <code>github.com/obsernetics/pahlevan</code> needs Go 1.26 or newer to build. This came from <code>k8s.io/cli-runtime</code> 0.36.3, which requires it, and which in turn forced <code>controller-runtime</code> to 0.24.1.</p> <p>Running the published container image is unaffected - it ships compiled binaries and needs no toolchain.</p></li>
                         </ul>
                     </div>
                     <div class="change-group">
-                        <h4>Added</h4>
+                        <h4 class="added">Added</h4>
                         <ul>
-                            <li><strong>Syscall arguments</strong> on every syscall event, with a watch set of escalation
-                                primitives that report every occurrence rather than only the first.</li>
-                            <li><strong>Privilege-escalation detection</strong> at <code>kprobe/commit_creds</code>, the one
-                                function every credential change passes through, so an exploit that never makes a syscall
-                                still lands there. Needs no BPF LSM.</li>
-                            <li><strong>Interactive shell capture</strong> at <code>uretprobe/readline</code>, which sees the
-                                builtins that produce no exec, no open and no connect. Off by default.</li>
-                            <li><strong>Five enforcement actions</strong>: Learn, Deny, Kill, Audit and Signal, with a
-                                configurable errno. Audit reports what would have been refused and refuses nothing.</li>
-                            <li>Kernel-enforced <code>processFilter</code>, container-breakout detection, destination naming,
-                                OTLP export, <code>pahlevan policy explain</code>, and gRPC TLS/mTLS.</li>
+                            <li><strong>Kernel-enforced <code>processFilter</code>.</strong> Constrains the parent process comm, the effective uid and the effective gid at <code>bprm_check_security</code>. The learned allow-set asks whether a container has ever run a binary; this asks whether the process running it is allowed to. That distinction is what covers the interpreter already in the image, which the allow-set cannot.</li>
+                            <li><strong>Container-breakout detection.</strong> An exec whose working directory belongs to a different mount namespace from the process is the invariant the runC breakout class violates (CVE-2024-21626 and its successors). Detected during learning as well as under enforcement, never added to the allow-set, and reported with its own flag, counter, alert and OTLP severity.</li>
+                            <li><strong>Destination naming.</strong> A denial reads <code>prod/postgres:5432</code>, resolved from Services, pods and nodes the agent already caches. An address the cluster does not know is tagged <code>external</code>, which separates a misconfiguration from exfiltration. No DNS query is made.</li>
+                            <li><strong>OTLP export for security events</strong>, using OpenTelemetry semantic-convention attribute names, plus one shared resource across metrics, traces and events so Grafana can join them. <code>examples/observability/lgtm-stack.yaml</code> deploys the collector and datasources.</li>
+                            <li><strong><code>pahlevan policy explain -f</code></strong>, which translates a policy offline and names every part the data plane will not enforce. <code>--strict</code> fails a CI gate.</li>
+                            <li><strong>gRPC TLS, mTLS and bearer-token authentication</strong> for the event stream, with the security posture printed at startup. The default is still plaintext.</li>
+                            <li><strong><code>allowDNS</code> and <code>allowLoopback</code> are enforced</strong>, as a per-cgroup flag checked ahead of the allow-set.</li>
+                            <li><strong>Syscall arguments on every syscall event.</strong> The monitor moved from <code>raw_tracepoint/sys_enter</code> to <code>tracepoint/raw_syscalls/sys_enter</code>, whose format already carries the six arguments extracted, identically on both architectures. A watch set of escalation primitives - <code>ptrace</code>, <code>unshare</code>, <code>setns</code>, <code>bpf</code>, <code>mount</code>, <code>io_uring_setup</code> and the rest - bypasses the in-kernel deduplication, so they report every occurrence rather than only the first. The first <code>ptrace</code> a process makes is usually a debugger attaching at startup; the interesting one is the fourteenth.</li>
+                            <li><strong>Privilege-escalation detection at <code>kprobe/commit_creds</code>.</strong> Every other monitor watches a request; this one watches the result. <code>commit_creds</code> is the single function through which any task's credentials change, so a local-root exploit that overwrites a <code>cred</code> struct and calls it directly lands here having made no syscall at all. The discriminator is <code>task-&gt;in_execve</code>: a setuid binary gains privilege inside <code>execve</code> and <code>sudo</code> does it all day, while privilege gained with none underway has no other explanation. Needs no BPF LSM.</li>
+                            <li><strong>Interactive shell capture at <code>uretprobe/readline</code>.</strong> <code>cd</code>, <code>export</code> and <code>history -c</code> are shell builtins: they produce no exec, no open and no connect, so an exec-based monitor watches somebody work through them and reports nothing but the shell's own process. Attached per container through <code>/proc/&lt;pid&gt;/root</code> when a shell execs, and off by default behind <code>--trace-shell-commands</code>, because recording what a person types is a decision an operator makes deliberately.</li>
+                            <li><strong>Five enforcement actions instead of two.</strong> <code>Learn</code>, <code>Deny</code>, <code>Kill</code>, <code>Audit</code> and <code>Signal</code>, with a configurable errno and signal number, packed into one <code>__u32</code> per cgroup so the hot path still costs one map lookup. <code>Audit</code> reports what would have been refused and refuses nothing, and deliberately does not learn - an audit pass that quietly added everything it reported would report each violation once and never again. <code>Signal</code> exists for <code>SIGSTOP</code>: freezing a process leaves its memory for an incident responder, where <code>SIGKILL</code> destroys exactly that.</li>
                         </ul>
                     </div>
                     <div class="change-group">
-                        <h4>Fixed</h4>
+                        <h4 class="fixed">Fixed</h4>
                         <ul>
-                            <li><strong>ContainerProfile status was silently discarded on every write.</strong> The resource
-                                has a status subresource, so a server-side apply to the main resource does not write status.
-                                Profiles reached the cluster with no counts, no learned sets, no phase and no rollback
-                                history, and looked healthy.</li>
-                            <li>Export formats returned canned strings; the metrics provider was built with no readers; nine
-                                metric recorders discarded their labels; <code>mode: Off</code> did the opposite of what it
-                                says; seccomp profiles were written world-readable.</li>
+                            <li><strong><code>ContainerProfile</code> status was silently discarded on every write.</strong> The resource has a status subresource, so a server-side apply to the main resource does not write status - a real API server drops it. Profiles were reaching the cluster with no counts, no learned syscalls, files, destinations or capabilities, no phase and no rollback history. The object existed and looked healthy. Found only when <code>controller-runtime</code> 0.24 started modelling the real server in its fake client.</li>
+                            <li><strong>Export formats returned canned strings.</strong> <code>exportToMermaid</code> returned the literal <code>&quot;graph TD&quot;</code> for every cluster; GraphQL and Cytoscape returned <code>{}</code>.</li>
+                            <li><strong>The metrics provider was built with no readers</strong>, so every recorded metric was silently discarded while <code>--observability-exports</code> reported the exporter as configured.</li>
+                            <li><strong>Nine metric recorders discarded their labels</strong>, so per-policy questions had no answer and the gauges were last-writer-wins across containers.</li>
+                            <li><strong>Event-handler errors were discarded</strong>, making a broken export pipeline indistinguishable from a quiet cluster.</li>
+                            <li><strong>An unbounded no-op event handler</strong> was registered on the ring-buffer hot path on every reconcile, racing on a stale pointer.</li>
+                            <li><strong>Observability shutdown was unbounded</strong>, hanging the agent on every rollout while a collector was down.</li>
+                            <li><strong>Four <code>GaugeVec</code>s were named <code>_total</code></strong>, so <code>rate()</code> over them was nonsense.</li>
+                            <li><strong><code>mode: Off</code> did the opposite of what it says</strong> - unquoted <code>Off</code> is a YAML 1.1 boolean, and there was no enum, so it silently became Monitoring. The field is now validated at admission.</li>
+                            <li><strong><code>pahlevan version</code> required a Kubernetes cluster</strong>, and the Dockerfile injected build metadata into variables that do not exist, so every shipped binary reported an unknown commit and date.</li>
+                            <li><strong>Seccomp profiles were written world-readable</strong> into a world-readable directory.</li>
+                            <li>Two goroutines ticking hourly to call empty functions; three unreachable vendor exporters guarded on fields nothing assigned; a test double compiled into every binary; and the two CLI columns that printed <code>N/A</code> over data one dereference away.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li><strong>Dependencies</strong>: <code>cilium/ebpf</code> to 0.22.0, <code>prometheus/client_golang</code> to 1.24.1, <code>go-logr</code> to 1.4.4, the OpenTelemetry family to 1.45.0 (log and its exporters to 0.21.0), <code>k8s.io/cli-runtime</code> to 0.36.3 and <code>controller-runtime</code> to 0.24.1. <code>otel/log</code> 0.21 removed its own <code>Value</code> and <code>KeyValue</code> types in favour of the ones in <code>go.opentelemetry.io/otel/attribute</code>, so a log record's attributes are now the same type as a span's and a metric's.</li>
+                            <li><strong>The README's diagrams are rendered images</strong>, authored as HTML under <code>docs/assets/diagrams/</code> and regenerated by <code>hack/render-diagrams.sh</code>, rather than ASCII art whose box borders did not line up.</li>
+                            <li><strong>Commit messages are checked by a hook.</strong> <code>.githooks/commit-msg</code> rejects assistant attribution trailers; <code>scripts/setup-hooks.sh</code> enables it.</li>
+                            <li><strong>Every policy example was invalid against the CRD</strong> and has been rewritten. About twenty-five invented keys were being silently pruned by the API server, so the examples applied cleanly and did a fraction of what they said. A strict-decode test now fails the build.</li>
+                            <li><strong><code>docs/api-reference.md</code> is generated from the Go types.</strong> The hand-written version described an API that had never existed.</li>
+                            <li><strong><code>install.yaml</code>, the Pages site and the demo GIF are all kept in step automatically</strong> - each had drifted, and each now has a check that fails when it does.</li>
+                            <li><strong>Seven CRD fields are documented as inert</strong> rather than left to look functional.</li>
+                            <li><code>make vm-test</code> runs every VM test. It filtered on <code>TestVMLoad</code>, so nineteen tests written for the VM had never run there.</li>
                         </ul>
                     </div>
                 </article>
@@ -452,13 +403,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         <h3 class="release-version">2.0.0</h3>
                         <span class="release-date">2026-08-14</span>
                     </div>
-                    <p class="release-summary">
-                        Pahlevan 2.0.0 is a redesign. The single all-in-one operator is replaced by a
-                        privileged per-node agent plus an unprivileged, leader-elected control plane,
-                        and the eBPF data plane moved from placeholder code to real CO-RE programs that
-                        observe and deny in the kernel.
-                    </p>
-
+                    <p class="release-summary">Pahlevan 2.0.0 is a redesign. The single all-in-one operator is replaced by a privileged per-node agent plus an unprivileged, leader-elected control plane, and the eBPF data plane moved from placeholder code to real CO-RE programs that observe and deny in the kernel.</p>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
                         <ul>
@@ -467,34 +412,32 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <li><strong>CO-RE file monitor</strong> on <code>lsm/file_open</code> with path resolution via <code>bpf_d_path()</code> and graceful degradation when the BPF LSM is unavailable.</li>
                             <li><strong>In-kernel file enforcement</strong>: unlearned opens are denied with <code>EPERM</code>.</li>
                             <li><strong>In-kernel network egress enforcement</strong> via <code>lsm/socket_connect</code>, preceded by a CO-RE <code>kprobe/tcp_connect</code> network monitor for observation.</li>
-                            <li><strong>Process and exec monitoring and enforcement</strong> via <code>lsm/bprm_check_security</code>.</li>
+                            <li><strong>Process/exec monitoring and enforcement</strong> via <code>lsm/bprm_check_security</code>.</li>
                             <li><strong>Adaptive learn to enforce loop</strong>: per-cgroup allow-sets are built during the learning window and the agent transitions to enforcement autonomously.</li>
                             <li><strong>Seccomp profile generation</strong> from the learned syscall set.</li>
                             <li><strong>CEL <code>ValidatingAdmissionPolicy</code></strong> hardening for <code>PahlevanPolicy</code> resources.</li>
                             <li><strong><code>ContainerProfile</code> CRD</strong> with profile persistence, a metrics endpoint, and an enforcement counter.</li>
                             <li><strong><code>AttackSurface</code> CRD</strong> for cluster-wide posture aggregation.</li>
-                            <li><strong>Container attribution</strong>: cgroup id to Kubernetes pod and container resolver.</li>
+                            <li><strong>Container attribution</strong>: cgroup id to Kubernetes pod/container resolver.</li>
                             <li><strong><code>hack/vm/</code></strong>: reproducible QEMU/KVM harness that provisions a kernel with the BPF LSM enabled for eBPF load, attach, observe, and enforce tests.</li>
-                            <li><strong>Benchmark harness</strong> measuring detection, prevention and overhead, with a no-agent control pass.</li>
-                            <li><strong>GitHub Pages site</strong> with a deploy workflow, published Helm chart, install and benchmark sections.</li>
+                            <li><strong>Benchmark harness</strong> measuring detection, prevention and overhead, with a no-agent control pass (<code>test/benchmark/</code>, <code>docs/benchmarks/</code>).</li>
+                            <li><strong>GitHub Pages site</strong> (<code>pages/</code>) with a deploy workflow, published Helm chart, install and benchmark sections.</li>
                             <li><strong>Committed bpf2go bindings and eBPF objects</strong> so the tree builds from a clean checkout without clang on the build host.</li>
                             <li><strong>Documentation and demo</strong>: README with badges, an animated demo GIF, and an architecture diagram.</li>
                         </ul>
                     </div>
-
                     <div class="change-group">
                         <h4 class="changed">Changed</h4>
                         <ul>
                             <li>Helm chart and <code>install.yaml</code> rewritten for the agent plus operator split.</li>
-                            <li>Build produces three binaries (<code>pahlevan-agent</code>, <code>pahlevan-operator</code>, <code>pahlevan</code>); the container image is a minimal distroless runtime.</li>
+                            <li>Build produces three binaries: <code>pahlevan-agent</code>, <code>pahlevan-operator</code>, and the <code>pahlevan</code> CLI; the container image is a minimal distroless runtime.</li>
                             <li>Go toolchain moved to 1.25 across <code>go.mod</code>, the Makefile, and the Dockerfile.</li>
-                            <li>Dependency bumps, including Kubernetes libraries to 0.35.0, <code>controller-runtime</code> to 0.22.4, <code>cilium/ebpf</code> to 0.20.0, <code>spf13/cobra</code> to 1.10.1, Ginkgo/Gomega, OpenTelemetry, <code>go-logr</code>, and <code>prometheus/client_golang</code>.</li>
+                            <li>Dependency bumps, including Kubernetes libraries to 0.35.0, <code>sigs.k8s.io/controller-runtime</code> to 0.22.4, <code>github.com/cilium/ebpf</code> to 0.20.0, <code>github.com/spf13/cobra</code> to 1.10.1, Ginkgo/Gomega, OpenTelemetry, <code>go-logr</code>, and <code>prometheus/client_golang</code>.</li>
                             <li>Substantially expanded test coverage across the controller, learner, policies, CLI, APIs, observability, metrics, attribution, and visualization packages, plus decode round-trip tests and benchmarks for the eBPF event parsers.</li>
                             <li>CI restructured into a build, push, then test flow with dependency caching; security workflows consolidated.</li>
                             <li>Documentation cleaned of em dashes project-wide and the architecture SVG redrawn with clean connectors.</li>
                         </ul>
                     </div>
-
                     <div class="change-group">
                         <h4 class="fixed">Fixed</h4>
                         <ul>
@@ -507,7 +450,6 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                             <li>Reachable CVEs patched; <code>govulncheck</code> clean.</li>
                         </ul>
                     </div>
-
                     <div class="change-group">
                         <h4 class="removed">Removed</h4>
                         <ul>
@@ -530,6 +472,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         </ul>
                     </div>
                 </article>
+                <!--/pahlevan:sitegen-->
             </div>
         </div>
     </section>
@@ -569,10 +512,10 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     </div>
                     <div class="footer-section">
                         <h4>Docs</h4>
-                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs" target="_blank" rel="noopener">Documentation</a>
-                        <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/architecture.md" target="_blank" rel="noopener">Architecture</a>
-                        <a href="https://github.com/obsernetics/pahlevan/blob/main/docs/packages.md" target="_blank" rel="noopener">Packages</a>
-                        <a href="https://github.com/obsernetics/pahlevan/tree/main/docs/benchmarks" target="_blank" rel="noopener">Benchmarks</a>
+                        <a href="docs/index.html">All documentation</a>
+                        <a href="docs/architecture.html">Architecture</a>
+                        <a href="docs/quick-start.html">Quick start</a>
+                        <a href="docs/packages.html">Packages</a>
                     </div>
                     <div class="footer-section">
                         <h4>Community</h4>
@@ -592,6 +535,6 @@ docker inspect --format '{{index .RepoDigests 0}}' \
     <!-- Scripts -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    <script src="assets/js/main.js?v=5"></script>
+    <script src="assets/js/main.js?v=6"></script>
 </body>
 </html>

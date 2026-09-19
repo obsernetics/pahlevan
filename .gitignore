@@ -82,3 +82,14 @@ hack/vm/smoke/pahlevan-vm-smoke
 # Scratch renders. The diagram sources live in docs/assets/diagrams/ and the
 # images they produce are committed; nothing else from a render run is.
 docs/assets/diagrams/*.png
+
+# Binaries a bare `go build` drops at the repo root. A 70MB agent reached a
+# commit this way, and the VM smoke helper did before it; both arrived through
+# `git add -A` after somebody built without -o.
+/pahlevan
+/pahlevan-agent
+/pahlevan-operator
+/pahlevan-dashboard
+/sitegen
+/scenario
+/actionlint

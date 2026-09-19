@@ -14,6 +14,13 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 )
 
+// testFlushTimeout is the deadline these tests hand to Shutdown in place of the
+// production five seconds. An OTLP exporter pointed at a closed port retries
+// until its context expires, so every flush in this file costs exactly its
+// deadline - the assertions are about the flush stopping at that deadline, not
+// about the deadline's length.
+const testFlushTimeout = 150 * time.Millisecond
+
 // The three metric exporter branches used to log "temporarily disabled" and
 // fall through, leaving `readers` empty. A MeterProvider with no readers still
 // accepts every Add() and Record() call and silently discards them, so metrics
@@ -42,9 +49,12 @@ func TestInitializeMetricsBuildsAReaderPerExporter(t *testing.T) {
 			c, err := m.meter.Int64Counter("probe")
 			require.NoError(t, err)
 			c.Add(context.Background(), 1)
-			// Shutdown is bounded: with no collector listening the OTLP flush
-			// fails, and that must be a prompt error rather than a hang.
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			// Cleanup only - this test is about a reader existing per exporter.
+			// The deadline is short because with no collector listening the
+			// OTLP flush burns exactly its deadline before failing; that the
+			// flush is bounded at all is asserted by
+			// TestShutdownIsBoundedWhenTheCollectorIsUnreachable.
+			ctx, cancel := context.WithTimeout(context.Background(), testFlushTimeout)
 			defer cancel()
 			_ = m.meterProvider.Shutdown(ctx)
 		})
@@ -109,6 +119,11 @@ func TestShutdownIsBoundedWhenTheCollectorIsUnreachable(t *testing.T) {
 	require.NoError(t, err)
 	m := &Manager{
 		stopCh: make(chan struct{}),
+		// The bound is injected rather than the production five seconds: what
+		// matters is that Shutdown returns at whatever deadline it was given
+		// instead of retrying forever, and a short deadline proves that just as
+		// well while keeping the suite fast.
+		flushTimeout: testFlushTimeout,
 		config: &Config{
 			MetricsExporters: []ExporterConfig{
 				{Type: ExporterTypeOTLP, Endpoint: "127.0.0.1:1", Insecure: true},
@@ -123,8 +138,18 @@ func TestShutdownIsBoundedWhenTheCollectorIsUnreachable(t *testing.T) {
 	elapsed := time.Since(start)
 
 	assert.Error(t, err, "a failed flush must be reported, not swallowed")
-	assert.Less(t, elapsed, shutdownTimeout+3*time.Second,
+	assert.Less(t, elapsed, testFlushTimeout+3*time.Second,
 		"shutdown must give up rather than block on an unreachable collector")
+}
+
+// The injected bound above must not be able to hide a regression in the value
+// the agent actually ships with, so the default is asserted directly.
+func TestShutdownUsesTheProductionBoundByDefault(t *testing.T) {
+	assert.Equal(t, 5*time.Second, shutdownTimeout,
+		"the shipped flush bound must stay well inside a pod's termination grace period")
+	assert.Equal(t, shutdownTimeout, (&Manager{}).shutdownDeadline(),
+		"a manager with no injected bound must use the production constant")
+	assert.Equal(t, testFlushTimeout, (&Manager{flushTimeout: testFlushTimeout}).shutdownDeadline())
 }
 
 // A meter provider that cannot flush must not stop the tracer provider from
@@ -133,7 +158,8 @@ func TestShutdownStopsBothProvidersOnFailure(t *testing.T) {
 	res, err := resource.New(context.Background())
 	require.NoError(t, err)
 	m := &Manager{
-		stopCh: make(chan struct{}),
+		stopCh:       make(chan struct{}),
+		flushTimeout: testFlushTimeout,
 		config: &Config{
 			MetricsExporters: []ExporterConfig{
 				{Type: ExporterTypeOTLP, Endpoint: "127.0.0.1:1", Insecure: true},

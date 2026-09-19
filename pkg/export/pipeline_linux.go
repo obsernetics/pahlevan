@@ -103,6 +103,13 @@ type Config struct {
 	// Destination names the far end of a network event from what the cluster
 	// knows. Optional; without it a denial reports an address and nothing else.
 	Destination DestinationFunc
+
+	// External names a destination the cluster map did not know: the far end
+	// of a connection that left the cluster, which is the destination an
+	// exfiltration alert is about. Optional; without it those events carry a
+	// bare address. It must not block - see ExternalNameFunc.
+	External ExternalNameFunc
+
 	// OnError, when set, receives every sink failure. It must not block.
 	OnError func(err error)
 }
@@ -295,6 +302,7 @@ func New(cfg Config) (*Pipeline, error) {
 		Filter:      filter,
 		Attribution: cfg.Attribution,
 		Destination: cfg.Destination,
+		External:    cfg.External,
 	})
 
 	return &Pipeline{Handler: handler, Queue: queue, Exporter: exporter}, nil

@@ -50,6 +50,8 @@
 
 B=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
 GRN=$'\033[32m'; RED=$'\033[31m'; YEL=$'\033[33m'; CYN=$'\033[36m'; MAG=$'\033[35m'; GRY=$'\033[90m'
+# Reverse video, for the selected row and the active tab in the ui view.
+INV=$'\033[7m'
 
 AGENT="${MAG}[pahlevan/agent]${R}"
 
@@ -156,6 +158,25 @@ pahlevan() {
       echo ""
       echo "  ${GRY}the same events reach Slack and PagerDuty as formatted findings,${R}"
       echo "  ${GRY}and Loki as OTLP records sharing the resource the metrics carry${R}"
+      ;;
+    "ui"*)
+      # The interactive view, drawn the way it actually renders: the tab bar,
+      # the workload table with observed against refused, and the status line.
+      echo "${B}pahlevan${R}  ${INV} 1 events ${R} ${GRY} 2 workloads ${R} ${GRY} 3 coverage ${R} ${GRY} ? help ${R}"
+      echo "${DIM}────────────────────────────────────────────────────────────────────────${R}"
+      echo "${DIM}WORKLOAD                             FILE     NET   EXEC    CAP   DENIED${R}"
+      echo "${INV}prod/Deployment/app                   118       6      1      1        6${R}"
+      echo "kube-system/DaemonSet/cni              12      44      0      0        0"
+      echo ""
+      echo "  ${DIM}prod/Deployment/app${R}   ${GRY}node-1${R}"
+      echo "  ${DIM}OBSERVED${R}  files 118   network 6   execs 1   capabilities 1"
+      echo "  ${DIM}REFUSED${R}   ${RED}6${R}"
+      echo "    ${RED}read /etc/shadow${R}"
+      echo "    ${RED}exec /tmp/xmrig${R}"
+      echo "    ${RED}tcp 203.0.113.7:4444${R}"
+      echo "${DIM}────────────────────────────────────────────────────────────────────────${R}"
+      echo "${GRY}1509 events · ${R}${RED}6 denied${R}${GRY} · node-1:9090${R}"
+      echo "${GRY}reads only; it never changes a policy or a mode${R}"
       ;;
     "coverage"*)
       echo "${DIM}PROGRAM                        ATT&CK${R}"

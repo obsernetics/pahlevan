@@ -2,6 +2,7 @@ package policy
 
 import (
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
@@ -690,4 +692,677 @@ func TestUnknownModeIsReportedEvenThoughItBecomesMonitoring(t *testing.T) {
 	}, now)
 	assert.Equal(t, adaptive.ModeMonitoring, d.Mode)
 	assert.True(t, hasWarning(warnings, "enforces nothing"), "warnings were %v", warnings)
+}
+
+// ---------------------------------------------------------------------------
+// Declared expected behavior
+//
+// A declaration is the operator saying "the workload does this, you just did
+// not see it". Learning is a window of wall-clock time, so a nightly batch or a
+// weekly certificate renewal is absent from the baseline for exactly the same
+// reason an attack is - nobody has ever seen the workload do it - and these
+// tests pin the three properties that make it safe to say so in advance: the
+// entry reaches the allow-set, it can only ever add, and it stays visibly an
+// assertion rather than evidence.
+// ---------------------------------------------------------------------------
+
+// betaSpec builds a Blocking v1beta1 spec carrying a declaration, which is the
+// only mode in which a declaration reaches the kernel.
+func betaSpec(eb *policyv1beta1.ExpectedBehavior) policyv1beta1.PahlevanPolicySpec {
+	return policyv1beta1.PahlevanPolicySpec{
+		LearningConfig: policyv1beta1.LearningConfig{
+			Duration:         dur(5 * time.Minute),
+			ExpectedBehavior: eb,
+		},
+		EnforcementConfig: policyv1beta1.EnforcementConfig{
+			Mode: policyv1beta1.EnforcementModeBlocking,
+		},
+	}
+}
+
+// destStrings renders the seeded destinations for comparison. net.IP is
+// compared by its bytes, and ParseCIDR and ParseIP disagree about whether an
+// IPv4 address is four bytes or sixteen, so comparing the rendered form is what
+// makes these assertions about addresses rather than about representations.
+func destStrings(dests []adaptive.Destination) []string {
+	out := make([]string, 0, len(dests))
+	for _, d := range dests {
+		out = append(out, net.JoinHostPort(d.IP.String(), strconv.Itoa(int(d.Port))))
+	}
+	return out
+}
+
+func TestDeclaredBehaviorReachesTheAllowSet(t *testing.T) {
+	tests := []struct {
+		name    string
+		declare policyv1beta1.ExpectedBehavior
+		check   func(t *testing.T, o adaptive.Overrides, d Declaration)
+	}{
+		{
+			name: "a read-only file",
+			declare: policyv1beta1.ExpectedBehavior{
+				Files: []policyv1beta1.ExpectedFile{{Path: "/etc/ssl/renewed.pem"}},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, d Declaration) {
+				assert.Equal(t, []string{"/etc/ssl/renewed.pem"}, o.AllowedFiles)
+				// A read is not a write: the kernel allow-set keys on the
+				// access mode, so declaring an open must not permit a rewrite.
+				assert.Empty(t, o.AllowedWriteFiles)
+				assert.Equal(t, []DeclaredFile{{Path: "/etc/ssl/renewed.pem"}}, d.Files)
+			},
+		},
+		{
+			name: "a written file grants the read it needs too",
+			declare: policyv1beta1.ExpectedBehavior{
+				Files: []policyv1beta1.ExpectedFile{{Path: "/var/lib/app/nightly.db", Write: true}},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, _ Declaration) {
+				assert.Equal(t, []string{"/var/lib/app/nightly.db"}, o.AllowedFiles)
+				assert.Equal(t, []string{"/var/lib/app/nightly.db"}, o.AllowedWriteFiles)
+			},
+		},
+		{
+			name: "a network destination",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.43.12.7/32", Port: 5432},
+				},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, d Declaration) {
+				assert.Equal(t, []string{"10.43.12.7:5432"}, destStrings(o.AllowedDestinations))
+				assert.Equal(t, []string{"10.43.12.7:5432"}, destStrings(d.Destinations))
+			},
+		},
+		{
+			name: "a bare address, like an egress rule accepts",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.43.12.7", Port: 443, Protocol: policyv1beta1.TransportProtocolTCP},
+				},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, _ Declaration) {
+				assert.Equal(t, []string{"10.43.12.7:443"}, destStrings(o.AllowedDestinations))
+			},
+		},
+		{
+			name: "an IPv6 destination",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "2001:db8::1/128", Port: 443},
+				},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, _ Declaration) {
+				assert.Equal(t, []string{"[2001:db8::1]:443"}, destStrings(o.AllowedDestinations))
+			},
+		},
+		{
+			name: "an executable",
+			declare: policyv1beta1.ExpectedBehavior{
+				Executables: []string{"/usr/bin/pg_dump"},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, d Declaration) {
+				assert.Equal(t, []string{"/usr/bin/pg_dump"}, o.AllowedExecs)
+				assert.Equal(t, []string{"/usr/bin/pg_dump"}, d.Executables)
+			},
+		},
+		{
+			name: "a capability, spelled either way",
+			declare: policyv1beta1.ExpectedBehavior{
+				Capabilities: []string{"CAP_DAC_OVERRIDE"},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, d Declaration) {
+				assert.Equal(t, []uint32{1}, o.AllowedCapabilities)
+				assert.Equal(t, []uint32{1}, d.Capabilities)
+			},
+		},
+		{
+			name: "a capability without the CAP_ prefix is the same capability",
+			declare: policyv1beta1.ExpectedBehavior{
+				Capabilities: []string{"dac_override"},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, _ Declaration) {
+				assert.Equal(t, []uint32{1}, o.AllowedCapabilities)
+			},
+		},
+		{
+			name: "every kind at once",
+			declare: policyv1beta1.ExpectedBehavior{
+				Files:        []policyv1beta1.ExpectedFile{{Path: "/var/log/app.log", Write: true}},
+				Executables:  []string{"/usr/sbin/logrotate"},
+				Capabilities: []string{"CHOWN"},
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.0.0.53/32", Port: 853},
+				},
+			},
+			check: func(t *testing.T, o adaptive.Overrides, d Declaration) {
+				assert.Equal(t, []string{"/var/log/app.log"}, o.AllowedFiles)
+				assert.Equal(t, []string{"/var/log/app.log"}, o.AllowedWriteFiles)
+				assert.Equal(t, []string{"/usr/sbin/logrotate"}, o.AllowedExecs)
+				assert.Equal(t, []uint32{0}, o.AllowedCapabilities)
+				assert.Equal(t, []string{"10.0.0.53:853"}, destStrings(o.AllowedDestinations))
+				assert.False(t, d.Empty())
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, decl, warnings := TranslateSpec("p", betaSpec(&tc.declare), now)
+			assert.Empty(t, warnings, "a representable declaration must translate silently")
+			tc.check(t, d.Overrides, decl)
+		})
+	}
+}
+
+// The property the whole feature rests on. A declaration is an operator's
+// assertion about behavior nobody observed, so it is allowed to add to the
+// baseline and never to subtract from it: an assertion that could remove a
+// learned entry would be a way to disable enforcement by writing YAML, and
+// worse, a silent one.
+func TestADeclarationNeverRemovesAnythingLearned(t *testing.T) {
+	spec := betaSpec(&policyv1beta1.ExpectedBehavior{
+		Files:        []policyv1beta1.ExpectedFile{{Path: "/var/lib/app/nightly.db", Write: true}},
+		Executables:  []string{"/usr/bin/pg_dump"},
+		Capabilities: []string{"DAC_OVERRIDE"},
+		NetworkDestinations: []policyv1beta1.ExpectedDestination{
+			{CIDR: "10.43.12.7/32", Port: 5432},
+		},
+	})
+	// Deny lists the policy itself set, which must survive the merge unchanged:
+	// a declaration adding to the allow-set must not reopen something the
+	// operator deliberately closed.
+	spec.FilePolicy = &policyv1beta1.FilePolicy{
+		DeniedPaths: []string{"/etc/shadow"},
+	}
+	spec.SyscallPolicy = &policyv1beta1.SyscallPolicy{DeniedSyscalls: []string{"ptrace"}}
+
+	d, decl, warnings := TranslateSpec("p", spec, now)
+	assert.Empty(t, warnings)
+	require.False(t, decl.Empty())
+
+	assert.Equal(t, []string{"/etc/shadow"}, d.Overrides.DeniedFiles)
+	assert.Equal(t, []string{"/etc/shadow"}, d.Overrides.DeniedWriteFiles)
+	assert.Equal(t, []string{"ptrace"}, d.Overrides.DeniedSyscalls)
+	assert.Empty(t, d.Overrides.DeniedExecs)
+	assert.Empty(t, d.Overrides.DeniedCapabilities)
+	assert.Empty(t, d.Overrides.DeniedDestinations)
+}
+
+// The same claim at the level of the merge itself: whatever a declaration
+// contains, mergeInto touches only the Allowed lists. Asserted separately
+// because it is a property of the code rather than of one spec, and because a
+// future field added to Overrides should fail this rather than pass it by
+// accident.
+func TestDeclarationMergeOnlyAdds(t *testing.T) {
+	before := adaptive.Overrides{
+		AllowedFiles:     []string{"/learned/path"},
+		DeniedFiles:      []string{"/etc/shadow"},
+		DeniedWriteFiles: []string{"/etc/shadow"},
+		DeniedExecs:      []string{"/bin/busybox"},
+		DeniedSyscalls:   []string{"ptrace"},
+		DeniedDestinations: []adaptive.Destination{
+			{IP: net.IPv4(10, 0, 0, 1), Port: 25},
+		},
+		DeniedCapabilities: []uint32{21},
+	}
+	after := before
+	decl := Declaration{
+		Files:        []DeclaredFile{{Path: "/declared/path", Write: true}},
+		Executables:  []string{"/usr/bin/pg_dump"},
+		Capabilities: []uint32{1},
+		Destinations: []adaptive.Destination{{IP: net.IPv4(10, 43, 12, 7), Port: 5432}},
+	}
+	decl.mergeInto(&after)
+
+	assert.Equal(t, []string{"/learned/path", "/declared/path"}, after.AllowedFiles,
+		"the learned entry is still there and the declared one was appended")
+	assert.Equal(t, before.DeniedFiles, after.DeniedFiles)
+	assert.Equal(t, before.DeniedWriteFiles, after.DeniedWriteFiles)
+	assert.Equal(t, before.DeniedExecs, after.DeniedExecs)
+	assert.Equal(t, before.DeniedSyscalls, after.DeniedSyscalls)
+	assert.Equal(t, before.DeniedDestinations, after.DeniedDestinations)
+	assert.Equal(t, before.DeniedCapabilities, after.DeniedCapabilities)
+}
+
+// Every refusal below names the field that was refused, because a warning that
+// says a declaration was dropped without saying which one leaves the operator
+// no better off than the silent drop it replaced. The entry must also be
+// genuinely absent: a warning plus a widened entry would be the worst of both.
+func TestUnrepresentableDeclarationsAreRefused(t *testing.T) {
+	tests := []struct {
+		name    string
+		declare policyv1beta1.ExpectedBehavior
+		field   string
+		because string
+	}{
+		{
+			name: "a relative path",
+			declare: policyv1beta1.ExpectedBehavior{
+				Files: []policyv1beta1.ExpectedFile{{Path: "etc/passwd"}},
+			},
+			field:   "learningConfig.expectedBehavior.files[0].path",
+			because: "is not absolute",
+		},
+		{
+			name: "an empty path",
+			declare: policyv1beta1.ExpectedBehavior{
+				Files: []policyv1beta1.ExpectedFile{{Path: "   "}},
+			},
+			field:   "learningConfig.expectedBehavior.files[0].path",
+			because: "is empty",
+		},
+		{
+			name: "a wildcard path, which would be seeded literally and never match",
+			declare: policyv1beta1.ExpectedBehavior{
+				Files: []policyv1beta1.ExpectedFile{{Path: "/var/log/*.log"}},
+			},
+			field:   "learningConfig.expectedBehavior.files[0].path",
+			because: "wildcard",
+		},
+		{
+			name: "a relative executable",
+			declare: policyv1beta1.ExpectedBehavior{
+				Executables: []string{"pg_dump"},
+			},
+			field:   "learningConfig.expectedBehavior.executables[0]",
+			because: "is not absolute",
+		},
+		{
+			name: "a wildcard executable",
+			declare: policyv1beta1.ExpectedBehavior{
+				Executables: []string{"/usr/bin/pg_dump?"},
+			},
+			field:   "learningConfig.expectedBehavior.executables[0]",
+			because: "wildcard",
+		},
+		{
+			name: "a capability the kernel does not have",
+			declare: policyv1beta1.ExpectedBehavior{
+				Capabilities: []string{"CAP_MAKE_COFFEE"},
+			},
+			field:   "learningConfig.expectedBehavior.capabilities[0]",
+			because: "is not a Linux capability",
+		},
+		{
+			name: "an empty capability",
+			declare: policyv1beta1.ExpectedBehavior{
+				Capabilities: []string{" "},
+			},
+			field:   "learningConfig.expectedBehavior.capabilities[0]",
+			because: "is empty",
+		},
+		{
+			name: "a CIDR covering more than one host",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.43.12.0/24", Port: 5432},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].cidr",
+			because: "covers 256 addresses",
+		},
+		{
+			name: "an IPv6 prefix covering more than one host",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "2001:db8::/64", Port: 443},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].cidr",
+			because: "cannot express a prefix",
+		},
+		{
+			name: "a CIDR that is not an address at all",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "db.internal", Port: 5432},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].cidr",
+			because: "is not an IP address",
+		},
+		{
+			name: "an empty CIDR",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "  ", Port: 5432},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].cidr",
+			because: "is empty",
+		},
+		{
+			name: "port zero",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.43.12.7/32", Port: 0},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].port",
+			because: "outside 1-65535",
+		},
+		{
+			name: "a port past the end of the port space",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.43.12.7/32", Port: 70000},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].port",
+			because: "outside 1-65535",
+		},
+		{
+			name: "a negative port",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.43.12.7/32", Port: -1},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].port",
+			because: "outside 1-65535",
+		},
+		{
+			name: "UDP, which would be seeded as TCP",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.96.0.10/32", Port: 53, Protocol: policyv1beta1.TransportProtocolUDP},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].protocol",
+			because: "is UDP, which cannot be declared",
+		},
+		{
+			name: "a protocol that is neither",
+			declare: policyv1beta1.ExpectedBehavior{
+				NetworkDestinations: []policyv1beta1.ExpectedDestination{
+					{CIDR: "10.96.0.10/32", Port: 53, Protocol: "SCTP"},
+				},
+			},
+			field:   "learningConfig.expectedBehavior.networkDestinations[0].protocol",
+			because: "is not TCP or UDP",
+		},
+		{
+			name:    "a declaration that declares nothing",
+			declare: policyv1beta1.ExpectedBehavior{},
+			field:   "learningConfig.expectedBehavior",
+			because: "declares nothing",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, decl, warnings := TranslateSpec("p", betaSpec(&tc.declare), now)
+			assert.True(t, hasWarning(warnings, tc.field),
+				"the warning has to name %s so the author can find it; got %v", tc.field, warnings)
+			assert.True(t, hasWarning(warnings, tc.because),
+				"the warning has to say why; got %v", warnings)
+			assert.True(t, decl.Empty(), "a refused declaration must seed nothing")
+			assert.True(t, d.Overrides.Empty(),
+				"a refused declaration must not reach the allow-set in any form")
+		})
+	}
+}
+
+// One bad entry must not take the good ones with it. An operator who mistypes
+// one of six paths should get five seeded entries and one warning, not a policy
+// that quietly declares nothing.
+func TestOneRefusedEntryDoesNotDiscardTheRest(t *testing.T) {
+	_, decl, warnings := TranslateSpec("p", betaSpec(&policyv1beta1.ExpectedBehavior{
+		Files: []policyv1beta1.ExpectedFile{
+			{Path: "/var/lib/app/nightly.db", Write: true},
+			{Path: "relative/path"},
+			{Path: "/etc/ssl/renewed.pem"},
+		},
+	}), now)
+
+	assert.True(t, hasWarning(warnings, "files[1].path"))
+	assert.Len(t, warnings, 1)
+	assert.Equal(t, []DeclaredFile{
+		{Path: "/var/lib/app/nightly.db", Write: true},
+		{Path: "/etc/ssl/renewed.pem"},
+	}, decl.Files)
+}
+
+// The same operation named twice is one allow-set entry, not two. Duplicates
+// are harmless in the kernel - the key is the same - but they double the
+// declared list a human reads, and a path declared read and write is two
+// different operations rather than a duplicate.
+func TestDeclarationsAreDeduplicated(t *testing.T) {
+	_, decl, warnings := TranslateSpec("p", betaSpec(&policyv1beta1.ExpectedBehavior{
+		Files: []policyv1beta1.ExpectedFile{
+			{Path: "/var/lib/app/nightly.db"},
+			{Path: " /var/lib/app/nightly.db "},
+			{Path: "/var/lib/app/nightly.db", Write: true},
+		},
+		Executables:  []string{"/usr/bin/pg_dump", "/usr/bin/pg_dump"},
+		Capabilities: []string{"CAP_DAC_OVERRIDE", "dac_override"},
+		NetworkDestinations: []policyv1beta1.ExpectedDestination{
+			{CIDR: "10.43.12.7/32", Port: 5432},
+			{CIDR: "10.43.12.7", Port: 5432, Protocol: policyv1beta1.TransportProtocolTCP},
+		},
+	}), now)
+
+	assert.Empty(t, warnings)
+	assert.Equal(t, []DeclaredFile{
+		{Path: "/var/lib/app/nightly.db"},
+		{Path: "/var/lib/app/nightly.db", Write: true},
+	}, decl.Files)
+	assert.Equal(t, []string{"/usr/bin/pg_dump"}, decl.Executables)
+	assert.Equal(t, []uint32{1}, decl.Capabilities)
+	assert.Equal(t, []string{"10.43.12.7:5432"}, destStrings(decl.Destinations))
+}
+
+// Requirement three: a profile has to say which entries were observed and which
+// were asserted. Once an entry is in the kernel allow-set the two are
+// indistinguishable - the map holds a hash, not a provenance - so the
+// distinction has to be carried in what gets reported.
+func TestDeclaredEntriesAreDistinguishableFromLearnedOnes(t *testing.T) {
+	_, decl, warnings := TranslateSpec("p", betaSpec(&policyv1beta1.ExpectedBehavior{
+		Files: []policyv1beta1.ExpectedFile{
+			{Path: "/var/lib/app/nightly.db", Write: true},
+			{Path: "/etc/ssl/renewed.pem"},
+		},
+		Executables:  []string{"/usr/bin/pg_dump"},
+		Capabilities: []string{"CAP_DAC_OVERRIDE"},
+		NetworkDestinations: []policyv1beta1.ExpectedDestination{
+			{CIDR: "10.43.12.7/32", Port: 5432},
+		},
+	}), now)
+	require.Empty(t, warnings)
+
+	// A profile as the agent would report it: learned entries already present,
+	// including one path that was both learned and declared.
+	status := &policyv1beta1.ContainerProfileStatus{
+		LearnedFiles:               []string{"/etc/nginx/nginx.conf", "/etc/ssl/renewed.pem"},
+		LearnedExecutables:         []string{"/usr/sbin/nginx"},
+		LearnedCapabilities:        []string{"NET_BIND_SERVICE"},
+		LearnedNetworkDestinations: []string{"10.0.0.1:443"},
+	}
+	learnedBefore := append([]string(nil), status.LearnedFiles...)
+	decl.ReportInto(status)
+
+	// The learned lists are untouched, so what the container actually did is
+	// still readable as exactly that.
+	assert.Equal(t, learnedBefore, status.LearnedFiles)
+	assert.Equal(t, []string{"/usr/sbin/nginx"}, status.LearnedExecutables)
+	assert.Equal(t, []string{"NET_BIND_SERVICE"}, status.LearnedCapabilities)
+	assert.Equal(t, []string{"10.0.0.1:443"}, status.LearnedNetworkDestinations)
+
+	// And the declared ones are reported separately, with the write marked.
+	assert.Equal(t, []string{
+		"/etc/ssl/renewed.pem",
+		"/var/lib/app/nightly.db (write)",
+	}, status.DeclaredFiles)
+	assert.Equal(t, []string{"10.43.12.7:5432"}, status.DeclaredNetworkDestinations)
+	assert.Equal(t, []string{"/usr/bin/pg_dump"}, status.DeclaredExecutables)
+	assert.Equal(t, []string{"DAC_OVERRIDE"}, status.DeclaredCapabilities)
+
+	// A path that was both learned and declared appears in both lists, which is
+	// the honest answer: the workload did open it, and somebody also asserted
+	// it would. Erasing either half would lose a fact.
+	assert.Contains(t, status.LearnedFiles, "/etc/ssl/renewed.pem")
+	assert.Contains(t, status.DeclaredFiles, "/etc/ssl/renewed.pem")
+}
+
+// Re-reporting an unchanged declaration writes an unchanged status. Otherwise
+// every sync would be an API write, and a profile's resourceVersion would climb
+// forever on a policy nobody touched.
+func TestReportIntoIsIdempotentAndClearsWhatItOwns(t *testing.T) {
+	_, decl, _ := TranslateSpec("p", betaSpec(&policyv1beta1.ExpectedBehavior{
+		Executables: []string{"/usr/bin/pg_dump", "/usr/bin/aws"},
+	}), now)
+
+	first := &policyv1beta1.ContainerProfileStatus{}
+	decl.ReportInto(first)
+	second := &policyv1beta1.ContainerProfileStatus{}
+	decl.ReportInto(second)
+	assert.Equal(t, first, second)
+
+	// An emptied declaration clears the lists rather than leaving the last
+	// declaration standing: a profile must not report entries the policy no
+	// longer declares and the kernel no longer has seeded.
+	stale := &policyv1beta1.ContainerProfileStatus{
+		DeclaredFiles:               []string{"/gone"},
+		DeclaredNetworkDestinations: []string{"10.0.0.1:1"},
+		DeclaredExecutables:         []string{"/gone"},
+		DeclaredCapabilities:        []string{"CHOWN"},
+		LearnedFiles:                []string{"/etc/nginx/nginx.conf"},
+	}
+	Declaration{}.ReportInto(stale)
+	assert.Nil(t, stale.DeclaredFiles)
+	assert.Nil(t, stale.DeclaredNetworkDestinations)
+	assert.Nil(t, stale.DeclaredExecutables)
+	assert.Nil(t, stale.DeclaredCapabilities)
+	assert.Equal(t, []string{"/etc/nginx/nginx.conf"}, stale.LearnedFiles,
+		"clearing declarations must not touch what was learned")
+}
+
+func TestReportIntoToleratesANilStatus(t *testing.T) {
+	assert.NotPanics(t, func() { Declaration{}.ReportInto(nil) })
+}
+
+// A declaration only reaches the kernel when the container is enforcing, which
+// is the same thing the allow and deny lists already warn about. Said once per
+// policy rather than twice, because two warnings for one cause is how a warning
+// list becomes something people skim.
+func TestDeclarationsAreReportedAsInertWhenNothingEnforces(t *testing.T) {
+	spec := betaSpec(&policyv1beta1.ExpectedBehavior{
+		Executables: []string{"/usr/bin/pg_dump"},
+	})
+	spec.EnforcementConfig.Mode = policyv1beta1.EnforcementModeMonitoring
+
+	d, decl, warnings := TranslateSpec("p", spec, now)
+	assert.True(t, hasWarning(warnings, "learningConfig.expectedBehavior is recorded but has no effect"))
+	assert.False(t, decl.Empty(), "the declaration is still translated, just not enforced yet")
+	assert.Equal(t, []string{"/usr/bin/pg_dump"}, d.Overrides.AllowedExecs)
+
+	// With an allow list of its own present, the existing warning already says
+	// it, and the declaration does not repeat the point.
+	spec.FilePolicy = &policyv1beta1.FilePolicy{AllowedPaths: []string{"/etc/x"}}
+	_, _, warnings = TranslateSpec("p", spec, now)
+	assert.True(t, hasWarning(warnings, "no effect in Monitoring mode"))
+	assert.False(t, hasWarning(warnings, "learningConfig.expectedBehavior is recorded"))
+}
+
+// An Off policy governs nothing, so there is nothing to declare into and
+// nothing worth warning about. Translate stops for the same reason.
+func TestOffPolicyIgnoresDeclarations(t *testing.T) {
+	spec := betaSpec(&policyv1beta1.ExpectedBehavior{
+		Files: []policyv1beta1.ExpectedFile{{Path: "not-even-valid"}},
+	})
+	spec.EnforcementConfig.Mode = policyv1beta1.EnforcementModeOff
+
+	d, decl, warnings := TranslateSpec("p", spec, now)
+	assert.Equal(t, adaptive.ModeOff, d.Mode)
+	assert.True(t, decl.Empty())
+	assert.True(t, d.Overrides.Empty())
+	assert.Empty(t, warnings)
+}
+
+// Everything but the declaration is translated by the one code path both
+// versions share, so a hub spec with no declaration must produce exactly what
+// the equivalent v1alpha1 spec produces. Two translators for one spec would
+// drift, and a rule honored in one version and dropped in the other is the bug
+// this package exists to make testable.
+func TestTranslateSpecMatchesTranslateWhenNothingIsDeclared(t *testing.T) {
+	alpha := benchSpec()
+	var hub policyv1beta1.PahlevanPolicy
+	require.NoError(t, (&policyv1alpha1.PahlevanPolicy{Spec: alpha}).ConvertTo(&hub))
+
+	want, wantWarnings := Translate("p", alpha, now)
+	got, decl, gotWarnings := TranslateSpec("p", hub.Spec, now)
+
+	assert.Equal(t, want, got)
+	assert.Equal(t, wantWarnings, gotWarnings)
+	assert.True(t, decl.Empty())
+}
+
+// A nil declaration block is the common case and must cost nothing and say
+// nothing.
+func TestNoDeclarationIsSilent(t *testing.T) {
+	d, decl, warnings := TranslateSpec("p", betaSpec(nil), now)
+	assert.Empty(t, warnings)
+	assert.True(t, decl.Empty())
+	assert.True(t, d.Overrides.Empty())
+}
+
+// Translation runs per policy per container resolution, and a declaration adds
+// a pass over four lists plus a down-conversion of the spec. ReportAllocs
+// because allocation count is what a translator regresses on first.
+func BenchmarkTranslateSpec(b *testing.B) {
+	var hub policyv1beta1.PahlevanPolicy
+	if err := (&policyv1alpha1.PahlevanPolicy{Spec: benchSpec()}).ConvertTo(&hub); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = TranslateSpec("bench", hub.Spec, now)
+	}
+}
+
+func BenchmarkTranslateSpecWithDeclarations(b *testing.B) {
+	var hub policyv1beta1.PahlevanPolicy
+	if err := (&policyv1alpha1.PahlevanPolicy{Spec: benchSpec()}).ConvertTo(&hub); err != nil {
+		b.Fatal(err)
+	}
+	hub.Spec.LearningConfig.ExpectedBehavior = &policyv1beta1.ExpectedBehavior{
+		Files: []policyv1beta1.ExpectedFile{
+			{Path: "/var/lib/app/nightly.db", Write: true},
+			{Path: "/etc/ssl/renewed.pem"},
+		},
+		Executables:  []string{"/usr/bin/pg_dump", "/usr/sbin/logrotate"},
+		Capabilities: []string{"CAP_DAC_OVERRIDE", "CHOWN"},
+		NetworkDestinations: []policyv1beta1.ExpectedDestination{
+			{CIDR: "10.43.12.7/32", Port: 5432},
+			{CIDR: "10.0.0.53/32", Port: 853, Protocol: policyv1beta1.TransportProtocolTCP},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = TranslateSpec("bench", hub.Spec, now)
+	}
+}
+
+// Reporting is on the agent's status-sync path, which runs per container per
+// interval, so it is worth knowing what it costs.
+func BenchmarkDeclarationReportInto(b *testing.B) {
+	_, decl, _ := TranslateSpec("bench", betaSpec(&policyv1beta1.ExpectedBehavior{
+		Files: []policyv1beta1.ExpectedFile{
+			{Path: "/var/lib/app/nightly.db", Write: true},
+			{Path: "/etc/ssl/renewed.pem"},
+		},
+		Executables:  []string{"/usr/bin/pg_dump"},
+		Capabilities: []string{"CAP_DAC_OVERRIDE"},
+		NetworkDestinations: []policyv1beta1.ExpectedDestination{
+			{CIDR: "10.43.12.7/32", Port: 5432},
+		},
+	}), now)
+	status := &policyv1beta1.ContainerProfileStatus{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		decl.ReportInto(status)
+	}
 }

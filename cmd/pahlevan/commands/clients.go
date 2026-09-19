@@ -18,9 +18,11 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
@@ -41,17 +43,37 @@ var (
 // InitializeClients loads the Kubernetes REST configuration and constructs the
 // controller-runtime client (for typed CRD access) and the client-go clientset
 // (for core/apps/admissionregistration APIs) used by the CLI commands.
-func InitializeClients(kubeconfig, namespace string, verbose bool) error {
+func InitializeClients(kubeconfig, kubeContext, namespace string, verbose bool) error {
 	globalNamespace = namespace
 
 	var err error
-	if kubeconfig != "" {
-		restConfig, err = config.GetConfigWithContext(kubeconfig)
-	} else {
+	switch {
+	case kubeconfig != "" || kubeContext != "":
+		// --kubeconfig names a file and --context names a context inside it.
+		// Both used to be collapsed into config.GetConfigWithContext, whose
+		// argument is a context name, so `--kubeconfig ~/.kube/staging.yaml`
+		// failed with `context "~/.kube/staging.yaml" does not exist` - and
+		// --context was dropped on the floor entirely, which is worse: the
+		// command then runs happily against whatever the current context is,
+		// while the user believes they are pointed at staging.
+		rules := clientcmd.NewDefaultClientConfigLoadingRules()
+		if kubeconfig != "" {
+			rules.ExplicitPath = kubeconfig
+		}
+		overrides := &clientcmd.ConfigOverrides{}
+		if kubeContext != "" {
+			overrides.CurrentContext = kubeContext
+		}
+		restConfig, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+	default:
 		restConfig, err = config.GetConfig()
 	}
 	if err != nil {
-		return fmt.Errorf("failed to get Kubernetes config: %w", err)
+		// client-go's own message for a laptop with no kubeconfig is
+		// "invalid configuration: no configuration has been provided", which
+		// names no file, no flag and no next step. The first thing anybody
+		// runs against a new binary must not read as a bug in the binary.
+		return fmt.Errorf("cannot reach a Kubernetes cluster: %w\n%s", err, ClusterHint())
 	}
 
 	scheme := cli.GetScheme()
@@ -72,6 +94,22 @@ func InitializeClients(kubeconfig, namespace string, verbose bool) error {
 
 	clientsReady = true
 	return nil
+}
+
+// ClusterHint is the "what do I do now" half of every missing-cluster error.
+//
+// It is one string rather than a sentence repeated per command so the advice
+// cannot go stale in some commands and not others, and it ends by naming the
+// commands that work anyway: a reader whose kubeconfig is genuinely missing
+// still has something to run.
+func ClusterHint() string {
+	return strings.Join([]string{
+		"Point the CLI at a cluster with one of:",
+		"  pahlevan <command> --kubeconfig /path/to/kubeconfig",
+		"  export KUBECONFIG=/path/to/kubeconfig",
+		"Check what you have with: kubectl config current-context",
+		"These commands need no cluster: version, coverage, events, ui, policy explain.",
+	}, "\n")
 }
 
 // GetClients returns the initialized clients. The final boolean reports whether

@@ -7,23 +7,39 @@ This guide will get Pahlevan running in your Kubernetes cluster in under 5 minut
 Before starting, ensure your cluster meets the [system requirements](system-requirements.md):
 
 - Kubernetes 1.24+
-- Linux kernel 4.18+ with eBPF support
-- At least 256MB memory and 100m CPU available
+- Linux kernel 5.8 or newer, with cgroup v2 and kernel BTF at
+  `/sys/kernel/btf/vmlinux`
+- 128Mi memory and 100m CPU per node for the agent, 64Mi and 50m for the
+  operator (the requests in the shipped manifests)
+
+Your kernel version decides how much of Pahlevan works, not whether the install
+succeeds. 5.8 is the floor to run at all; the file monitor needs 5.10 and the
+exec and credential monitors need 5.11, so 5.11 is the first kernel on which
+every detector `pahlevan coverage` lists is present. A program that cannot load
+costs its own observations and leaves the rest of the agent running, with a log
+line saying so.
+
+**In-kernel enforcement is a separate question from the version.** The four
+LSM-hooked programs need the kernel booted with `bpf` in its active LSM list,
+which most distributions do not set by default. Without it Pahlevan still loads,
+still learns and still reports, but it cannot refuse anything. Check this before
+you plan a rollout, not after:
+[`lsm-support.md`](lsm-support.md).
 
 ### Verify System Compatibility
 
 Pahlevan's own compatibility check (`pahlevan debug`) inspects the
 already-running agent and node state, so it only has something to report
-after install. Before installing, check the two things that actually gate
-whether the agent can load: the kernel version, and whether the nodes are
-Linux.
+after install. Before installing, check what gates whether the agent can
+load: the kernel version, and whether the nodes are Linux.
 
 ```bash
 kubectl get nodes -o custom-columns=NAME:.metadata.name,KERNEL:.status.nodeInfo.kernelVersion,OS:.status.nodeInfo.operatingSystem
 ```
 
-See [system requirements](system-requirements.md) for what each Pahlevan
-capability needs from the kernel.
+[System requirements](system-requirements.md) has the per-program kernel
+floors, the exact helper that sets each one, and a script that checks one node
+properly.
 
 ## Installation
 
@@ -104,6 +120,27 @@ spec:
 EOF
 ```
 
+### Check what the policy will actually do
+
+A policy is not enforced literally. It becomes a set of decisions the agent
+acts on, and anything the data plane cannot represent - a CIDR wider than a
+host, a glob, a DNS name, an ingress rule - is dropped with a warning. Those
+warnings normally land on the policy's status, which means you see them only
+after applying to a cluster and knowing to look.
+
+`pahlevan policy explain` shows them against a file, before anything is
+applied, and needs no cluster:
+
+```bash
+pahlevan policy explain -f examples/policies/web-application.yaml
+```
+
+It prints the mode, the learning window, every allow and deny rule that will be
+written into the kernel allow-sets, and then, if there are any, the parts that
+will not be enforced and why. Add `--strict` to make it exit non-zero when
+anything is unrepresentable, which is what you want in CI: a policy with
+warnings is doing less than it says.
+
 ### Deploy a Test Application
 
 ```bash
@@ -173,6 +210,88 @@ pahlevan logs --component agent --follow
 Every in-kernel denial logs a line starting `DENIED in-kernel`, naming what
 was refused, by whom, and its parent process.
 
+## Watch it work
+
+`pahlevan ui` is an interactive view of what the agents are reporting: a live
+event stream, per-workload counts of what was observed and what was refused,
+and the ATT&CK coverage table. It is a reader - it never changes a policy, a
+mode or a profile, so it cannot be the thing that turns enforcement off during
+an incident.
+
+It reads the agent's gRPC event stream:
+
+```bash
+pahlevan ui --grpc localhost:9090
+```
+
+That address has to be reachable, which usually means a port-forward to one
+agent pod. **The stream is off unless the agent was started with
+`--grpc-bind-address`**, and because the CLI dials in plaintext, an agent
+serving the stream over TLS cannot be read by `pahlevan ui` directly. The
+chart does not enable the stream by default; see
+[`deployment.md`](deployment.md#the-grpc-event-stream).
+
+### Without a cluster
+
+`--replay` reads a JSON-lines event file instead of connecting, which is the
+same format the agent's file sink writes and `pahlevan events` prints. That
+makes a UI problem reproducible from a bug report, and lets you look at a
+capture from a cluster you cannot reach:
+
+```bash
+# From a captured file
+pahlevan ui --replay events.jsonl
+
+# Or from a pipe. `pahlevan events` reads the agent's JSON-lines log, which
+# lives on the node at /var/log/pahlevan/events.json unless --file says
+# otherwise, so this runs where the log is or against a copy of it.
+pahlevan events --file events.jsonl --denials-only | pahlevan ui --replay -
+```
+
+`--capacity` bounds how many events the event view retains (4096 by default).
+The view keeps the most recent ones and drops the oldest, so a long-running
+session has a fixed memory cost rather than a growing one.
+
+### Keys
+
+| Key | Does |
+|---|---|
+| `1` `2` `3` | Events, workloads, coverage |
+| `tab` / `shift-tab`, or `h` / `l` | Previous / next view |
+| `j` `k`, arrows, `pgup` `pgdn`, `g` `G` | Move, page, jump to top or bottom |
+| `enter` | On the workloads view, open the selected workload's detail |
+| `/` | Filter; `esc` clears it |
+| `space` | Pause and resume the stream |
+| `c` | Clear the retained events |
+| `?` | Help |
+| `q`, `ctrl+c` | Quit |
+
+### In a pipeline
+
+The interactive view never draws into something that is not a terminal. When
+stdout is a pipe or a file, when `CI`, `NO_COLOR` or `TERM=dumb` is set, or
+when you pass `--no-tui`, the command prints a plain summary instead and exits:
+
+```bash
+pahlevan ui --replay events.jsonl | tee report.txt
+```
+
+```text
+source	events.jsonl
+events	3
+denied	2
+workloads	2
+
+WORKLOAD                                        FILE     NET   EXEC    CAP  SYSCALL   DENIED
+default/Deployment/web                             1       1      0      0        0        1
+payments/Deployment/api                            0       0      1      0        0        1
+```
+
+That block is a different, useful thing rather than a degraded drawing of the
+screen: it is stable and greppable, which is what a pipeline wants. Escape
+codes written into a log file are worse than no interface at all, so a job that
+runs `pahlevan ui` is safe whether or not anyone remembered it was interactive.
+
 ## Transition to Enforcement
 
 Once you are satisfied with the learned baseline, switch the policy to
@@ -221,6 +340,42 @@ kubectl delete -f https://github.com/obsernetics/pahlevan/releases/latest/downlo
 helm uninstall pahlevan -n pahlevan-system
 ```
 
+## Apply the generated seccomp profile
+
+Learning produces a seccomp profile per container as well as the kernel
+allow-sets. That profile is a second, independent layer, and applying it is a
+change to the workload rather than something Pahlevan can do for you: a pod's
+`seccompProfile` cannot be changed after admission, so it takes effect on the
+next rollout.
+
+```bash
+pahlevan profile list -n default
+pahlevan profile patch <container-profile> -n default
+```
+
+`profile patch` prints the `securityContext` patch and applies nothing, which
+is deliberate - it is yours to review. Two things to check before you do apply
+it. The profile file lives on the node that wrote it, so every node that can
+schedule the workload needs a copy. And the profile permits only what the
+container was observed doing during its learning window, so a code path that
+did not run in that window will be denied.
+
+## What Pahlevan can and cannot see
+
+`pahlevan coverage` prints the eBPF detectors, the kernel hook each attaches
+to, whether that hook needs the BPF LSM, and the MITRE ATT&CK techniques the
+detector's observations are useful evidence for. It reads nothing but the
+binary's own compiled-in table, so it works before you have a cluster:
+
+```bash
+pahlevan coverage
+pahlevan coverage -o json    # the full per-detector detail
+```
+
+A listed technique means the detector gives an analyst evidence for it, not
+that the technique is blocked. The same table is the third view in
+`pahlevan ui`.
+
 ## Next Steps
 
 Now that you have Pahlevan running:
@@ -241,11 +396,15 @@ runs privileged with the eBPF capabilities.
 pahlevan logs --component agent | grep -i "lsm\|unable to load"
 
 # Common causes:
-# 1. Kernel older than what the four LSM-hooked programs need (lsm=bpf on
-#    the kernel command line). The syscall, cred and shell programs work
-#    without it; see lsm-support.md.
-# 2. The agent pod is missing CAP_BPF/CAP_PERFMON (or CAP_SYS_ADMIN on an
-#    older kernel) - check its securityContext against
+# 1. The kernel is not booted with lsm=bpf, so the four LSM-hooked programs
+#    cannot attach. The syscall, cred and shell programs work without it;
+#    see lsm-support.md.
+# 2. The kernel is below a program's floor: 5.10 for the file monitor, 5.11
+#    for exec and cred, 5.15 for ad-hoc kernel probes. Each logs which
+#    helper it could not use; see system-requirements.md.
+# 3. The agent pod is missing CAP_BPF/CAP_PERFMON (both 5.8) or the
+#    CAP_SYS_ADMIN that covers runtimes where the pair is not enough -
+#    check its securityContext against
 #    charts/pahlevan-operator/values.yaml.
 ```
 

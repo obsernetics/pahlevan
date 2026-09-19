@@ -65,7 +65,23 @@ type PahlevanPolicyReconciler struct {
 // policy moving through its phases is not visibly stalled.
 const requeueImmediately = time.Second
 
-func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+// Reconcile drives one PahlevanPolicy through its lifecycle.
+//
+// This is the root span of every policy trace. It is started before the Get so
+// a reconcile that fails to read its own object still shows up: a policy that
+// "does nothing" is far more often an RBAC or cache problem than a logic one,
+// and an absent trace is indistinguishable from an absent reconcile.
+//
+// Phase changes are recorded as events on this span rather than as spans of
+// their own, because the useful question is which reconcile decided the
+// transition and what else that reconcile did - the answer is the span's
+// event list, in order.
+func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
+	ctx, span := observability.StartSpan(ctx, observability.SpanPolicyReconcile,
+		observability.AttrNamespace.String(req.Namespace),
+		observability.AttrPolicy.String(req.Name))
+	defer func() { observability.EndSpan(span, err) }()
+
 	logger := log.FromContext(ctx)
 
 	// Fetch the PahlevanPolicy instance
@@ -95,6 +111,7 @@ func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Initialize status if empty
 	if policy.Status.Phase == "" {
+		observability.RecordPhaseTransition(span, "", string(policyv1alpha1.PolicyPhaseInitializing), "StatusEmpty")
 		policy.Status.Phase = policyv1alpha1.PolicyPhaseInitializing
 		policy.Status.Conditions = []policyv1alpha1.PolicyCondition{
 			{
@@ -111,8 +128,10 @@ func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
+	span.SetAttributes(observability.AttrPhase.String(string(policy.Status.Phase)))
+
 	// Main reconciliation logic
-	result, err := r.reconcilePolicy(ctx, &policy)
+	result, err = r.reconcilePolicy(ctx, &policy)
 	if err != nil {
 		logger.Error(err, "Failed to reconcile PahlevanPolicy")
 		r.updateCondition(&policy, policyv1alpha1.PolicyConditionError, policyv1alpha1.ConditionTrue, "ReconciliationFailed", err.Error())
@@ -128,8 +147,18 @@ func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return result, nil
 }
 
-func (r *PahlevanPolicyReconciler) reconcilePolicy(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) (ctrl.Result, error) {
+func (r *PahlevanPolicyReconciler) reconcilePolicy(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) (result ctrl.Result, err error) {
 	logger := log.FromContext(ctx)
+
+	// One child span named for the phase handler, so a waterfall separates
+	// "the reconcile was slow" from "the transition handler was slow" - the
+	// transition phase is the one that writes every container's BPF maps and
+	// is the only phase whose duration scales with the workload.
+	ctx, span := observability.StartSpan(ctx, observability.SpanPolicyPhase,
+		observability.AttrNamespace.String(policy.Namespace),
+		observability.AttrPolicy.String(policy.Name),
+		observability.AttrPhase.String(string(policy.Status.Phase)))
+	defer func() { observability.EndSpan(span, err) }()
 
 	switch policy.Status.Phase {
 	case policyv1alpha1.PolicyPhaseInitializing:
@@ -154,11 +183,19 @@ func (r *PahlevanPolicyReconciler) handleInitialization(ctx context.Context, pol
 	logger := log.FromContext(ctx)
 	logger.Info("Initializing PahlevanPolicy", "policy", policy.Name)
 
-	// Discover target workloads
+	// Discover target workloads. Its own span because "the policy selected
+	// nothing" and "the API server was slow" look identical from the outside,
+	// and the workload count attribute separates them at a glance.
+	_, discoverSpan := observability.StartSpan(ctx, observability.SpanWorkloadDiscovery,
+		observability.AttrNamespace.String(policy.Namespace),
+		observability.AttrPolicy.String(policy.Name))
 	workloads, err := r.discoverTargetWorkloads(ctx, policy)
 	if err != nil {
+		observability.EndSpan(discoverSpan, err)
 		return ctrl.Result{}, fmt.Errorf("failed to discover target workloads: %w", err)
 	}
+	discoverSpan.SetAttributes(observability.AttrWorkloads.Int(len(workloads)))
+	discoverSpan.End()
 
 	if len(workloads) == 0 {
 		logger.Info("No target workloads found, waiting...")
@@ -189,6 +226,9 @@ func (r *PahlevanPolicyReconciler) handleInitialization(ctx context.Context, pol
 	}
 
 	// Update status to learning phase
+	observability.RecordPhaseTransition(observability.SpanFromContext(ctx),
+		string(policyv1alpha1.PolicyPhaseInitializing),
+		string(policyv1alpha1.PolicyPhaseLearning), "TargetsDiscovered")
 	policy.Status.Phase = policyv1alpha1.PolicyPhaseLearning
 	policy.Status.LearningStatus = &policyv1alpha1.LearningStatus{
 		StartTime: &metav1.Time{Time: time.Now()},
@@ -206,6 +246,13 @@ func (r *PahlevanPolicyReconciler) handleInitialization(ctx context.Context, pol
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
+// handleLearning evaluates the learning window once.
+//
+// The span covers the evaluation, not the window: a span lasting the whole
+// learning window would be minutes to hours long, would be held open across
+// process restarts it cannot survive, and would tell nobody anything the
+// progress attribute does not. What is worth tracing is each evaluation and,
+// once, the pass that closed the window and why.
 func (r *PahlevanPolicyReconciler) handleLearning(ctx context.Context, policy *policyv1alpha1.PahlevanPolicy) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Handling learning phase", "policy", policy.Name)
@@ -216,6 +263,12 @@ func (r *PahlevanPolicyReconciler) handleLearning(ctx context.Context, policy *p
 		learningDuration = policy.Spec.LearningConfig.Duration.Duration
 	}
 
+	ctx, windowSpan := observability.StartSpan(ctx, observability.SpanLearningWindow,
+		observability.AttrNamespace.String(policy.Namespace),
+		observability.AttrPolicy.String(policy.Name),
+		observability.AttrWindowSecs.Float64(learningDuration.Seconds()))
+	defer windowSpan.End()
+
 	if policy.Status.LearningStatus != nil && policy.Status.LearningStatus.StartTime != nil {
 		elapsed := time.Since(policy.Status.LearningStatus.StartTime.Time)
 		progress := int32((elapsed.Seconds() / learningDuration.Seconds()) * 100)
@@ -223,10 +276,29 @@ func (r *PahlevanPolicyReconciler) handleLearning(ctx context.Context, policy *p
 			progress = 100
 		}
 		policy.Status.LearningStatus.Progress = &progress
+		windowSpan.SetAttributes(
+			observability.AttrElapsedSecs.Float64(elapsed.Seconds()),
+			observability.AttrProgress.Int(int(progress)),
+		)
 
 		// Check if we should transition to enforcement
-		if elapsed >= learningDuration ||
-			(policy.Spec.LearningConfig.AutoTransition && r.shouldTransitionToEnforcement(policy)) {
+		elapsedWindow := elapsed >= learningDuration
+		autoTransition := policy.Spec.LearningConfig.AutoTransition && r.shouldTransitionToEnforcement(policy)
+		if elapsedWindow || autoTransition {
+			// Which of the two closed the window matters: an auto-transition
+			// means the behaviour looked stable early, and a policy that
+			// enforces too soon is the usual cause of a workload breaking
+			// minutes after rollout.
+			reason := "WindowElapsed"
+			if !elapsedWindow {
+				reason = "AutoTransition"
+			}
+			observability.AddEvent(windowSpan, observability.EventLearningWindowClosed,
+				observability.AttrReason.String(reason),
+				observability.AttrElapsedSecs.Float64(elapsed.Seconds()))
+			observability.RecordPhaseTransition(windowSpan,
+				string(policyv1alpha1.PolicyPhaseLearning),
+				string(policyv1alpha1.PolicyPhaseTransition), reason)
 
 			// Transition to enforcement
 			policy.Status.Phase = policyv1alpha1.PolicyPhaseTransition
@@ -235,7 +307,7 @@ func (r *PahlevanPolicyReconciler) handleLearning(ctx context.Context, policy *p
 			r.updateCondition(policy, policyv1alpha1.PolicyConditionLearning, policyv1alpha1.ConditionFalse, "LearningCompleted", "Learning phase completed")
 
 			if err := r.Status().Update(ctx, policy); err != nil {
-				return ctrl.Result{}, err
+				return ctrl.Result{}, observability.RecordError(windowSpan, err)
 			}
 
 			return ctrl.Result{RequeueAfter: requeueImmediately}, nil
@@ -259,18 +331,28 @@ func (r *PahlevanPolicyReconciler) handleTransition(ctx context.Context, policy 
 	workload, err := r.getWorkloadForPolicy(ctx, policy)
 	if err != nil {
 		log.Log.Error(err, "Failed to get workload for policy", "policy", policy.Name)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, observability.RecordError(observability.SpanFromContext(ctx), err)
 	}
 
 	containerIDs, err := r.getWorkloadContainers(ctx, workload)
 	if err != nil {
 		log.Log.Error(err, "Failed to get container IDs", "policy", policy.Name)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, observability.RecordError(observability.SpanFromContext(ctx), err)
 	}
 
 	if r.EBPFManager != nil && len(containerIDs) > 0 {
 		// Create enforcement policies for each container
 		for _, containerID := range containerIDs {
+			// One span per container: this loop continues past a failure, so
+			// without a span per container a partially applied transition -
+			// half the pods enforcing, half still learning - is invisible in
+			// the trace and shows up only as an error log among many.
+			_, applySpan := observability.StartSpan(ctx, observability.SpanPolicyApply,
+				observability.AttrNamespace.String(policy.Namespace),
+				observability.AttrPolicy.String(policy.Name),
+				observability.AttrWorkload.String(workload.GetName()),
+				observability.AttrContainerID.String(containerID),
+				observability.AttrMode.String("enforce"))
 			// Generate policy based on learning phase data
 			err := r.EBPFManager.UpdateContainerPolicy(containerID, &ebpf.ContainerPolicy{
 				AllowedSyscalls:  make(map[uint64]bool),
@@ -279,6 +361,7 @@ func (r *PahlevanPolicyReconciler) handleTransition(ctx context.Context, policy 
 				EnforcementMode:  1, // Enforcement mode
 				SelfHealing:      policy.Spec.SelfHealing.Enabled,
 			})
+			observability.EndSpan(applySpan, err)
 			if err != nil {
 				log.Log.Error(err, "Failed to update container policy", "containerID", containerID)
 				continue
@@ -298,6 +381,9 @@ func (r *PahlevanPolicyReconciler) handleTransition(ctx context.Context, policy 
 	// policy behind it. The delay is honored by requeueing instead; the node
 	// agent is the component that actually gates the transition on its own
 	// learning window and grace period.
+	observability.RecordPhaseTransition(observability.SpanFromContext(ctx),
+		string(policyv1alpha1.PolicyPhaseTransition),
+		string(policyv1alpha1.PolicyPhaseEnforcing), "PoliciesApplied")
 	policy.Status.Phase = policyv1alpha1.PolicyPhaseEnforcing
 	policy.Status.EnforcementStatus = &policyv1alpha1.EnforcementStatus{
 		StartTime: &metav1.Time{Time: time.Now()},
@@ -320,14 +406,25 @@ func (r *PahlevanPolicyReconciler) handleEnforcement(ctx context.Context, policy
 	// ContainerProfile. Rolling that up here is what makes the policy's
 	// blocked* counters real; they previously stayed at zero forever while the
 	// printed column claimed to show blocked syscalls.
+	_, aggSpan := observability.StartSpan(ctx, observability.SpanProfileAggregate,
+		observability.AttrNamespace.String(policy.Namespace),
+		observability.AttrPolicy.String(policy.Name))
 	if err := r.aggregateProfiles(ctx, policy); err != nil {
 		// A failed roll-up must not stop enforcement from being managed, so it
-		// is logged and the stale counters are left in place.
+		// is logged and the stale counters are left in place. It is still an
+		// error on its own span: the counters an operator reads are stale
+		// afterwards, and nothing else says so.
+		observability.EndSpan(aggSpan, err)
 		logger.V(1).Info("could not aggregate container profiles", "error", err.Error())
+	} else {
+		aggSpan.End()
 	}
 
 	// Check for self-healing triggers
 	if policy.Spec.SelfHealing.Enabled && r.shouldTriggerSelfHealing(policy) {
+		observability.RecordPhaseTransition(observability.SpanFromContext(ctx),
+			string(policyv1alpha1.PolicyPhaseEnforcing),
+			string(policyv1alpha1.PolicyPhaseRollingBack), "SelfHealingTriggered")
 		policy.Status.Phase = policyv1alpha1.PolicyPhaseRollingBack
 		r.updateCondition(policy, policyv1alpha1.PolicyConditionHealthy, policyv1alpha1.ConditionFalse, "SelfHealingTriggered", "Self-healing rollback triggered")
 
@@ -359,6 +456,9 @@ func (r *PahlevanPolicyReconciler) handleRollback(ctx context.Context, policy *p
 	// Restore previous working policy
 
 	// After successful rollback, return to enforcement or learning
+	observability.RecordPhaseTransition(observability.SpanFromContext(ctx),
+		string(policyv1alpha1.PolicyPhaseRollingBack),
+		string(policyv1alpha1.PolicyPhaseEnforcing), "RollbackCompleted")
 	policy.Status.Phase = policyv1alpha1.PolicyPhaseEnforcing
 	if policy.Status.EnforcementStatus != nil {
 		policy.Status.EnforcementStatus.RollbackCount++

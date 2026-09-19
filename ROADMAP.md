@@ -46,7 +46,11 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
 - Interactive shell capture, for the builtins that produce no exec, no open and
   no connect.
 - Container-breakout detection by comparing the working directory's mount
-  namespace with the task's, refused in every mode including learning.
+  namespace with the task's. Refused in every enforcing mode, `Audit`
+  included - auditing an escape would mean watching it proceed. During
+  learning it is reported and deliberately not added to the allow-set, so the
+  exploit cannot become permanent for that cgroup, but it is not refused:
+  nothing is refused during learning.
 - Command-line arguments, working directory and four levels of ancestry on exec
   events; the immediate parent on file, network and capability events.
 - Read versus write as separate allow-set entries, so a learned read does not
@@ -115,22 +119,163 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
   by never running.
 - A commit-msg hook that rejects assistant attribution trailers.
 
+## Version 4
+
+The 3.x line is complete in the sense that matters: the data plane observes and
+enforces, and every claim on this page can be pointed at in the tree. What it
+is not is *operable*. Everything Pahlevan knows is reachable through `kubectl
+get -o yaml`, a Prometheus scrape, or a log line, and a learned profile is a
+YAML status block that nobody reads until something is denied.
+
+Version 4 is about that, plus the two things that have to break to stop being
+temporary.
+
+### What makes it a major
+
+Semver majors need breaking changes, not just big ones. These are the two:
+
+- **The API graduates to `v1beta1`.** `v1alpha1` has meant "the shape may move"
+  since the first commit, and it has moved. Graduating means committing to the
+  shape, shipping a conversion path, and serving both versions for a deprecation
+  window. Anything reading the CRDs by version string breaks.
+- **Enforcement no longer requires `lsm=bpf` on the kernel command line.** Today
+  an agent on a stock distribution loads the syscall tracepoint, the
+  `commit_creds` kprobe and the `readline` uretprobe, and silently cannot refuse
+  a file open, a connect or an exec. Once a kprobe-based path exists, those
+  clusters start enforcing where they previously only observed. That is the
+  behaviour change people will feel, and it needs a release that says so rather
+  than arriving in a patch.
+
+Everything else in 4.0 is additive. If the two above slip, the rest ships as
+3.x and the major waits, because a major cut for a feature list is a major
+nobody can reason about.
+
+### Workstreams
+
+**1. An interactive CLI.** `pahlevan` is a set of one-shot commands that print
+and exit. Watching a workload learn means running `status --watch` and reading
+a redrawn line; comparing what was learned against what is enforced means two
+commands and a mental diff; the side-by-side in the README's recording is drawn
+by a shell script, not by the tool. A terminal UI built on Bubble Tea, with
+Lip Gloss for layout and Bubbles for the list and viewport widgets, would make
+the learned surface something an operator can move around in: a live event
+stream, a per-workload learned-versus-enforcing panel, a profile diff, the
+ATT&CK coverage table, and a policy explain view, all against the gRPC
+streaming API that already exists.
+
+The constraint that decides the design: **it must not break scripts.** Every
+existing command keeps its exact non-interactive output, the TUI is opt-in
+(`pahlevan ui`, or a bare `pahlevan` on a TTY), and anything that detects a
+non-TTY, `--no-tui`, `NO_COLOR` or a `CI` environment falls back to the plain
+path. A tool that renders escape codes into a pipe is worse than one with no
+interface at all.
+
+**2. An optional dashboard.** Something a team can deploy and point a browser
+at, showing what each workload does: the process tree, the learned file,
+network and syscall surface, the flow from learning to enforcement, and what
+was denied and why. Diagrams and flows rather than another table of rows,
+because the thing worth seeing is the shape of a workload's behaviour.
+
+**Optional means optional.** It is not in `install.yaml`, not in the default
+Helm values, and a cluster that never enables it runs exactly the bytes it runs
+today. It is a separate Deployment with its own image, off unless asked for.
+
+**Secure means it does not become the soft target.** A security tool that
+ships a dashboard with a cluster-admin service account and a bespoke login page
+has handed an attacker a better primitive than the one it defends against. So:
+
+- Authentication and authorisation are delegated to Kubernetes. The browser
+  presents a token, the dashboard calls `TokenReview` to establish who that is
+  and `SubjectAccessReview` for every read, so a viewer sees exactly the
+  namespaces their own RBAC allows and nothing else. No user database, no
+  session secret to leak, no separate permission model to get wrong.
+- Read-only by default. Changing a policy or a mode from the browser is a
+  separate, explicitly enabled capability, and it is off unless someone turns
+  it on.
+- The service account is not cluster-admin. It needs `TokenReview`,
+  `SubjectAccessReview`, and read on the three CRDs. That is the whole list.
+- TLS only, `ClusterIP` only, with a `NetworkPolicy` shipped alongside. No
+  `NodePort`, no `LoadBalancer`, no `hostNetwork` in anything the project
+  ships; exposing it is the operator's deliberate act through their own
+  ingress.
+- A strict Content-Security-Policy with no inline script and no external
+  origin. Assets are served from the image. A dashboard that pulls a charting
+  library from a CDN at runtime has made every viewer's browser trust a third
+  party, which is not a trade this project gets to make on a user's behalf.
+- The agent stays the only privileged component. The dashboard reads the same
+  gRPC API and CRDs any other client reads, and it gets no path into the
+  kernel.
+
+Threat model, test coverage and a `SECURITY.md` section land with the code, not
+after it.
+
+**3. The two breaking changes above**, plus the Near term items that are ready
+when 4.0 is cut. Nothing here is a reason to hold the major.
+
 ## Near term
 
 The honest list of what Pahlevan still cannot do. Each is written in Pahlevan's
 own terms rather than as a comparison, and each is a real gap rather than a
 polish item.
 
+- **In progress: an interactive CLI (4.0).** `pahlevan ui` is in the tree: a
+  Bubble Tea view over the existing gRPC stream, with a live event list,
+  per-workload observed-versus-refused counts, a workload detail pane, and the
+  coverage table read from `pkg/coverage`. It is a reader and changes nothing.
+  Every existing command keeps its exact output, and a non-TTY, `--no-tui`,
+  `NO_COLOR`, `TERM=dumb` or `CI` gets a plain summary instead of a drawn
+  screen. Still to come: a learned-versus-enforcing diff sourced from
+  `ContainerProfile` rather than inferred from the event stream, and a policy
+  explain view. See [Version 4](#version-4).
+- **In progress: an optional dashboard (4.0).** `pkg/dashboard` and
+  `cmd/pahlevan-dashboard` are in the tree, with the deployment artifacts off
+  by default. Reads are filtered by a `SubjectAccessReview` per request and the
+  reviews are never cached across requests, so a viewer sees only what their own
+  RBAC allows and revoking access takes effect immediately. An unreachable API
+  server returns 503 rather than an empty page, because "no access" and "no
+  answer" look identical otherwise and send the reader to different people.
+  The shipped manifests do not pass `--agent`, so there is no live event store
+  yet and the views say so rather than drawing zeroes.
+  The original entry, for the commitments it still has to meet:
+
+- **Planned: an optional dashboard (4.0).** A deployable web view of what each
+  workload does - process tree, learned file, network and syscall surface, the
+  learning-to-enforcement flow, and what was denied and why - drawn as diagrams
+  rather than more tables. Optional in the real sense: absent from
+  `install.yaml` and the default Helm values, a separate Deployment, off unless
+  asked for. Authentication and authorisation delegated to Kubernetes through
+  `TokenReview` and a `SubjectAccessReview` per read, so a viewer sees only what
+  their own RBAC allows; read-only by default; no cluster-admin service account;
+  TLS and `ClusterIP` only with a `NetworkPolicy` alongside; a strict CSP with
+  no inline script and no external origin, because a security tool whose
+  dashboard loads a chart library from a CDN has made every viewer's browser
+  trust a third party. See [Version 4](#version-4).
+- **Planned: fail loudly when a merged release is never tagged.** The scheduled
+  maintenance agent runs as the GitHub App, which cannot create tag refs, so it
+  merges a release PR and the tag never appears: no tag, no release, no image,
+  while `CHANGELOG.md` and the website both announce the version as current.
+  This has now happened three times - `v3.1.0` sat untagged for five days, and
+  `v3.3.1` and `v3.3.3` were each announced as released while nothing could
+  install them. Rewriting the agent's prompt did not stop it, twice. A check
+  that compares the `VERSION` in `main`'s Makefile against the pushed tags and
+  fails once a release has been merged without one would, because it does not
+  depend on anyone remembering.
 - **Planned: Kubernetes audit-log ingestion.** Pahlevan sees what happens on a
   node and nothing of what happens at the API server, so a `kubectl exec`, a
   role binding granted, or a secret read through the API is invisible to it.
   Ingesting the Kubernetes audit stream and correlating it with the node events
   a policy already produces would close the gap between "somebody did this to
   the cluster" and "this happened inside the container".
-- **Planned: DNS and L7 parsing.** Destinations inside the cluster are named
-  from Services, pods and nodes, which costs no DNS query. Destinations
-  *outside* the cluster, which are the ones that matter in an exfiltration,
-  are reported as an address and nothing else.
+- **In progress: DNS and L7 parsing.** `pkg/netname` names the destinations the
+  cluster map cannot. Address ranges are classified and labelled - private,
+  CGNAT, link-local, the cluster CIDR, and the cloud metadata endpoints, which
+  are matched exactly rather than by prefix so ordinary link-local traffic is
+  not reported as a workload going looking for credentials. Naming never blocks
+  the event path, never overrides a Service name, never changes an enforcement
+  decision, and reverse DNS is off by default: a PTR query tells an attacker
+  they were seen and lands on a nameserver they may control.
+  Still missing: nothing captures DNS answers yet, so the passive naming path
+  has no producer and a public address is still reported as an address.
 - **Planned: ancestry matchable at any depth.** Exec events carry four levels,
   and `processFilter.parentProcesses` enforces on the first hop only. A policy
   cannot say "denied if any ancestor was a shell". A process cache keyed by a
@@ -146,6 +291,31 @@ polish item.
   `pahlevan profile patch`. Nothing applies them: a pod's `seccompProfile`
   cannot be changed after admission and the operator deliberately runs without
   a mutating webhook.
+- **Planned: rare and periodic behaviour is indistinguishable from an attack.**
+  Learning is a window of wall-clock time. A workload that does something once
+  a day - a nightly batch, a weekly certificate renewal, a log rotation, a
+  backup that opens a path nothing else opens - does not do it during a
+  fifty-minute window, so it is not in the baseline, and under `Blocking` it is
+  refused. From the kernel's side it is indistinguishable from an attack,
+  because the only evidence Pahlevan has is that the workload has never done it
+  before.
+
+  What exists today is a safety net, not an answer. Self-healing rolls
+  enforcement back to learning once denials pass `rollbackThreshold` inside
+  `rollbackWindow`, so the nightly job is denied at least that many times
+  first. `Audit` mode reports what would have been refused and refuses nothing,
+  which is the honest way to run a full cycle before enforcing, but nothing
+  tells an operator to do that and nothing knows how long their cycle is.
+  `learningConfig.duration` can be set to 25 hours, which is the operator
+  guessing.
+
+  What is missing is any notion of periodicity: no model of a workload's
+  rhythm, no warning that a window is shorter than the interval between a
+  CronJob's runs, and no way to say "this profile is not complete until it has
+  seen a Monday". Until that exists, the answer for a workload with a daily or
+  weekly cycle is to learn across at least one full cycle, or to stay in
+  `Audit` until one has passed.
+
 - **Planned: a review step before a learned profile enforces.** Learning is
   trust on first use. A workload already compromised when learning starts has
   its malicious behaviour baselined. Deny lists and exceptions let an operator
@@ -157,12 +327,30 @@ polish item.
 - **Planned: re-measure the footprint.** BPF map preallocation, which dominated
   an early 327 MiB figure, is 37.7 MiB across all seven programs on Linux 6.8.
   End-to-end agent memory has not been measured since, so no figure is quoted.
-- **Planned: more tracing.** The OpenTelemetry pipeline is real - exporters for
-  metrics, traces and logs, one shared resource, a deployable collector - but
-  very little of the codebase calls `StartSpan`, so a trace shows the reconcile
-  boundaries and almost nothing inside them.
-- **Planned: graduate the API past `v1alpha1`**, with a conversion path, once
-  the CRD shape has stopped moving.
+- **Done in the tree: tracing that shows something.** Spans now cover policy
+  reconcile and its phase handlers, the learning window and its close, profile
+  generation, eBPF load and attach per program, map sizing, and enforcement
+  mode changes, with failures recorded as errors rather than only logged. The
+  per-event hot path is deliberately untraced - a span per eBPF event would
+  cost more than the monitoring it describes - and a test enforces that rather
+  than a comment. Three things that implied a capability they did not have were
+  deleted: a second hand-rolled tracer whose spans went into a map nothing read
+  and nothing pruned, a `Traces` field that handed every exporter an empty
+  slice forever, and a `TracerProvider` built with zero span processors that
+  reported tracing as enabled. Still uninstrumented:
+  `internal/learner.SyscallLearner` itself.
+- **Done in the tree: the API is graduated to `v1beta1`.** All three kinds now
+  serve both versions, with `v1beta1` as the storage version and `v1alpha1`
+  served, marked deprecated and carrying a warning. Conversion is written field
+  by field rather than reflectively, because a converter that matches by name
+  silently ignores what it does not recognise, which is the one failure an API
+  graduation must not have. Six paths cannot round-trip and each is listed with
+  a reason and a test proving it really is lost, so the list cannot be padded,
+  while a filler that populates every field proves nothing else is, so it
+  cannot be short. No conversion webhook: `v1beta1` was shaped so every shared
+  field keeps its JSON name, type and nesting, and a test enforces that claim
+  and says to ship a webhook if it ever breaks. Still to do: the controllers
+  reconcile `v1alpha1` and `v1beta1.AddToScheme` is not called yet.
 
 ## Later
 

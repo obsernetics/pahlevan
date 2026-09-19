@@ -91,3 +91,90 @@ metrics:
 
 health:
   port: 8081
+
+# ---------------------------------------------------------------------------
+# Optional dashboard (Deployment) - a read-only web view of what each workload
+# does. Off, and off means nothing renders: with this block untouched, `helm
+# template` emits not one dashboard object, so a cluster that does not ask for
+# it runs exactly the bytes it ran before.
+#
+# It holds no privilege, no host access and no path into the kernel; it reads
+# the same CRDs any other client reads. Before enabling it, read
+# docs/dashboard.md - it needs a TLS pair, and exposing it is your deliberate
+# act through your own ingress.
+# ---------------------------------------------------------------------------
+dashboard:
+  enabled: false
+  replicaCount: 2
+  image:
+    # Its own image, separate from the agent's: a cluster that leaves the
+    # dashboard off never pulls these bytes.
+    repository: ghcr.io/obsernetics/pahlevan-dashboard
+    # Defaults to the chart appVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Name defaults to "<fullname>-dashboard" when empty.
+  serviceAccountName: ""
+  # Create the ServiceAccount and the RBAC the dashboard needs: create on
+  # tokenreviews and subjectaccessreviews, and get/list/watch on the three
+  # Pahlevan CRDs. That is the whole grant; there is no value here that widens
+  # it, because a chart flag that can hand a browser-facing process
+  # cluster-admin is a flag someone will eventually set.
+  rbac:
+    create: true
+  service:
+    # ClusterIP only, and not configurable. A NodePort or a LoadBalancer here
+    # would turn `--set dashboard.enabled=true` into publishing a view of every
+    # workload's behaviour, which is not a thing a single flag should be able
+    # to do.
+    port: 443
+  tls:
+    # The secret holding tls.crt and tls.key. There is no self-signed
+    # fallback: the browser sends a Kubernetes bearer token on every request,
+    # and a certificate users are taught to click past is a certificate a
+    # proxy can replace.
+    secretName: pahlevan-dashboard-tls
+  networkPolicy:
+    enabled: true
+    # Namespaces allowed to reach the dashboard's port, matched on their
+    # labels. Empty means nothing but the kubelet's probes can reach it, which
+    # is the safe default: add your ingress controller's namespace here
+    # deliberately rather than leaving the port open to every pod in the
+    # cluster.
+    #   allowedNamespaceLabels:
+    #     pahlevan.io/dashboard-client: "true"
+    allowedNamespaceLabels: {}
+    # Node CIDRs allowed to reach the dashboard's port, for the kubelet's
+    # liveness and readiness probes. Empty because Calico and Cilium let
+    # host-to-pod traffic through regardless of policy; set it to your node
+    # CIDRs (not your pod CIDRs) if your CNI does not, or every probe fails
+    # and the kubelet restarts the pod forever.
+    allowedNodeCIDRs: []
+    # The API server is reached over these ports. Its address is
+    # cluster-specific and often outside the pod network, so the egress rule
+    # cannot name it; narrow apiServerCIDR to your control plane once you know
+    # it, or a compromised dashboard can open a connection to anything on
+    # these ports.
+    apiServerCIDR: 0.0.0.0/0
+    apiServerPorts:
+      - 443
+      - 6443
+  # Audiences a presented token must be valid for. Empty accepts any token the
+  # API server recognises, including a projected token a pod holds for
+  # something else entirely, which makes the dashboard a credential relay.
+  # Set it once you have minted tokens for it.
+  audiences: []
+  # User namespaces (KEP-127): in-container root maps to an unprivileged host
+  # UID. Set true on clusters without UserNamespaces support.
+  hostUsers: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations: []
+  podAnnotations: {}

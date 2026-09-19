@@ -1,0 +1,30 @@
+# The optional dashboard, deliberately kept out of deploy/base.
+#
+# deploy/base is what install.yaml is generated from, so anything listed there
+# ships to every cluster that applies a release manifest. The dashboard is
+# opt-in, which means it has to live in a base nothing else references:
+#
+#   kubectl apply -k deploy/dashboard
+#
+# It assumes deploy/base is already applied - it adds to the pahlevan-system
+# namespace and reads CRDs installed there - and it assumes a TLS pair in the
+# secret pahlevan-dashboard-tls. See docs/dashboard.md.
+#
+# rbac-namespaced.yaml is intentionally not listed; it is the single-namespace
+# alternative to the cluster-wide read binding, and applying both would just
+# grant the same reads twice.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pahlevan-system
+
+resources:
+- serviceaccount.yaml
+- rbac.yaml
+- deployment.yaml
+- service.yaml
+- networkpolicy.yaml
+
+images:
+- name: ghcr.io/obsernetics/pahlevan-dashboard
+  newTag: latest

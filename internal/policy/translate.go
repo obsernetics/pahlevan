@@ -12,12 +12,14 @@ package policy
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
@@ -407,7 +409,8 @@ func translateEgressRule(idx int, rule policyv1alpha1.NetworkRule) ([]adaptive.D
 	for _, peer := range rule.Peers {
 		switch {
 		case peer.IPBlock != nil:
-			ip, warn := hostIPFromCIDR(idx, peer.IPBlock.CIDR)
+			ip, warn := hostIPFromCIDR(
+				fmt.Sprintf("egressRules[%d].ipBlock.cidr", idx), peer.IPBlock.CIDR)
 			if warn != "" {
 				warnings = append(warnings, warn)
 				continue
@@ -489,27 +492,33 @@ func rulePorts(idx int, ports []policyv1alpha1.NetworkPort) ([]uint16, []string)
 
 // hostIPFromCIDR accepts a bare address or a single-host prefix and rejects
 // anything wider.
-func hostIPFromCIDR(idx int, cidr string) (net.IP, string) {
+//
+// field is the spec path being translated, so the warning names the thing the
+// author wrote. An egress rule and a declared destination reach the same
+// allow-set through the same key derivation and therefore have to obey the same
+// rule; only the field name differs, and it is the field name that makes a
+// warning actionable.
+func hostIPFromCIDR(field, cidr string) (net.IP, string) {
 	cidr = strings.TrimSpace(cidr)
 	if cidr == "" {
-		return nil, fmt.Sprintf("egressRules[%d].ipBlock.cidr is empty", idx)
+		return nil, fmt.Sprintf("%s is empty", field)
 	}
 	if !strings.Contains(cidr, "/") {
 		if ip := net.ParseIP(cidr); ip != nil {
 			return ip, ""
 		}
-		return nil, fmt.Sprintf("egressRules[%d].ipBlock.cidr %q is not an IP address", idx, cidr)
+		return nil, fmt.Sprintf("%s %q is not an IP address", field, cidr)
 	}
 	ip, network, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, fmt.Sprintf("egressRules[%d].ipBlock.cidr %q is invalid: %v", idx, cidr, err)
+		return nil, fmt.Sprintf("%s %q is invalid: %v", field, cidr, err)
 	}
 	ones, bits := network.Mask.Size()
 	if ones != bits {
 		return nil, fmt.Sprintf(
-			"egressRules[%d].ipBlock.cidr %q covers %d addresses; the kernel allow-set is a "+
+			"%s %q covers %d addresses; the kernel allow-set is a "+
 				"hash of the exact destination and cannot express a prefix, so only /%d hosts "+
-				"are seeded", idx, cidr, 1<<(bits-ones), bits)
+				"are seeded", field, cidr, 1<<(bits-ones), bits)
 	}
 	return ip, ""
 }
@@ -627,4 +636,344 @@ func cleanNames(in []string) []string {
 		return nil
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------
+// Declared expected behavior
+// ---------------------------------------------------------------------------
+
+// declField is the spec path every declaration warning is rooted at. Warnings
+// are read by somebody holding the YAML they wrote, so they have to name the
+// field rather than describe it.
+const declField = "learningConfig.expectedBehavior"
+
+// DeclaredFile is one path a policy declared, with the access mode it declared
+// it for. Reads and writes are separate entries in the kernel allow-set, so
+// this is not a detail: a declaration of a read does not permit a write.
+type DeclaredFile struct {
+	Path  string
+	Write bool
+}
+
+// Declaration is the exact set of operations a policy asserted its workload
+// performs, after everything unrepresentable has been refused.
+//
+// It is returned alongside the Decision rather than folded into it because the
+// two answer different questions. The Decision says what the kernel should
+// permit; the Declaration says which of those entries are there because
+// somebody asserted them rather than because the workload was observed doing
+// them. An operator reading a profile has to be able to tell the difference,
+// and once the entries are in the allow-set they are indistinguishable - the
+// kernel stores a hash, not a provenance.
+type Declaration struct {
+	Files        []DeclaredFile
+	Destinations []adaptive.Destination
+	Executables  []string
+
+	// Capabilities are numbers rather than the names the policy wrote, so the
+	// spelling reported back is always ebpf.CapabilityName's and therefore
+	// always the spelling the learned list uses. A policy may write
+	// "CAP_SYS_TIME" or "sys_time"; a profile must not show both.
+	Capabilities []uint32
+}
+
+// Empty reports whether nothing was declared.
+func (d Declaration) Empty() bool {
+	return len(d.Files) == 0 && len(d.Destinations) == 0 &&
+		len(d.Executables) == 0 && len(d.Capabilities) == 0
+}
+
+// mergeInto adds the declared entries to the overrides the learned baseline is
+// corrected with.
+//
+// Only the Allowed lists are touched, and that is the guarantee the whole
+// feature rests on: a declaration is additive, so it can add a rare operation
+// to the allow-set but can never remove something the workload was actually
+// observed doing. An operator who wants to take something away has
+// filePolicy.deniedPaths and the deny lists, where removal is what they asked
+// for and is visible as such.
+//
+// A declared write grants the read too, which is what
+// filePolicy.writeAllowedPaths already does: a workload that writes a file
+// opens it, and granting the write alone would deny the open that precedes it.
+func (d Declaration) mergeInto(o *adaptive.Overrides) {
+	for _, f := range d.Files {
+		o.AllowedFiles = append(o.AllowedFiles, f.Path)
+		if f.Write {
+			o.AllowedWriteFiles = append(o.AllowedWriteFiles, f.Path)
+		}
+	}
+	o.AllowedExecs = append(o.AllowedExecs, d.Executables...)
+	o.AllowedCapabilities = append(o.AllowedCapabilities, d.Capabilities...)
+	o.AllowedDestinations = append(o.AllowedDestinations, d.Destinations...)
+}
+
+// ReportInto writes the declaration into the profile status fields that report
+// it, replacing whatever was there so a re-sync of an unchanged policy writes
+// an unchanged status.
+//
+// This exists so the entries the agent seeds into the kernel and the entries it
+// reports as declared come from one place. Two renderings of the same
+// declaration would eventually disagree, and the failure mode of that is a
+// profile that says a path was declared when the allow-set entry was actually
+// refused, which is worse than reporting nothing.
+//
+// Every list is sorted, matching how the learned lists are written, so a status
+// update is driven by the declaration changing rather than by map iteration
+// order.
+func (d Declaration) ReportInto(status *policyv1beta1.ContainerProfileStatus) {
+	if status == nil {
+		return
+	}
+	status.DeclaredFiles = nil
+	status.DeclaredNetworkDestinations = nil
+	status.DeclaredExecutables = nil
+	status.DeclaredCapabilities = nil
+
+	if len(d.Files) > 0 {
+		files := make([]string, 0, len(d.Files))
+		for _, f := range d.Files {
+			// The write marker is not decoration. A declared write is a much
+			// larger assertion than a declared read, and a status that renders
+			// them identically hides that from the person auditing it.
+			if f.Write {
+				files = append(files, f.Path+" (write)")
+				continue
+			}
+			files = append(files, f.Path)
+		}
+		sort.Strings(files)
+		status.DeclaredFiles = files
+	}
+	if len(d.Destinations) > 0 {
+		dests := make([]string, 0, len(d.Destinations))
+		for _, dest := range d.Destinations {
+			// net.JoinHostPort, so an IPv6 destination reads as [::1]:443 the
+			// way the learned list writes it rather than as an ambiguous
+			// ::1:443.
+			dests = append(dests, net.JoinHostPort(dest.IP.String(), strconv.Itoa(int(dest.Port))))
+		}
+		sort.Strings(dests)
+		status.DeclaredNetworkDestinations = dests
+	}
+	if len(d.Executables) > 0 {
+		execs := append([]string(nil), d.Executables...)
+		sort.Strings(execs)
+		status.DeclaredExecutables = execs
+	}
+	if len(d.Capabilities) > 0 {
+		caps := make([]string, 0, len(d.Capabilities))
+		for _, c := range d.Capabilities {
+			// Without the CAP_ prefix, which is the spelling a pod spec uses in
+			// securityContext.capabilities and the one learnedCapabilities
+			// reports, so the two lists can be compared without translating.
+			caps = append(caps, strings.TrimPrefix(ebpf.CapabilityName(c), "CAP_"))
+		}
+		sort.Strings(caps)
+		status.DeclaredCapabilities = caps
+	}
+}
+
+// TranslateSpec translates a v1beta1 spec, which is the hub version and the one
+// that can carry declared expected behavior.
+//
+// The spec is converted down to v1alpha1 and handed to Translate rather than
+// translated by a second copy of the same logic. Everything but the declaration
+// has an exact v1alpha1 counterpart, and two translators for one spec would
+// drift - a rule honored in one version and dropped in the other is precisely
+// the class of bug this package was extracted to make testable.
+//
+// The declaration is read from the v1beta1 spec directly, because it is the one
+// thing the down-conversion cannot carry.
+func TranslateSpec(name string, spec policyv1beta1.PahlevanPolicySpec, now time.Time) (adaptive.Decision, Declaration, []string) {
+	var spoke policyv1alpha1.PahlevanPolicy
+	if err := spoke.ConvertFrom(&policyv1beta1.PahlevanPolicy{Spec: spec}); err != nil {
+		// Unreachable today: the conversion is field-by-field assignment and
+		// returns nil. Reported rather than ignored because a policy that
+		// silently translated to an empty decision would look like a policy
+		// governing nothing, which is indistinguishable from mode: "Off".
+		return adaptive.Decision{PolicyName: name}, Declaration{},
+			[]string{fmt.Sprintf("policy could not be translated: %v", err)}
+	}
+	d, warnings := Translate(name, spoke.Spec, now)
+
+	// An Off policy governs nothing, so there is nothing to declare into. This
+	// mirrors Translate, which stops for the same reason.
+	if d.Mode == adaptive.ModeOff {
+		return d, Declaration{}, warnings
+	}
+
+	decl, declWarnings := declare(spec.LearningConfig.ExpectedBehavior)
+	warnings = append(warnings, declWarnings...)
+
+	// Recorded before the merge: Translate has already warned if the spec's own
+	// allow and deny lists are inert in this mode, and saying it twice for one
+	// policy trains the reader to skim the warnings.
+	quiet := d.Overrides.Empty()
+	decl.mergeInto(&d.Overrides)
+	if quiet && !decl.Empty() && d.Mode != adaptive.ModeBlocking {
+		warnings = append(warnings,
+			declField+" is recorded but has no effect in "+string(d.Mode)+
+				" mode; declarations are seeded into the allow-set when the container "+
+				"starts enforcing")
+	}
+	return d, decl, warnings
+}
+
+// declare turns a declaration into the entries that can be seeded exactly,
+// refusing everything else.
+//
+// The refusals are the point. A declaration exists because the learning window
+// did not observe an operation, so nothing will ever prove the entry wrong: if
+// a declared path is silently widened, or written in a form the kernel can
+// never match, the operator finds out the same way they would have without the
+// declaration at all - when the nightly job is denied. Refusing loudly at
+// translation is the only moment where the mistake is still cheap.
+func declare(eb *policyv1beta1.ExpectedBehavior) (Declaration, []string) {
+	if eb == nil {
+		return Declaration{}, nil
+	}
+	if len(eb.Files) == 0 && len(eb.NetworkDestinations) == 0 &&
+		len(eb.Executables) == 0 && len(eb.Capabilities) == 0 {
+		// The CRD refuses this with minProperties, so reaching here means an
+		// object stored before that validation existed, or a cluster whose CRD
+		// has not been upgraded. Silence would let an operator believe a rare
+		// operation was covered by a block that says nothing.
+		return Declaration{}, []string{declField +
+			" declares nothing; remove it or name the operations the workload performs"}
+	}
+
+	var d Declaration
+	var warnings []string
+
+	seenFiles := map[DeclaredFile]struct{}{}
+	for i, f := range eb.Files {
+		path, warn := declaredPath(fmt.Sprintf("%s.files[%d].path", declField, i), f.Path)
+		if warn != "" {
+			warnings = append(warnings, warn)
+			continue
+		}
+		entry := DeclaredFile{Path: path, Write: f.Write}
+		if _, dup := seenFiles[entry]; dup {
+			continue
+		}
+		seenFiles[entry] = struct{}{}
+		d.Files = append(d.Files, entry)
+	}
+
+	seenExecs := map[string]struct{}{}
+	for i, e := range eb.Executables {
+		path, warn := declaredPath(fmt.Sprintf("%s.executables[%d]", declField, i), e)
+		if warn != "" {
+			warnings = append(warnings, warn)
+			continue
+		}
+		if _, dup := seenExecs[path]; dup {
+			continue
+		}
+		seenExecs[path] = struct{}{}
+		d.Executables = append(d.Executables, path)
+	}
+
+	seenCaps := map[uint32]struct{}{}
+	for i, c := range eb.Capabilities {
+		field := fmt.Sprintf("%s.capabilities[%d]", declField, i)
+		name := strings.TrimSpace(c)
+		if name == "" {
+			warnings = append(warnings, field+" is empty")
+			continue
+		}
+		num, ok := ebpf.CapabilityNumber(name)
+		if !ok {
+			// The API server cannot check this: the set of capability names is
+			// the kernel's, not the schema's. A typo would otherwise be a
+			// declaration that seeds an allow-set entry for nothing.
+			warnings = append(warnings, fmt.Sprintf(
+				"%s %q is not a Linux capability; write the name with or without the "+
+					"CAP_ prefix, as in CAP_NET_BIND_SERVICE or net_bind_service", field, name))
+			continue
+		}
+		if _, dup := seenCaps[num]; dup {
+			continue
+		}
+		seenCaps[num] = struct{}{}
+		d.Capabilities = append(d.Capabilities, num)
+	}
+
+	seenDests := map[string]struct{}{}
+	for i, dest := range eb.NetworkDestinations {
+		field := fmt.Sprintf("%s.networkDestinations[%d]", declField, i)
+		if warn := declaredProtocol(field, dest.Protocol); warn != "" {
+			warnings = append(warnings, warn)
+			continue
+		}
+		if dest.Port < 1 || dest.Port > 65535 {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s.port %d is outside 1-65535; a port is 16 bits on the wire and the "+
+					"allow-set key holds exactly those bits", field, dest.Port))
+			continue
+		}
+		ip, warn := hostIPFromCIDR(field+".cidr", dest.CIDR)
+		if warn != "" {
+			warnings = append(warnings, warn)
+			continue
+		}
+		key := ip.String() + "/" + strconv.Itoa(int(dest.Port))
+		if _, dup := seenDests[key]; dup {
+			continue
+		}
+		seenDests[key] = struct{}{}
+		d.Destinations = append(d.Destinations, adaptive.Destination{IP: ip, Port: uint16(dest.Port)})
+	}
+
+	return d, warnings
+}
+
+// declaredPath validates one declared path against what the kernel can match.
+//
+// The CRD already enforces absoluteness and non-emptiness, so the first two
+// checks cover objects stored before those markers existed. The wildcard check
+// has no CRD equivalent and is the one that matters most: filePolicy warns
+// about a glob and applies it literally, which is tolerable for a rule that
+// also names real paths, but a declaration that matches nothing is the entire
+// statement. It is refused instead.
+func declaredPath(field, raw string) (string, string) {
+	path := strings.TrimSpace(raw)
+	switch {
+	case path == "":
+		return "", field + " is empty; a declaration has to name the operation it declares"
+	case !strings.HasPrefix(path, "/"):
+		return "", fmt.Sprintf(
+			"%s %q is not absolute: enforcement keys on the path the kernel resolves, "+
+				"so a relative path can never match", field, path)
+	case strings.ContainsAny(path, "*?["):
+		return "", fmt.Sprintf(
+			"%s %q is a wildcard, which the allow-set cannot express: it is keyed on an "+
+				"exact path hash, so this would be seeded literally and never match. "+
+				"Name each path the workload uses", field, path)
+	}
+	return path, ""
+}
+
+// declaredProtocol refuses the transports an allow-set entry cannot be written
+// for.
+//
+// UDP is the honest failure here. The kernel key folds the protocol in, but the
+// Decision a declaration is merged into carries only (address, port) and is
+// seeded over TCP, so a declared UDP destination would be written as a TCP
+// entry: granting a protocol nobody declared, and not granting the one that
+// was. Widening it that way would be the exact bargain this field exists to
+// avoid.
+func declaredProtocol(field string, p policyv1beta1.TransportProtocol) string {
+	switch p {
+	case "", policyv1beta1.TransportProtocolTCP:
+		return ""
+	case policyv1beta1.TransportProtocolUDP:
+		return field + ".protocol is UDP, which cannot be declared: the allow-set entry a " +
+			"declaration is seeded as carries only the address and port and is written for " +
+			"TCP, so this would permit TCP to a destination nobody declared and still deny " +
+			"the UDP that was"
+	default:
+		return fmt.Sprintf("%s.protocol %q is not TCP or UDP", field, p)
+	}
 }

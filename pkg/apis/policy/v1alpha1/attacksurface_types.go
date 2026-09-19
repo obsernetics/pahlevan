@@ -17,6 +17,7 @@ type AttackSurfaceSpec struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:deprecatedversion:warning="policy.pahlevan.io/v1alpha1 AttackSurface is deprecated; use policy.pahlevan.io/v1beta1"
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=asurf
 // +kubebuilder:printcolumn:name="Risk",type=integer,JSONPath=`.status.riskScore`

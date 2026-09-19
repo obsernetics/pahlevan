@@ -1,0 +1,96 @@
+# The whole grant the dashboard holds. It is short on purpose, and it is
+# written out rather than aliased to a built-in role so that an operator can
+# audit it by reading this file instead of trusting that
+# `system:auth-delegator` still means what they remember.
+#
+# Two ClusterRoles, because the two halves fail differently:
+#   - the review half lets the dashboard ask the API server "who is this
+#     browser, and may they read that?". Creating a TokenReview or a
+#     SubjectAccessReview returns an answer; it changes nothing in the cluster
+#     and grants the caller no access of its own.
+#   - the read half lets the dashboard fetch the objects it draws. It is
+#     cluster-wide because the dashboard serves whatever namespaces the viewer
+#     is allowed to see, and it is get/list/watch because the dashboard never
+#     writes.
+#
+# What is deliberately absent: pods, secrets, events, nodes, any /status
+# subresource, any create/update/patch/delete on a CRD, and any wildcard. A
+# viewer who wants a pod list uses kubectl with their own credentials; the
+# dashboard holding that grant would mean a compromised dashboard could read
+# every workload's spec - including the environment of every container - with
+# no user present at all.
+
+# ---------------------------------------------------------------------------
+# Authentication and authorization delegation.
+# ---------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pahlevan-dashboard-auth-delegator
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+rules:
+# TokenReview turns the bearer token the browser presented into a username,
+# groups and a validity answer. Without it the dashboard would need its own
+# user database, which is a credential store this project has no business
+# operating and an attacker has every reason to want.
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+# SubjectAccessReview answers "may this user read this resource in this
+# namespace?" and is asked once per read the dashboard performs on the
+# viewer's behalf. It is what keeps the dashboard's own cluster-wide read from
+# leaking: the data is fetched with the dashboard's identity, but nothing
+# reaches the browser unless the API server says the viewer could have fetched
+# it themselves.
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pahlevan-dashboard-auth-delegator
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pahlevan-dashboard-auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: pahlevan-dashboard
+  namespace: pahlevan-system
+---
+# ---------------------------------------------------------------------------
+# Read access to the three Pahlevan CRDs, and to nothing else in the cluster.
+# ---------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pahlevan-dashboard-read
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+rules:
+- apiGroups: ["policy.pahlevan.io"]
+  resources: ["pahlevanpolicies", "containerprofiles", "attacksurfaces"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pahlevan-dashboard-read
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pahlevan-dashboard-read
+subjects:
+- kind: ServiceAccount
+  name: pahlevan-dashboard
+  namespace: pahlevan-system

@@ -113,6 +113,84 @@ will have its malicious behavior baselined. That limitation is documented rather
 than treated as a vulnerability, but concrete attacks that make it worse (for
 example, forcing a relearn) are in scope.
 
+## Dashboard
+
+The optional dashboard is off by default and absent from `install.yaml`. A
+cluster that never enables it runs exactly the bytes it ran before, and nothing
+in this section applies to it. What follows is for clusters that turn it on.
+
+**Why it gets this much attention.** A security tool's dashboard is a better
+prize than the tool it fronts. It is the one component a browser talks to, it
+describes in one place which workloads exist, which paths they read, which
+destinations they dial and what has been denied to them, and it is the piece
+most likely to be exposed through an ingress because that is what a dashboard
+is for. A security tool that ships a dashboard with a cluster-admin service
+account and a bespoke login page has handed an attacker a better primitive than
+the one it defends against: a reconnaissance report for the whole cluster, plus
+a credential that can switch enforcement off.
+
+**What it deliberately cannot do.** These are design constraints, not
+configuration. The deployment-shaped ones - the RBAC grant, `ClusterIP`, no
+host access, absence from `install.yaml` - are asserted by tests in
+`hack/install/`, and the server-shaped ones by tests in `pkg/dashboard`, so
+they stay true rather than staying written down:
+
+- **No writes.** The service account holds `get`, `list` and `watch` on three
+  CRDs and nothing else. There is no write path in the code either: the router
+  registers reads and refuses every other method before a handler runs.
+  Changing a policy or an enforcement mode stays a `kubectl` operation under
+  the operator's own credentials.
+- **No cluster-admin, and no grant beyond five entries.** `create` on
+  `tokenreviews` and `subjectaccessreviews`, and read on `pahlevanpolicies`,
+  `containerprofiles` and `attacksurfaces`. No pods, so a compromise cannot
+  read every container's environment; no secrets; no wildcards; no binding to a
+  built-in superuser role.
+- **No bespoke authentication.** The browser presents a Kubernetes bearer
+  token, a `TokenReview` establishes who that is, and a `SubjectAccessReview`
+  runs for every read, so a viewer sees exactly what their own RBAC allows.
+  There is no user database to breach, no session secret to leak, and no second
+  permission model to drift out of step with yours.
+- **No external origins.** A strict Content-Security-Policy forbids inline
+  script and every third-party origin, and assets are embedded in the binary. A
+  dashboard that loads a charting library from a CDN has made every viewer's
+  browser trust a third party on the project's say-so.
+- **No exposure the project chose for you.** `ClusterIP` only, a
+  `NetworkPolicy` alongside, and no Ingress, NodePort or LoadBalancer manifest
+  anywhere in the repository.
+- **No privilege and no path into the kernel.** No eBPF, no host namespaces, no
+  host mounts, no capabilities, a read-only root filesystem, `runAsNonRoot`,
+  and `seccompProfile: RuntimeDefault`. The agent stays the only privileged
+  component, which is what makes a browser-facing process acceptable at all.
+
+**What is yours.** The project can refuse to make these decisions for you; it
+cannot make them:
+
+- **Exposure.** Reaching the dashboard from outside the cluster is your
+  deliberate act through your own ingress. Put it on an internal load balancer
+  or behind your VPN, and label only the namespace that should reach it. An
+  unreachable port cannot be probed for a bug in the token check.
+- **TLS certificates.** You supply the pair, you rotate it, and you keep TLS
+  end to end rather than terminating at the edge and forwarding bearer tokens
+  in plaintext. There is no self-signed fallback, because a user trained to
+  click through a certificate warning cannot tell your certificate from a
+  proxy's.
+- **Who gets RBAC.** The dashboard shows a viewer exactly what their own RBAC
+  allows, which means the answer to "who can see this" is the answer to "who
+  did you grant read on Pahlevan's CRDs". Granting that broadly to make the
+  dashboard more useful widens what an attacker sees after phishing any one of
+  those accounts.
+- **Narrowing what it ships open.** The egress rule permits 443 and 6443 to
+  `0.0.0.0/0` because the API server's address is cluster-specific; narrow it
+  to your control plane. Set a token audience once you mint tokens for the
+  dashboard, so a projected token belonging to something else is not accepted.
+
+Bugs in any of the above are in scope, and the classes we most want to hear
+about are a read that reaches the browser without a passing
+`SubjectAccessReview`, anything that authenticates without a valid token, and
+any way to make the dashboard write.
+
+Setup and configuration are in [docs/dashboard.md](docs/dashboard.md).
+
 ## Response timeline
 
 We aim for the following. These are targets for a small volunteer project, not

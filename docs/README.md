@@ -1,126 +1,105 @@
 # Pahlevan Documentation
 
-Welcome to the Pahlevan documentation! This directory contains comprehensive guides and references for deploying, configuring, and operating the Pahlevan eBPF Kubernetes Security Operator.
+Pahlevan is an eBPF Kubernetes security operator. It learns what a container
+actually does, then refuses everything else in the kernel, at the LSM hook,
+before the operation completes.
 
-## Documentation Structure
+This directory is the reference for deploying, configuring and operating it.
 
-### Quick Start
-- **[Quick Start Guide](quick-start.md)** - Get Pahlevan running in 5 minutes
-- **[System Requirements](system-requirements.md)** - Hardware and software requirements
+## Start here
 
-### Architecture & Design
-- **[Architecture Overview](architecture.md)** - System design and components
-- **[API Reference](api-reference.md)** - Complete API documentation
+| Document | What it is |
+|---|---|
+| [Quick start](quick-start.md) | Install Pahlevan, put one workload under a policy, watch it learn, and switch enforcement on. |
+| [System requirements](system-requirements.md) | Kernel versions, Kubernetes versions and node resources, and what each capability needs. |
+| [LSM support](lsm-support.md) | Which kernels and distributions serve the BPF LSM, and what Pahlevan can still do without it. |
 
-### Configuration & Deployment
-- **[Packages and Releases](packages.md)** - Container image, Helm chart, and manifest artifacts
-- **[Policy Reference](policy-reference.md)** - Complete policy syntax and examples
-- **[Deployment Guide](deployment.md)** - Production deployment patterns
-- **[LSM Support](lsm-support.md)** - Kernel and distribution support for in-kernel enforcement
-- **[Troubleshooting](troubleshooting.md)** - Common issues and solutions
+## Understanding it
 
-### Benchmarks & Changes
-- **[Benchmarks](benchmarks/)** - Measured overhead and detection latency
-- **[Changelog](../CHANGELOG.md)** - Release history
+| Document | What it is |
+|---|---|
+| [Architecture](architecture.md) | The split between the privileged node agent and the unprivileged operator, the eight eBPF programs, the five enforcement actions, and the learn-to-enforce lifecycle. |
+| [Packages and releases](packages.md) | The container image, Helm chart and single-file manifest published per release, and how to pin each one. |
+| [Benchmarks](benchmarks/) | Measured detection, prevention and overhead figures, each traceable to a run rather than an estimate. |
+| [What Pahlevan does to a real workload](live-scenario.md) | The harness that runs a real application under the data plane for an hour, learns it, enforces, and then attacks it. |
+| [Live scenario report](scenario-report.md) | The recorded output of that harness: what the kernel actually did, line by line. |
 
-## Getting Started
+## Configuring and running it
 
-If you're new to Pahlevan, start with the [Quick Start Guide](quick-start.md) to get a basic deployment running in your cluster.
+| Document | What it is |
+|---|---|
+| [Deployment guide](deployment.md) | Production install, sizing, rolling enforcement out safely, metrics and alerting, getting events off the node, upgrades and uninstall. |
+| [Policy reference](policy-reference.md) | Every `PahlevanPolicy` field, with examples. |
+| [API reference](api-reference.md) | The generated CRD field reference, produced from the Go types so it cannot drift from what the API server serves. |
+| [The optional dashboard](dashboard.md) | The browser view of what each workload does and what was denied, and how to deploy it. |
+| [Troubleshooting](troubleshooting.md) | Diagnosing an install that is not behaving. |
 
-For production deployments, review the [System Requirements](system-requirements.md) and [Deployment Guide](deployment.md).
+`assets/` holds the diagrams and the demo recording these pages embed, together
+with the sources they are generated from. [`../CHANGELOG.md`](../CHANGELOG.md)
+is the release history and [`../ROADMAP.md`](../ROADMAP.md) separates what is
+implemented from what is not.
 
-## Key Concepts
+## The CLI
 
-### Learning Phase
-Pahlevan automatically profiles container behavior during a configurable learning window, collecting data on:
-- Syscall patterns and frequencies
-- Network connection patterns
-- File access patterns
+Every command below is in the `pahlevan` binary shipped in the release image.
+The ones marked "no cluster" read nothing but a local file or the binary's own
+compiled-in tables, which makes them usable in CI and in a bug report.
 
-### Enforcement Phase
-After learning, Pahlevan generates minimal security policies and enforces them at the kernel level using eBPF programs.
+| Command | What it does |
+|---|---|
+| `pahlevan status` | Whether the components, CRDs and admission policy are installed and healthy. |
+| `pahlevan policy` | List, describe, create, update and delete policies. |
+| `pahlevan policy explain -f` | **No cluster.** Translates a policy file offline and names every part of it the data plane cannot enforce. `--strict` exits non-zero, for CI. |
+| `pahlevan profile` | The seccomp profiles generated from learned behavior. `profile patch` prints the workload patch that applies one, and applies nothing itself. |
+| `pahlevan events` | The agent's JSON-lines event log, filtered by type, pod or denial, as a stream that composes with `jq`. |
+| `pahlevan ui` | An interactive view of the live event stream, per-workload counts and the coverage table. Falls back to a plain summary off a terminal. |
+| `pahlevan coverage` | **No cluster.** The eBPF detectors, their kernel hooks, and the MITRE ATT&CK techniques their observations are evidence for. |
+| `pahlevan attack-surface` | What remains reachable for a workload - syscalls, ports, writable paths, capabilities - and its risk score. |
+| `pahlevan logs` / `pahlevan metrics` | Read logs and scrape `/metrics` from either component without hunting for pod names. |
+| `pahlevan debug` | A support bundle: pod state, node kernels, CRD availability, recent events and metric highlights. Reads no Secrets or tokens. |
 
-### Self-Healing
-When policies cause issues, Pahlevan can automatically roll back changes and adjust policies to maintain availability.
+`pahlevan ui` is the one worth trying first after an install, because it is the
+only view that shows what is being observed and what is being refused at the
+same time. It is a reader: it never changes a policy, a mode or a profile, so it
+cannot be the thing that turns enforcement off during an incident. `--replay`
+points it at a captured JSON-lines file and needs no cluster at all. See
+[the quick start](quick-start.md#watch-it-work).
 
-## Common Use Cases
+## Key concepts
 
-### Development Environment
-```yaml
-# Monitor-only mode for development
-enforcement:
-  mode: "monitor"
-  blockUnknown: false
-learning:
-  duration: "30m"
-  autoTransition: false
-```
+### Learning
 
-### Production Environment
-```yaml
-# Strict enforcement for production
-enforcement:
-  mode: "enforce"
-  blockUnknown: true
-learning:
-  duration: "5m"
-  autoTransition: true
-  strictMode: true
-selfHealing:
-  enabled: true
-```
+A `PahlevanPolicy` selects workloads by label. During the learning window the
+agent records what each matched container does - the files it opens, the
+destinations it dials, the binaries it runs, the capabilities it exercises, the
+syscalls it makes - into per-cgroup BPF maps, and persists the result as a
+`ContainerProfile` so a restart does not relearn from zero.
 
-### Compliance Environment
-```yaml
-# Zero-tolerance for compliance workloads
-enforcement:
-  mode: "enforce"
-  blockUnknown: true
-  syscalls:
-    defaultAction: "deny"
-    allowedSyscalls: ["read", "write", "open", "close"]
-selfHealing:
-  enabled: false  # No auto-healing in compliance mode
-```
+### Enforcement
 
-## Documentation Conventions
+Switching a policy to `Blocking` is a map update, not a program reload. After
+it, an open of an unlearned path, an egress to an unlearned destination or an
+exec of an unlearned binary is refused in the kernel with `EPERM`, before it
+completes. A detection tool can only tell you it already happened.
 
-- **Code blocks** show exact commands or configuration
-- **Examples** demonstrate real-world usage patterns
-- **Notes** highlight important considerations
-- **Warnings** indicate potential issues or breaking changes
+`enforcementConfig.mode` accepts `Off`, `Monitoring` and `Blocking`. Quote
+`Off`: unquoted it is a YAML 1.1 boolean.
 
-## Contributing to Documentation
+### Self-healing
 
-We welcome improvements to the documentation! Please:
+A baseline learned in five minutes can miss a code path that runs at month end,
+and enforcement built on it will deny something the workload needs. The operator
+watches violation rate and workload health after a transition, relaxes the
+policy when enforcement correlates with disruption, and rolls back to monitoring
+if relaxing did not help. Turn it off when you would rather have a hard failure
+than an automatic rollback.
 
-1. Check existing issues before creating new ones
-2. Use clear, concise language
-3. Include working examples
-4. Test all commands and configurations
-5. Follow the existing structure and style
+## Getting help
 
-## Getting Help
-
-If you need help with Pahlevan:
-
-- **Issues**: [GitHub Issues](https://github.com/obsernetics/pahlevan/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/obsernetics/pahlevan/discussions)
-- **Documentation**: This docs directory
-- **Community**: [Kubernetes Slack #pahlevan](https://kubernetes.slack.com/channels/pahlevan)
-
-## Document Status
-
-| Document | Status | Last Updated |
-|----------|--------|--------------|
-| [Quick Start Guide](quick-start.md) | Complete | 2023-12-01 |
-| [Architecture Overview](architecture.md) | Complete | 2023-12-01 |
-| [Policy Reference](policy-reference.md) | Complete | 2023-12-01 |
-| [Deployment Guide](deployment.md) | Complete | 2023-12-01 |
-| [Troubleshooting](troubleshooting.md) | Complete | 2023-12-01 |
-| [API Reference](api-reference.md) | Complete | 2023-12-01 |
-| [System Requirements](system-requirements.md) | Complete | 2023-12-01 |
-
----
-
-**Need something specific?** Use the search function in your editor or browser to quickly find what you're looking for across all documentation files.
+- **Issues**: [GitHub Issues](https://github.com/obsernetics/pahlevan/issues).
+  Attach `pahlevan debug -o json --file pahlevan-debug.json` - it carries the
+  node kernel versions and LSM state that most reports are missing, and reads no
+  Secrets, tokens or container environment variables.
+- **Contributing to these docs**: test every command you add. A documented flag
+  that does not exist costs a reader more time than the missing paragraph would
+  have.

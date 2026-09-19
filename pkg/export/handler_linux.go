@@ -23,6 +23,11 @@ type HandlerOptions struct {
 	// one that says "prod/postgres" is one they can act on, and the two are
 	// the difference between an alert investigated and an alert muted.
 	Destination DestinationFunc
+	// External names a destination the cluster map did not know. Optional.
+	// Without it an egress event outside the cluster reports a bare address,
+	// which is the one an operator has to go and look up at the exact moment
+	// they are trying to understand an incident.
+	External ExternalNameFunc
 	// AttributionCacheSize bounds the memoisation of attribution lookups.
 	// Zero uses DefaultAttributionCacheSize; a negative value disables the
 	// cache.
@@ -43,6 +48,7 @@ type Handler struct {
 	filter Filter
 	attrib AttributionFunc
 	dest   DestinationFunc
+	ext    ExternalNameFunc
 	now    func() time.Time
 
 	cacheMax int
@@ -61,6 +67,7 @@ func NewHandler(sink Enqueuer, opts HandlerOptions) *Handler {
 		filter:   opts.Filter,
 		attrib:   opts.Attribution,
 		dest:     opts.Destination,
+		ext:      opts.External,
 		now:      opts.Now,
 		cacheMax: opts.AttributionCacheSize,
 	}
@@ -141,18 +148,45 @@ func (h *Handler) emit(e *Event) {
 // busy node sees thousands, and the lookup is already a single map read. A
 // cache here would cost more memory than the map it is caching.
 func (h *Handler) nameDestination(e *Event) {
-	if h.dest == nil || e.Network == nil || e.Network.DestinationIP == "" {
+	if h.dest == nil && h.ext == nil {
+		return
+	}
+	if e.Network == nil || e.Network.DestinationIP == "" {
 		return
 	}
 	ip := net.ParseIP(e.Network.DestinationIP)
 	if ip == nil {
 		return
 	}
-	name, kind, portName := h.dest(ip, e.Network.DestinationPort)
+	var name, kind, portName string
+	if h.dest != nil {
+		name, kind, portName = h.dest(ip, e.Network.DestinationPort)
+	}
+
+	// The cluster map answers first and is never overridden: a Service name is
+	// a stronger statement than anything an address range or a PTR record can
+	// say. External naming only fills the hole the map leaves, which is the
+	// destination reported as "external" and nothing else.
+	//
+	// kind is left exactly as the map set it. An external name is presentation
+	// only, and inventing a kind here - claiming "external" when no cluster map
+	// was configured to disagree - would change the field alerts are written
+	// against on the strength of a guess.
+	if h.ext != nil && (name == "" || name == kindExternal) {
+		if ext := h.ext(ip); ext != "" {
+			name = ext
+		}
+	}
+
 	e.Network.DestinationName = name
 	e.Network.DestinationKind = kind
 	e.Network.DestinationPortName = portName
 }
+
+// kindExternal is the destination kind the cluster map reports for an address
+// it does not know, and the name it falls back to when it has nothing better.
+// Seeing it as the name is how this package recognises an unnamed destination.
+const kindExternal = "external"
 
 // resolve looks the cgroup id up through the attribution hook, memoising both
 // hits and misses so a busy cgroup does not walk cgroupfs on every event.

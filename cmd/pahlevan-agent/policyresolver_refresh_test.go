@@ -12,14 +12,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 )
 
 func newRefreshFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, policyv1alpha1.AddToScheme(scheme))
+	require.NoError(t, policyv1beta1.AddToScheme(scheme))
 
 	return fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -43,7 +43,7 @@ func TestPolicyResolver_Refresh(t *testing.T) {
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{Name: "default", Labels: map[string]string{"team": "platform"}},
 		}
-		pol := blockingPolicy("pol-1", policyv1alpha1.LabelSelector{})
+		pol := blockingPolicy("pol-1", policyv1beta1.WorkloadSelector{})
 
 		fc := newRefreshFakeClient(t, nodeAPod, nodeBPod, ns, &pol)
 		r := newPolicyResolver(fc, "node-a")

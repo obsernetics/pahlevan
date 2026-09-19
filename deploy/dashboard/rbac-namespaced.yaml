@@ -1,0 +1,42 @@
+# The single-namespace variant of the read grant. Not applied by default -
+# kustomization.yaml does not list it - because a dashboard that can only read
+# one namespace is a dashboard most clusters will find useless.
+#
+# Apply this and delete the `pahlevan-dashboard-read` ClusterRoleBinding when
+# the dashboard exists to serve exactly one namespace, for example a platform
+# team running it beside the workloads they own. The effect is concrete: a
+# viewer whose RBAC allows every namespace still sees only this one, because
+# the SubjectAccessReview per read can only narrow what the dashboard's own
+# account can fetch, never widen it.
+#
+# The auth-delegator ClusterRole stays in either case: TokenReview and
+# SubjectAccessReview are cluster-scoped APIs and cannot be granted by a Role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pahlevan-dashboard-read
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+rules:
+- apiGroups: ["policy.pahlevan.io"]
+  resources: ["pahlevanpolicies", "containerprofiles", "attacksurfaces"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pahlevan-dashboard-read
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-dashboard
+    app.kubernetes.io/part-of: pahlevan
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pahlevan-dashboard-read
+subjects:
+- kind: ServiceAccount
+  name: pahlevan-dashboard
+  namespace: pahlevan-system

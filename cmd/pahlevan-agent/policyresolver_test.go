@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 )
 
@@ -32,7 +32,7 @@ func controllerRef(kind, name string) metav1.OwnerReference {
 
 // resolverWith builds a resolver with its caches populated directly, which is
 // what Refresh would have produced.
-func resolverWith(pods []*corev1.Pod, policies []policyv1alpha1.PahlevanPolicy, nsLabels map[string]map[string]string) *policyResolver {
+func resolverWith(pods []*corev1.Pod, policies []policyv1beta1.PahlevanPolicy, nsLabels map[string]map[string]string) *policyResolver {
 	r := newPolicyResolver(nil, "node-1")
 	for _, p := range pods {
 		r.podsByUID[string(p.UID)] = p
@@ -44,14 +44,14 @@ func resolverWith(pods []*corev1.Pod, policies []policyv1alpha1.PahlevanPolicy, 
 	return r
 }
 
-func blockingPolicy(name string, sel policyv1alpha1.LabelSelector) policyv1alpha1.PahlevanPolicy {
-	return policyv1alpha1.PahlevanPolicy{
+func blockingPolicy(name string, sel policyv1beta1.WorkloadSelector) policyv1beta1.PahlevanPolicy {
+	return policyv1beta1.PahlevanPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec: policyv1alpha1.PahlevanPolicySpec{
+		Spec: policyv1beta1.PahlevanPolicySpec{
 			Selector:       sel,
-			LearningConfig: policyv1alpha1.LearningConfig{Duration: &metav1.Duration{Duration: time.Minute}},
-			EnforcementConfig: policyv1alpha1.EnforcementConfig{
-				Mode: policyv1alpha1.EnforcementModeBlocking,
+			LearningConfig: policyv1beta1.LearningConfig{Duration: &metav1.Duration{Duration: time.Minute}},
+			EnforcementConfig: policyv1beta1.EnforcementConfig{
+				Mode: policyv1beta1.EnforcementModeBlocking,
 			},
 		},
 	}
@@ -131,7 +131,7 @@ func TestPodDetailCopiesLabels(t *testing.T) {
 func TestResolveMatchesByLabel(t *testing.T) {
 	r := resolverWith(
 		[]*corev1.Pod{pod("nginx-1", "prod", "uid-1", map[string]string{"app": "nginx"})},
-		[]policyv1alpha1.PahlevanPolicy{blockingPolicy("p1", policyv1alpha1.LabelSelector{
+		[]policyv1beta1.PahlevanPolicy{blockingPolicy("p1", policyv1beta1.WorkloadSelector{
 			MatchLabels: map[string]string{"app": "nginx"},
 		})}, nil)
 
@@ -143,8 +143,8 @@ func TestResolveMatchesByLabel(t *testing.T) {
 }
 
 func TestResolveWithoutAPodUIDOrPod(t *testing.T) {
-	r := resolverWith(nil, []policyv1alpha1.PahlevanPolicy{
-		blockingPolicy("p1", policyv1alpha1.LabelSelector{}),
+	r := resolverWith(nil, []policyv1beta1.PahlevanPolicy{
+		blockingPolicy("p1", policyv1beta1.WorkloadSelector{}),
 	}, nil)
 
 	_, ok := r.Resolve(1, attribution.ContainerRef{})
@@ -161,13 +161,13 @@ func TestNamespaceSelectorScopesThePolicy(t *testing.T) {
 		pod("nginx-prod", "prod", "uid-prod", map[string]string{"app": "nginx"}),
 		pod("nginx-dev", "dev", "uid-dev", map[string]string{"app": "nginx"}),
 	}
-	policy := blockingPolicy("p1", policyv1alpha1.LabelSelector{
+	policy := blockingPolicy("p1", policyv1beta1.WorkloadSelector{
 		MatchLabels: map[string]string{"app": "nginx"},
-		NamespaceSelector: &policyv1alpha1.NamespaceSelector{
+		NamespaceSelector: &policyv1beta1.NamespaceSelector{
 			MatchLabels: map[string]string{"env": "production"},
 		},
 	})
-	r := resolverWith(pods, []policyv1alpha1.PahlevanPolicy{policy}, map[string]map[string]string{
+	r := resolverWith(pods, []policyv1beta1.PahlevanPolicy{policy}, map[string]map[string]string{
 		"prod": {"env": "production"},
 		"dev":  {"env": "development"},
 	})
@@ -182,14 +182,14 @@ func TestNamespaceSelectorScopesThePolicy(t *testing.T) {
 // Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
 // selecting by name works through the label selector.
 func TestNamespaceSelectorByName(t *testing.T) {
-	policy := blockingPolicy("p1", policyv1alpha1.LabelSelector{
-		NamespaceSelector: &policyv1alpha1.NamespaceSelector{
+	policy := blockingPolicy("p1", policyv1beta1.WorkloadSelector{
+		NamespaceSelector: &policyv1beta1.NamespaceSelector{
 			MatchLabels: map[string]string{"kubernetes.io/metadata.name": "prod"},
 		},
 	})
 	r := resolverWith(
 		[]*corev1.Pod{pod("nginx", "prod", "uid-1", nil)},
-		[]policyv1alpha1.PahlevanPolicy{policy},
+		[]policyv1beta1.PahlevanPolicy{policy},
 		map[string]map[string]string{"prod": {"kubernetes.io/metadata.name": "prod"}})
 
 	_, ok := r.Resolve(1, attribution.ContainerRef{PodUID: "uid-1"})
@@ -200,25 +200,25 @@ func TestNamespaceSelectorByName(t *testing.T) {
 // namespace the agent cannot see would widen it silently, which is the failure
 // this field exists to prevent.
 func TestNamespaceSelectorFailsClosedOnAnUnknownNamespace(t *testing.T) {
-	policy := blockingPolicy("p1", policyv1alpha1.LabelSelector{
-		NamespaceSelector: &policyv1alpha1.NamespaceSelector{
+	policy := blockingPolicy("p1", policyv1beta1.WorkloadSelector{
+		NamespaceSelector: &policyv1beta1.NamespaceSelector{
 			MatchLabels: map[string]string{"env": "production"},
 		},
 	})
 	// The namespace cache is empty, as it would be if listing namespaces was
 	// denied by RBAC.
 	r := resolverWith([]*corev1.Pod{pod("nginx", "prod", "uid-1", nil)},
-		[]policyv1alpha1.PahlevanPolicy{policy}, nil)
+		[]policyv1beta1.PahlevanPolicy{policy}, nil)
 
 	_, ok := r.Resolve(1, attribution.ContainerRef{PodUID: "uid-1"})
 	assert.False(t, ok, "an unresolvable namespace must not match a scoped policy")
 }
 
 func TestNamespaceSelectorMatchExpressions(t *testing.T) {
-	policy := blockingPolicy("p1", policyv1alpha1.LabelSelector{
-		NamespaceSelector: &policyv1alpha1.NamespaceSelector{
-			MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{{
-				Key: "env", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"production", "staging"},
+	policy := blockingPolicy("p1", policyv1beta1.WorkloadSelector{
+		NamespaceSelector: &policyv1beta1.NamespaceSelector{
+			MatchExpressions: []policyv1beta1.LabelSelectorRequirement{{
+				Key: "env", Operator: policyv1beta1.LabelSelectorOpIn, Values: []string{"production", "staging"},
 			}},
 		},
 	})
@@ -227,7 +227,7 @@ func TestNamespaceSelectorMatchExpressions(t *testing.T) {
 			pod("a", "prod", "uid-a", nil),
 			pod("b", "dev", "uid-b", nil),
 		},
-		[]policyv1alpha1.PahlevanPolicy{policy},
+		[]policyv1beta1.PahlevanPolicy{policy},
 		map[string]map[string]string{"prod": {"env": "production"}, "dev": {"env": "development"}})
 
 	_, ok := r.Resolve(1, attribution.ContainerRef{PodUID: "uid-a"})
@@ -240,45 +240,45 @@ func TestSelectorMatches(t *testing.T) {
 	r := newPolicyResolver(nil, "node-1")
 	p := pod("nginx-1", "prod", "uid-1", map[string]string{"app": "nginx", "tier": "frontend"})
 
-	assert.True(t, r.selectorMatches(policyv1alpha1.LabelSelector{}, p), "empty selector matches everything")
+	assert.True(t, r.selectorMatches(policyv1beta1.WorkloadSelector{}, p), "empty selector matches everything")
 
-	assert.True(t, r.selectorMatches(policyv1alpha1.LabelSelector{
+	assert.True(t, r.selectorMatches(policyv1beta1.WorkloadSelector{
 		MatchLabels: map[string]string{"app": "nginx"},
 	}, p))
-	assert.False(t, r.selectorMatches(policyv1alpha1.LabelSelector{
+	assert.False(t, r.selectorMatches(policyv1beta1.WorkloadSelector{
 		MatchLabels: map[string]string{"app": "apache"},
 	}, p), "a mismatched matchLabels value excludes the pod")
 
-	assert.True(t, r.selectorMatches(policyv1alpha1.LabelSelector{
-		MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{
-			{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"frontend"}},
+	assert.True(t, r.selectorMatches(policyv1beta1.WorkloadSelector{
+		MatchExpressions: []policyv1beta1.LabelSelectorRequirement{
+			{Key: "tier", Operator: policyv1beta1.LabelSelectorOpIn, Values: []string{"frontend"}},
 		},
 	}, p))
-	assert.False(t, r.selectorMatches(policyv1alpha1.LabelSelector{
-		MatchExpressions: []policyv1alpha1.LabelSelectorRequirement{
-			{Key: "tier", Operator: policyv1alpha1.LabelSelectorOpIn, Values: []string{"backend"}},
+	assert.False(t, r.selectorMatches(policyv1beta1.WorkloadSelector{
+		MatchExpressions: []policyv1beta1.LabelSelectorRequirement{
+			{Key: "tier", Operator: policyv1beta1.LabelSelectorOpIn, Values: []string{"backend"}},
 		},
 	}, p), "a non-matching matchExpressions requirement excludes the pod")
 }
 
 func TestRequirementMatches(t *testing.T) {
 	labels := map[string]string{"tier": "frontend"}
-	req := func(op policyv1alpha1.LabelSelectorOperator, values ...string) policyv1alpha1.LabelSelectorRequirement {
-		return policyv1alpha1.LabelSelectorRequirement{Key: "tier", Operator: op, Values: values}
+	req := func(op policyv1beta1.LabelSelectorOperator, values ...string) policyv1beta1.LabelSelectorRequirement {
+		return policyv1beta1.LabelSelectorRequirement{Key: "tier", Operator: op, Values: values}
 	}
-	assert.True(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpIn, "frontend"), labels))
-	assert.False(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpIn, "backend"), labels))
-	assert.False(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpNotIn, "frontend"), labels))
-	assert.True(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpNotIn, "backend"), labels))
-	assert.True(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpExists), labels))
-	assert.False(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpDoesNotExist), labels))
+	assert.True(t, requirementMatches(req(policyv1beta1.LabelSelectorOpIn, "frontend"), labels))
+	assert.False(t, requirementMatches(req(policyv1beta1.LabelSelectorOpIn, "backend"), labels))
+	assert.False(t, requirementMatches(req(policyv1beta1.LabelSelectorOpNotIn, "frontend"), labels))
+	assert.True(t, requirementMatches(req(policyv1beta1.LabelSelectorOpNotIn, "backend"), labels))
+	assert.True(t, requirementMatches(req(policyv1beta1.LabelSelectorOpExists), labels))
+	assert.False(t, requirementMatches(req(policyv1beta1.LabelSelectorOpDoesNotExist), labels))
 	// An unrecognized operator must not match, rather than matching everything.
 	assert.False(t, requirementMatches(req("Sideways", "frontend"), labels))
 
 	// An absent key.
-	assert.False(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpIn, "x"), nil))
-	assert.True(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpNotIn, "x"), nil))
-	assert.True(t, requirementMatches(req(policyv1alpha1.LabelSelectorOpDoesNotExist), nil))
+	assert.False(t, requirementMatches(req(policyv1beta1.LabelSelectorOpIn, "x"), nil))
+	assert.True(t, requirementMatches(req(policyv1beta1.LabelSelectorOpNotIn, "x"), nil))
+	assert.True(t, requirementMatches(req(policyv1beta1.LabelSelectorOpDoesNotExist), nil))
 }
 
 // Translation warnings are logged once per distinct set, not on every reconcile,
@@ -310,7 +310,7 @@ func BenchmarkResolve(b *testing.B) {
 	r := resolverWith(
 		[]*corev1.Pod{pod("nginx-1", "prod", "uid-1", map[string]string{"app": "nginx"},
 			controllerRef("ReplicaSet", "nginx-6799fc88d8"))},
-		[]policyv1alpha1.PahlevanPolicy{blockingPolicy("p1", policyv1alpha1.LabelSelector{
+		[]policyv1beta1.PahlevanPolicy{blockingPolicy("p1", policyv1beta1.WorkloadSelector{
 			MatchLabels: map[string]string{"app": "nginx"},
 		})}, nil)
 	ref := attribution.ContainerRef{PodUID: "uid-1"}

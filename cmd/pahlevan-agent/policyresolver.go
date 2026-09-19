@@ -13,7 +13,7 @@ import (
 
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	"github.com/obsernetics/pahlevan/internal/policy"
-	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
+	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
 )
 
@@ -29,13 +29,19 @@ type policyResolver struct {
 
 	mu        sync.RWMutex
 	podsByUID map[string]*corev1.Pod
-	policies  []policyv1alpha1.PahlevanPolicy
+	policies  []policyv1beta1.PahlevanPolicy
 	// nsLabels backs namespaceSelector matching.
 	nsLabels map[string]map[string]string
 
 	// warned de-duplicates translation warnings so an unrepresentable rule is
 	// reported once rather than on every reconcile.
 	warned sync.Map
+
+	// declarations remembers what each container's policy declared, keyed by
+	// container id, so a profile can report a declared entry as declared. Kept
+	// outside the mutex because it is written from the resolve path and read
+	// from the profile writer, neither of which holds the other's lock.
+	declarations sync.Map
 }
 
 func newPolicyResolver(c client.Client, nodeName string) *policyResolver {
@@ -63,7 +69,7 @@ func (r *policyResolver) Refresh(ctx context.Context) error {
 		byUID[string(p.UID)] = p
 	}
 
-	var policies policyv1alpha1.PahlevanPolicyList
+	var policies policyv1beta1.PahlevanPolicyList
 	if err := r.c.List(ctx, &policies); err != nil {
 		return err
 	}
@@ -112,11 +118,39 @@ func (r *policyResolver) Resolve(_ uint64, ref attribution.ContainerRef) (adapti
 		if !r.selectorMatches(pol.Spec.Selector, pod) {
 			continue
 		}
-		d, warnings := policy.Translate(pol.Name, pol.Spec, time.Now())
+		// TranslateSpec rather than Translate: it is the one that reads
+		// learningConfig.expectedBehavior and seeds the declared operations
+		// into the allow-set. Without it a declaration is accepted by the API
+		// server, shown in the profile, and never reaches the kernel - which
+		// is worse than not having the field, because the operator believes
+		// their nightly job is covered.
+		d, decl, warnings := policy.TranslateSpec(pol.Name, pol.Spec, time.Now())
 		r.noteWarnings(pol.Name, warnings)
+		r.noteDeclaration(ref, decl)
 		return d, true
 	}
 	return adaptive.Decision{}, false
+}
+
+// noteDeclaration remembers what a policy declared for a container, so the
+// profile writer can report those entries as declared rather than as things
+// the workload was observed doing. An operator reading a profile has to be
+// able to tell the two apart: one is evidence, the other is an assertion.
+func (r *policyResolver) noteDeclaration(ref attribution.ContainerRef, decl policy.Declaration) {
+	if decl.Empty() || ref.ContainerID == "" {
+		return
+	}
+	r.declarations.Store(ref.ContainerID, decl)
+}
+
+// DeclarationFor returns what was declared for a container, if anything.
+func (r *policyResolver) DeclarationFor(containerID string) (policy.Declaration, bool) {
+	v, ok := r.declarations.Load(containerID)
+	if !ok {
+		return policy.Declaration{}, false
+	}
+	d, ok := v.(policy.Declaration)
+	return d, ok
 }
 
 // noteWarnings logs each translation warning once per policy generation. A
@@ -139,7 +173,7 @@ func (r *policyResolver) noteWarnings(name string, warnings []string) {
 
 // selectorMatches evaluates a PahlevanPolicy LabelSelector (matchLabels +
 // matchExpressions + namespace scoping) against a pod. Callers must hold r.mu.
-func (r *policyResolver) selectorMatches(sel policyv1alpha1.LabelSelector, pod *corev1.Pod) bool {
+func (r *policyResolver) selectorMatches(sel policyv1beta1.WorkloadSelector, pod *corev1.Pod) bool {
 	labels := pod.Labels
 	for k, v := range sel.MatchLabels {
 		if labels[k] != v {
@@ -175,7 +209,7 @@ func (r *policyResolver) selectorMatches(sel policyv1alpha1.LabelSelector, pod *
 	return true
 }
 
-func requirementMatches(req policyv1alpha1.LabelSelectorRequirement, labels map[string]string) bool {
+func requirementMatches(req policyv1beta1.LabelSelectorRequirement, labels map[string]string) bool {
 	val, has := labels[req.Key]
 	switch req.Operator {
 	case "In":

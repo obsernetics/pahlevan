@@ -307,20 +307,25 @@ func TestAFailingReaderBacksOffInsteadOfSpinning(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(350 * time.Millisecond)
+	// Wait for the loop to have demonstrably retried rather than sleeping a
+	// fixed window: the second attempt is the earliest moment the "it retried
+	// at all" half of this test can be decided, and a spinning loop passes 50
+	// attempts within microseconds, so the rate bound below still catches it.
+	start := time.Now()
+	require.Eventually(t, func() bool { return reads.Load() >= 2 }, 5*time.Second, time.Millisecond,
+		"the reader never retried at all; a transient fault would stop the agent")
+	elapsed := time.Since(start)
 	close(stop)
 
 	n := reads.Load()
-	// With a 100ms backoff, 350ms allows roughly four attempts. Without any
-	// backoff this same loop reaches millions.
+	// With a 100ms backoff, the handful of milliseconds this now takes allows
+	// two or three attempts. Without any backoff this same loop reaches
+	// millions in the same window.
 	if n > 50 {
-		t.Errorf("a persistently failing reader attempted %d reads in 350ms; "+
-			"it is spinning rather than backing off", n)
+		t.Errorf("a persistently failing reader attempted %d reads in %v; "+
+			"it is spinning rather than backing off", n, elapsed)
 	}
-	if n == 0 {
-		t.Error("the reader never retried at all; a transient fault would stop the agent")
-	}
-	t.Logf("%d attempts in 350ms with a %v backoff", n, readErrorBackoff)
+	t.Logf("%d attempts in %v with a %v backoff", n, elapsed, readErrorBackoff)
 }
 
 // The backoff must not delay shutdown: an agent that takes a backoff interval
@@ -328,6 +333,11 @@ func TestAFailingReaderBacksOffInsteadOfSpinning(t *testing.T) {
 func TestBackoffDoesNotDelayShutdown(t *testing.T) {
 	stop := make(chan struct{})
 	done := make(chan struct{})
+	// waiting reports that the loop has reached its backoff. Signalling it is
+	// deterministic where the 20ms sleep this replaces was a guess: if stop is
+	// closed before the loop ever reaches the wait, the test proves nothing
+	// about that wait selecting on stop.
+	waiting := make(chan struct{}, 1)
 
 	go func() {
 		defer close(done)
@@ -335,6 +345,10 @@ func TestBackoffDoesNotDelayShutdown(t *testing.T) {
 			select {
 			case <-stop:
 				return
+			default:
+			}
+			select {
+			case waiting <- struct{}{}:
 			default:
 			}
 			// Always fails, so the loop is always inside the backoff wait.
@@ -346,7 +360,7 @@ func TestBackoffDoesNotDelayShutdown(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(20 * time.Millisecond) // land inside a backoff
+	<-waiting
 	start := time.Now()
 	close(stop)
 	select {

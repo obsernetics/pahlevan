@@ -45,6 +45,9 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    deprecated: true
+    deprecationWarning: policy.pahlevan.io/v1alpha1 PahlevanPolicy is deprecated;
+      use policy.pahlevan.io/v1beta1
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -1065,6 +1068,1164 @@ spec:
             type: object
         type: object
     served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.learningStatus.progress
+      name: Learning
+      type: string
+    - jsonPath: .status.enforcementStatus.blockedTotal
+      name: Blocked
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: PahlevanPolicy is the Schema for the pahlevanpolicies API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PahlevanPolicySpec defines the desired state of PahlevanPolicy
+            properties:
+              enforcementConfig:
+                description: EnforcementConfig controls enforcement behavior
+                properties:
+                  alertOnly:
+                    description: |-
+                      AlertOnly enables alert-only mode for testing. It downgrades Blocking to
+                      Monitoring and is kept as its own field because it is a temporary
+                      override an operator flips during an incident and flips back, without
+                      losing the mode the policy is meant to run in.
+                    type: boolean
+                  blockUnknown:
+                    description: |-
+                      BlockUnknown blocks behavior outside the learned baseline. Nil means
+                      "the default for the mode", which is true under Blocking: default-deny of
+                      unlearned behavior is the only enforcement the data plane performs, so a
+                      Blocking policy that did not block it would enforce nothing. Explicitly
+                      false downgrades the policy to Monitoring. A bare bool could not express
+                      the difference between unset and false.
+                    type: boolean
+                  exceptions:
+                    description: Exceptions defines enforcement exceptions
+                    items:
+                      description: |-
+                        EnforcementException defines enforcement exceptions.
+
+                        v1alpha1 had both `temporary: true` and `expiresAt`, and enforcement applied
+                        an expiry only when both were set. So `expiresAt` on its own was accepted,
+                        displayed, and never acted on: an operator who wrote a deadline got a
+                        permanent hole in the policy and no warning, which is the worst possible
+                        outcome for a field whose entire purpose is to close itself. The expiry is
+                        now the only statement of the fact, and an exception is temporary exactly
+                        when it has one.
+                      properties:
+                        expiresAt:
+                          description: |-
+                            ExpiresAt is when this exception stops being applied. Unset means the
+                            exception is permanent.
+                          format: date-time
+                          type: string
+                        patterns:
+                          description: Patterns specifies patterns to match
+                          items:
+                            type: string
+                          type: array
+                        reason:
+                          description: Reason provides human-readable reason
+                          type: string
+                        type:
+                          description: Type specifies exception type
+                          enum:
+                          - Syscall
+                          - Network
+                          - File
+                          type: string
+                      required:
+                      - patterns
+                      - type
+                      type: object
+                    type: array
+                  gracePeriod:
+                    description: GracePeriod specifies grace period before strict
+                      enforcement
+                    type: string
+                  mode:
+                    description: |-
+                      Mode specifies the enforcement mode.
+
+                      The enum is load-bearing rather than decorative. Without it the API
+                      server accepts any string and the controller maps whatever it does not
+                      recognize onto Monitoring, so a typo produces a policy that looks applied
+                      and enforces nothing. The trap that found this: `mode: Off` unquoted is a
+                      YAML 1.1 boolean, so it arrives as `false` and silently became Monitoring
+                      - the opposite of switching a policy off. Quote it, or the API server now
+                      says so.
+                    enum:
+                    - "Off"
+                    - Monitoring
+                    - Blocking
+                    type: string
+                type: object
+              filePolicy:
+                description: FilePolicy defines file access policies
+                properties:
+                  allowedPaths:
+                    description: |-
+                      AllowedPaths explicitly allows specific paths.
+
+                      Paths must be fully resolved and exact. Enforcement keys on the path the
+                      kernel resolves, which follows symlinks, so "/etc/os-release" grants
+                      nothing where it links to /usr/lib/os-release. Wildcards are not
+                      supported and are matched literally.
+                    items:
+                      type: string
+                    type: array
+                  defaultAction:
+                    description: DefaultAction specifies default action for unknown
+                      paths
+                    enum:
+                    - Allow
+                    - Deny
+                    - Alert
+                    - Audit
+                    type: string
+                  deniedPaths:
+                    description: |-
+                      DeniedPaths explicitly denies specific paths, removing them from the
+                      learned baseline. The same resolution rules as AllowedPaths apply.
+                    items:
+                      type: string
+                    type: array
+                  executableFilter:
+                    description: ExecutableFilter controls executable access
+                    properties:
+                      allowedExecutables:
+                        description: AllowedExecutables specifies allowed executables
+                        items:
+                          type: string
+                        type: array
+                      deniedExecutables:
+                        description: DeniedExecutables specifies denied executables
+                        items:
+                          type: string
+                        type: array
+                      requireSignature:
+                        description: RequireSignature requires signed executables
+                        type: boolean
+                    type: object
+                  readOnlyPaths:
+                    description: ReadOnlyPaths specifies read-only paths
+                    items:
+                      type: string
+                    type: array
+                  writeAllowedPaths:
+                    description: WriteAllowedPaths specifies write-allowed paths
+                    items:
+                      type: string
+                    type: array
+                type: object
+              learningConfig:
+                description: LearningConfig controls the learning phase behavior
+                properties:
+                  autoTransition:
+                    description: AutoTransition enables automatic transition to enforcement
+                    type: boolean
+                  duration:
+                    description: Duration specifies how long to run in learning mode
+                    type: string
+                  expectedBehavior:
+                    description: |-
+                      ExpectedBehavior declares operations the operator knows the workload
+                      performs but which may not happen during the learning window.
+
+                      Learning is a window of wall-clock time, so anything the workload does
+                      once a day is simply absent from the baseline: a nightly batch, a weekly
+                      certificate renewal, a log rotation, a backup that opens a path nothing
+                      else opens. Under Blocking the kernel then refuses it, and from the
+                      kernel's side that refusal is correct - the only evidence against the
+                      operation is that the workload has never done it before, which is exactly
+                      what an attacker produces too. Without this field the operator's only
+                      options are to guess a longer duration, or to let self-healing roll
+                      enforcement back after the job has already been denied at 03:00.
+
+                      Declarations are additive. Every entry is merged into the allow-set
+                      alongside what was learned, none can remove a learned entry, and an entry
+                      that cannot be represented exactly is refused with a warning naming the
+                      field rather than widened into something broader.
+                    minProperties: 1
+                    properties:
+                      capabilities:
+                        description: |-
+                          Capabilities are Linux capabilities the workload exercises rarely, as
+                          names with or without the CAP_ prefix - the spelling
+                          syscallPolicy.capabilityFilter accepts and the one
+                          containerProfile.status.learnedCapabilities reports. A name outside the
+                          kernel's table is refused at translation, because the API server has no
+                          list to check it against and a typo would otherwise be a declaration that
+                          covers nothing.
+                        items:
+                          minLength: 1
+                          type: string
+                        type: array
+                      executables:
+                        description: |-
+                          Executables are binary paths the workload executes rarely - a backup
+                          tool, a migration runner, a cert-renewal hook. Absolute and fully
+                          resolved, the same rule filePolicy.executableFilter.allowedExecutables
+                          carries, because the kernel matches the path bprm_check_security resolves.
+                        items:
+                          minLength: 1
+                          pattern: ^/
+                          type: string
+                        type: array
+                      files:
+                        description: |-
+                          Files are paths the workload opens on a code path the learning window may
+                          not reach.
+                        items:
+                          description: |-
+                            ExpectedFile declares one path the workload uses.
+
+                            filePolicy draws the read/write line with two lists, readOnlyPaths and
+                            writeAllowedPaths. A declaration is a list of operations rather than a list
+                            of paths, so the line is drawn per entry instead - but it is the same line,
+                            and it means the same thing: reads and writes are separate entries in the
+                            kernel allow-set, so declaring a read does not permit a write.
+                          properties:
+                            path:
+                              description: |-
+                                Path is the fully resolved absolute path. Enforcement keys on the path
+                                the kernel resolves, which follows symlinks, so declaring
+                                "/etc/os-release" grants nothing where it links to /usr/lib/os-release.
+                                Wildcards have no representation in the allow-set and are refused at
+                                translation rather than matched literally and silently never firing.
+                              minLength: 1
+                              pattern: ^/
+                              type: string
+                            write:
+                              description: |-
+                                Write declares the workload writes the path as well as reading it, which
+                                is what filePolicy.writeAllowedPaths grants. Omitted means read only,
+                                matching filePolicy.readOnlyPaths.
+                              type: boolean
+                          required:
+                          - path
+                          type: object
+                        type: array
+                      networkDestinations:
+                        description: NetworkDestinations are egress endpoints the
+                          workload dials rarely.
+                        items:
+                          description: |-
+                            ExpectedDestination declares one egress endpoint the workload dials.
+
+                            It is flatter than a networkPolicy egress rule - one address, one port, one
+                            protocol - because a rule's peer selectors and port ranges exist to describe
+                            a class of traffic, and a declaration is the opposite: it names the one
+                            operation an operator is willing to vouch for. The field names and the
+                            single-host rule are the egress rule's, so the same CIDR that works in
+                            egressRules works here.
+                          properties:
+                            cidr:
+                              description: |-
+                                CIDR is the destination as a single-host prefix (10.43.12.7/32, or a /128
+                                for IPv6) or a bare address. The allow-set is a hash of the exact
+                                destination and cannot express a prefix, so anything wider is refused at
+                                translation - seeding only the network address would grant one host that
+                                was never declared and none of the others.
+                              minLength: 1
+                              type: string
+                            port:
+                              description: Port is the destination port.
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                            protocol:
+                              description: |-
+                                Protocol is the transport. Empty means TCP.
+
+                                UDP is accepted by the API server and refused at translation: the
+                                allow-set key folds the protocol in, but the decision a policy translates
+                                into carries only (address, port), so a declared UDP destination would be
+                                written into the kernel as a TCP entry - granting a protocol nobody
+                                declared and not granting the one that was. The field exists rather than
+                                being omitted so that limit is visible where the declaration is written,
+                                instead of being a silent assumption about what "port 53" meant.
+
+                                The enum lives on TransportProtocol rather than here: repeating it on the
+                                field as well makes controller-gen emit the same enum twice inside an
+                                allOf, which validates identically and reads as a generator bug.
+                              enum:
+                              - TCP
+                              - UDP
+                              type: string
+                          required:
+                          - cidr
+                          - port
+                          type: object
+                        type: array
+                    type: object
+                  lifecycleAware:
+                    description: LifecycleAware enables lifecycle-based learning transitions
+                    type: boolean
+                  minSamples:
+                    description: |-
+                      MinSamples specifies minimum number of samples before transitioning.
+
+                      Bounded below by 1: zero means "transition with no evidence at all",
+                      which is a policy that enforces an empty baseline and kills the workload
+                      on its first syscall. Negative was accepted and compared against a count
+                      that can never be less than it, so it silently meant the same thing.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  windowSize:
+                    description: WindowSize specifies the minimum learning window
+                      size
+                    type: string
+                type: object
+              networkPolicy:
+                description: NetworkPolicy defines network-specific policies
+                properties:
+                  allowDNS:
+                    description: AllowDNS allows DNS traffic
+                    type: boolean
+                  allowLoopback:
+                    description: AllowLoopback allows loopback traffic
+                    type: boolean
+                  defaultAction:
+                    description: DefaultAction specifies default action for unknown
+                      connections
+                    enum:
+                    - Allow
+                    - Deny
+                    - Alert
+                    - Audit
+                    type: string
+                  egressRules:
+                    description: EgressRules defines allowed egress traffic
+                    items:
+                      description: NetworkRule defines a network access rule
+                      properties:
+                        action:
+                          description: Action specifies the action to take
+                          enum:
+                          - Allow
+                          - Deny
+                          - Alert
+                          - Audit
+                          type: string
+                        peers:
+                          description: Peers specifies allowed peers
+                          items:
+                            description: NetworkPeer defines network peer specifications
+                            properties:
+                              ipBlock:
+                                description: IPBlock specifies IP CIDR blocks
+                                properties:
+                                  cidr:
+                                    description: CIDR specifies the IP range
+                                    type: string
+                                  except:
+                                    description: Except specifies exceptions within
+                                      the CIDR
+                                    items:
+                                      type: string
+                                    type: array
+                                required:
+                                - cidr
+                                type: object
+                              namespaceSelector:
+                                description: NamespaceSelector selects namespaces
+                                  by their labels.
+                                properties:
+                                  matchExpressions:
+                                    description: MatchExpressions is a list of label
+                                      selector requirements
+                                    items:
+                                      description: LabelSelectorRequirement contains
+                                        a key, operator, and values for label selection
+                                      properties:
+                                        key:
+                                          type: string
+                                        operator:
+                                          description: LabelSelectorOperator represents
+                                            a label selector operator
+                                          enum:
+                                          - In
+                                          - NotIn
+                                          - Exists
+                                          - DoesNotExist
+                                          type: string
+                                        values:
+                                          items:
+                                            type: string
+                                          type: array
+                                      required:
+                                      - key
+                                      - operator
+                                      type: object
+                                    type: array
+                                  matchLabels:
+                                    additionalProperties:
+                                      type: string
+                                    description: MatchLabels is a map of {key,value}
+                                      pairs
+                                    type: object
+                                type: object
+                              podSelector:
+                                description: PodSelector selects pods by their labels.
+                                properties:
+                                  matchExpressions:
+                                    description: MatchExpressions is a list of label
+                                      selector requirements
+                                    items:
+                                      description: LabelSelectorRequirement contains
+                                        a key, operator, and values for label selection
+                                      properties:
+                                        key:
+                                          type: string
+                                        operator:
+                                          description: LabelSelectorOperator represents
+                                            a label selector operator
+                                          enum:
+                                          - In
+                                          - NotIn
+                                          - Exists
+                                          - DoesNotExist
+                                          type: string
+                                        values:
+                                          items:
+                                            type: string
+                                          type: array
+                                      required:
+                                      - key
+                                      - operator
+                                      type: object
+                                    type: array
+                                  matchLabels:
+                                    additionalProperties:
+                                      type: string
+                                    description: MatchLabels is a map of {key,value}
+                                      pairs
+                                    type: object
+                                type: object
+                            type: object
+                          type: array
+                        ports:
+                          description: Ports specifies allowed ports
+                          items:
+                            description: |-
+                              NetworkPort defines port specifications.
+
+                              The bounds are not decoration. A port is a uint16 on the wire and this field
+                              is an int32, so v1alpha1 accepted 0, -1 and 70000 and the translation
+                              truncated them into whatever the low sixteen bits happened to be. Port 70000
+                              became port 4464, and the rule looked applied.
+                            properties:
+                              endPort:
+                                description: EndPort specifies end of port range
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              port:
+                                description: Port specifies the port number
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              protocol:
+                                description: Protocol specifies the protocol
+                                type: string
+                              startPort:
+                                description: StartPort specifies start of port range
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            type: object
+                          type: array
+                        protocols:
+                          description: Protocols specifies allowed protocols
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    type: array
+                  ingressRules:
+                    description: IngressRules defines allowed ingress traffic
+                    items:
+                      description: NetworkRule defines a network access rule
+                      properties:
+                        action:
+                          description: Action specifies the action to take
+                          enum:
+                          - Allow
+                          - Deny
+                          - Alert
+                          - Audit
+                          type: string
+                        peers:
+                          description: Peers specifies allowed peers
+                          items:
+                            description: NetworkPeer defines network peer specifications
+                            properties:
+                              ipBlock:
+                                description: IPBlock specifies IP CIDR blocks
+                                properties:
+                                  cidr:
+                                    description: CIDR specifies the IP range
+                                    type: string
+                                  except:
+                                    description: Except specifies exceptions within
+                                      the CIDR
+                                    items:
+                                      type: string
+                                    type: array
+                                required:
+                                - cidr
+                                type: object
+                              namespaceSelector:
+                                description: NamespaceSelector selects namespaces
+                                  by their labels.
+                                properties:
+                                  matchExpressions:
+                                    description: MatchExpressions is a list of label
+                                      selector requirements
+                                    items:
+                                      description: LabelSelectorRequirement contains
+                                        a key, operator, and values for label selection
+                                      properties:
+                                        key:
+                                          type: string
+                                        operator:
+                                          description: LabelSelectorOperator represents
+                                            a label selector operator
+                                          enum:
+                                          - In
+                                          - NotIn
+                                          - Exists
+                                          - DoesNotExist
+                                          type: string
+                                        values:
+                                          items:
+                                            type: string
+                                          type: array
+                                      required:
+                                      - key
+                                      - operator
+                                      type: object
+                                    type: array
+                                  matchLabels:
+                                    additionalProperties:
+                                      type: string
+                                    description: MatchLabels is a map of {key,value}
+                                      pairs
+                                    type: object
+                                type: object
+                              podSelector:
+                                description: PodSelector selects pods by their labels.
+                                properties:
+                                  matchExpressions:
+                                    description: MatchExpressions is a list of label
+                                      selector requirements
+                                    items:
+                                      description: LabelSelectorRequirement contains
+                                        a key, operator, and values for label selection
+                                      properties:
+                                        key:
+                                          type: string
+                                        operator:
+                                          description: LabelSelectorOperator represents
+                                            a label selector operator
+                                          enum:
+                                          - In
+                                          - NotIn
+                                          - Exists
+                                          - DoesNotExist
+                                          type: string
+                                        values:
+                                          items:
+                                            type: string
+                                          type: array
+                                      required:
+                                      - key
+                                      - operator
+                                      type: object
+                                    type: array
+                                  matchLabels:
+                                    additionalProperties:
+                                      type: string
+                                    description: MatchLabels is a map of {key,value}
+                                      pairs
+                                    type: object
+                                type: object
+                            type: object
+                          type: array
+                        ports:
+                          description: Ports specifies allowed ports
+                          items:
+                            description: |-
+                              NetworkPort defines port specifications.
+
+                              The bounds are not decoration. A port is a uint16 on the wire and this field
+                              is an int32, so v1alpha1 accepted 0, -1 and 70000 and the translation
+                              truncated them into whatever the low sixteen bits happened to be. Port 70000
+                              became port 4464, and the rule looked applied.
+                            properties:
+                              endPort:
+                                description: EndPort specifies end of port range
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              port:
+                                description: Port specifies the port number
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              protocol:
+                                description: Protocol specifies the protocol
+                                type: string
+                              startPort:
+                                description: StartPort specifies start of port range
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                            type: object
+                          type: array
+                        protocols:
+                          description: Protocols specifies allowed protocols
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    type: array
+                type: object
+              observabilityConfig:
+                description: ObservabilityConfig controls observability exports
+                properties:
+                  logging:
+                    description: Logging controls structured logging
+                    properties:
+                      format:
+                        description: Format specifies log format
+                        type: string
+                      level:
+                        description: Level specifies log level
+                        type: string
+                      outputs:
+                        description: Outputs specifies log outputs
+                        items:
+                          description: LogOutput defines log output configuration
+                          properties:
+                            config:
+                              description: Config specifies output-specific configuration
+                              type: object
+                              x-kubernetes-preserve-unknown-fields: true
+                            type:
+                              description: Type specifies output type
+                              type: string
+                          required:
+                          - type
+                          type: object
+                        type: array
+                    type: object
+                  metrics:
+                    description: Metrics controls metrics export
+                    properties:
+                      enabled:
+                        description: Enabled enables metrics export
+                        type: boolean
+                      exporters:
+                        description: Exporters specifies metrics exporters
+                        items:
+                          description: MetricsExporter defines metrics export configuration
+                          properties:
+                            config:
+                              description: Config specifies exporter-specific configuration
+                              type: object
+                              x-kubernetes-preserve-unknown-fields: true
+                            endpoint:
+                              description: Endpoint specifies exporter endpoint
+                              type: string
+                            type:
+                              description: Type specifies exporter type
+                              type: string
+                          required:
+                          - type
+                          type: object
+                        type: array
+                      interval:
+                        description: Interval specifies metrics collection interval
+                        type: string
+                    type: object
+                  tracing:
+                    description: Tracing controls distributed tracing
+                    properties:
+                      enabled:
+                        description: Enabled enables tracing
+                        type: boolean
+                      exporter:
+                        description: Exporter specifies trace exporter
+                        properties:
+                          config:
+                            description: Config specifies exporter-specific configuration
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                          endpoint:
+                            description: Endpoint specifies exporter endpoint
+                            type: string
+                          type:
+                            description: Type specifies exporter type
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      samplingRate:
+                        description: |-
+                          SamplingRate specifies trace sampling rate as a string to avoid CRD generation issues
+                          Format: "0.1" for 10% sampling, "1.0" for 100% sampling
+                        type: string
+                    type: object
+                  visualization:
+                    description: Visualization controls attack surface visualization
+                    properties:
+                      enabled:
+                        description: Enabled enables visualization
+                        type: boolean
+                      exporters:
+                        description: Exporters specifies visualization exporters
+                        items:
+                          description: VisualizationExporter defines visualization
+                            export configuration
+                          properties:
+                            config:
+                              description: Config specifies exporter-specific configuration
+                              type: object
+                              x-kubernetes-preserve-unknown-fields: true
+                            endpoint:
+                              description: Endpoint specifies exporter endpoint
+                              type: string
+                            type:
+                              description: Type specifies exporter type
+                              type: string
+                          required:
+                          - type
+                          type: object
+                        type: array
+                      updateInterval:
+                        description: UpdateInterval specifies visualization update
+                          interval
+                        type: string
+                    type: object
+                type: object
+              selector:
+                description: Selector specifies the target workloads for this policy
+                properties:
+                  matchExpressions:
+                    description: MatchExpressions is a list of label selector requirements
+                    items:
+                      description: LabelSelectorRequirement contains a key, operator,
+                        and values for label selection
+                      properties:
+                        key:
+                          type: string
+                        operator:
+                          description: LabelSelectorOperator represents a label selector
+                            operator
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        values:
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - key
+                      - operator
+                      type: object
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: MatchLabels is a map of {key,value} pairs
+                    type: object
+                  namespaceSelector:
+                    description: |-
+                      NamespaceSelector specifies target namespaces, matched against the
+                      namespace's own labels.
+                    properties:
+                      matchExpressions:
+                        description: MatchExpressions is a list of namespace label
+                          selector requirements.
+                        items:
+                          description: LabelSelectorRequirement contains a key, operator,
+                            and values for label selection
+                          properties:
+                            key:
+                              type: string
+                            operator:
+                              description: LabelSelectorOperator represents a label
+                                selector operator
+                              enum:
+                              - In
+                              - NotIn
+                              - Exists
+                              - DoesNotExist
+                              type: string
+                            values:
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          MatchLabels is a map of {key,value} pairs matched against namespace labels.
+                          Kubernetes stamps every namespace with kubernetes.io/metadata.name, so
+                          selecting a namespace by name works through this field.
+                        type: object
+                    type: object
+                type: object
+              selfHealing:
+                description: SelfHealing enables automatic policy rollback on failures
+                properties:
+                  enabled:
+                    description: Enabled enables self-healing
+                    type: boolean
+                  recoveryStrategy:
+                    description: RecoveryStrategy specifies recovery strategy
+                    enum:
+                    - Rollback
+                    - Relax
+                    - Maintenance
+                    type: string
+                  rollbackThreshold:
+                    description: RollbackThreshold specifies failure threshold for
+                      rollback
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  rollbackWindow:
+                    description: RollbackWindow specifies time window for failure
+                      counting
+                    type: string
+                type: object
+              syscallPolicy:
+                description: SyscallPolicy defines syscall-specific policies
+                properties:
+                  allowedSyscalls:
+                    description: AllowedSyscalls explicitly allows specific syscalls
+                    items:
+                      type: string
+                    type: array
+                  capabilityFilter:
+                    description: CapabilityFilter filters based on Linux capabilities
+                    items:
+                      type: string
+                    type: array
+                  defaultAction:
+                    description: DefaultAction specifies default action for unknown
+                      syscalls
+                    enum:
+                    - Allow
+                    - Deny
+                    - Alert
+                    - Audit
+                    type: string
+                  deniedSyscalls:
+                    description: DeniedSyscalls explicitly denies specific syscalls
+                    items:
+                      type: string
+                    type: array
+                  processFilter:
+                    description: ProcessFilter filters based on process attributes
+                    properties:
+                      commands:
+                        description: Commands specifies allowed command patterns
+                        items:
+                          type: string
+                        type: array
+                      groups:
+                        description: Groups specifies allowed groups
+                        items:
+                          type: string
+                        type: array
+                      parentProcesses:
+                        description: ParentProcesses specifies allowed parent processes
+                        items:
+                          type: string
+                        type: array
+                      users:
+                        description: Users specifies allowed users
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+            required:
+            - selector
+            type: object
+          status:
+            description: PahlevanPolicyStatus defines the observed state of PahlevanPolicy
+            properties:
+              attackSurface:
+                description: AttackSurface provides current attack surface analysis
+                properties:
+                  capabilities:
+                    description: Capabilities lists effective capabilities
+                    items:
+                      type: string
+                    type: array
+                  exposedPorts:
+                    description: ExposedPorts lists exposed network ports
+                    items:
+                      format: int32
+                      type: integer
+                    type: array
+                  exposedSyscalls:
+                    description: ExposedSyscalls lists exposed syscalls
+                    items:
+                      type: string
+                    type: array
+                  lastAnalysis:
+                    description: LastAnalysis indicates when analysis was last performed
+                    format: date-time
+                    type: string
+                  riskScore:
+                    description: |-
+                      RiskScore provides overall risk score, 0 to 100.
+
+                      Bounded for the same reason as Progress: it is the Risk printer column,
+                      and the analyzer's arithmetic has no upper clamp of its own.
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
+                  writableFiles:
+                    description: WritableFiles lists writable file paths
+                    items:
+                      type: string
+                    type: array
+                type: object
+              conditions:
+                description: |-
+                  Conditions represents the latest available observations.
+
+                  Declared a map list keyed by type, which is what the controller has
+                  always meant: updateCondition searches for the entry with a matching
+                  type and replaces it. The schema did not say so, so server-side apply
+                  merged the array by position instead, and two writers updating different
+                  conditions overwrote each other's entries rather than merging them.
+                items:
+                  description: PolicyCondition describes a condition of policy execution
+                  properties:
+                    lastTransitionTime:
+                      description: LastTransitionTime is the last time the condition
+                        transitioned
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message contains a human readable message indicating
+                        details
+                      type: string
+                    reason:
+                      description: Reason contains a programmatic identifier indicating
+                        the reason
+                      type: string
+                    status:
+                      description: Status of the condition
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: Type of the condition
+                      enum:
+                      - Ready
+                      - Learning
+                      - Enforcing
+                      - Healthy
+                      - Error
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              enforcementStatus:
+                description: EnforcementStatus provides enforcement status
+                properties:
+                  alertsGenerated:
+                    description: AlertsGenerated indicates alerts generated count
+                    format: int64
+                    type: integer
+                  blockedCapabilities:
+                    description: BlockedCapabilities indicates capability checks denied
+                      in-kernel.
+                    format: int64
+                    type: integer
+                  blockedExecs:
+                    description: BlockedExecs indicates execve calls denied in-kernel.
+                    format: int64
+                    type: integer
+                  blockedFileAccess:
+                    description: BlockedFileAccess indicates file opens denied in-kernel.
+                    format: int64
+                    type: integer
+                  blockedNetworkConnections:
+                    description: BlockedNetworkConnections indicates connect() calls
+                      denied in-kernel.
+                    format: int64
+                    type: integer
+                  blockedTotal:
+                    description: |-
+                      BlockedTotal is the sum of every in-kernel denial across the containers
+                      this policy governs. It exists so the printed column reports the whole
+                      picture rather than one signal.
+                    format: int64
+                    type: integer
+                  enforcingContainers:
+                    description: |-
+                      EnforcingContainers and TotalContainers describe how many of the
+                      containers this policy selects have actually reached enforcement.
+                    format: int32
+                    type: integer
+                  rollbackCount:
+                    description: RollbackCount indicates number of rollbacks performed
+                    format: int32
+                    type: integer
+                  startTime:
+                    description: StartTime indicates when enforcement started
+                    format: date-time
+                    type: string
+                  totalContainers:
+                    format: int32
+                    type: integer
+                type: object
+              lastUpdated:
+                description: LastUpdated indicates when status was last updated
+                format: date-time
+                type: string
+              learningStatus:
+                description: LearningStatus provides learning phase status
+                properties:
+                  endTime:
+                    description: EndTime indicates when learning ended
+                    format: date-time
+                    type: string
+                  filePathsLearned:
+                    description: FilePathsLearned indicates file paths learned
+                    format: int32
+                    type: integer
+                  networkFlowsLearned:
+                    description: NetworkFlowsLearned indicates network flows learned
+                    format: int32
+                    type: integer
+                  progress:
+                    description: |-
+                      Progress indicates learning progress percentage.
+
+                      Bounded, because it is printed verbatim in the Learning column of
+                      `kubectl get pahlevanpolicy`. An unbounded int32 there reads as "413"
+                      next to a header that says a percentage, and nothing rejects it.
+                    format: int32
+                    maximum: 100
+                    minimum: 0
+                    type: integer
+                  samplesCollected:
+                    description: SamplesCollected indicates samples collected
+                    format: int64
+                    type: integer
+                  startTime:
+                    description: StartTime indicates when learning started
+                    format: date-time
+                    type: string
+                  syscallsLearned:
+                    description: SyscallsLearned indicates unique syscalls learned
+                    format: int32
+                    type: integer
+                type: object
+              phase:
+                description: Phase indicates the current phase of the policy
+                enum:
+                - Initializing
+                - Learning
+                - Transition
+                - Enforcing
+                - Failed
+                - RollingBack
+                type: string
+              targetWorkloads:
+                description: TargetWorkloads lists target workloads
+                items:
+                  description: WorkloadReference references a target workload
+                  properties:
+                    apiVersion:
+                      description: APIVersion of the workload
+                      type: string
+                    kind:
+                      description: Kind of the workload
+                      type: string
+                    name:
+                      description: Name of the workload
+                      type: string
+                    namespace:
+                      description: Namespace of the workload
+                      type: string
+                    uid:
+                      description: UID of the workload
+                      type: string
+                  required:
+                  - apiVersion
+                  - kind
+                  - name
+                  - namespace
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
     storage: true
     subresources:
       status: {}
@@ -1107,6 +2268,9 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    deprecated: true
+    deprecationWarning: policy.pahlevan.io/v1alpha1 ContainerProfile is deprecated;
+      use policy.pahlevan.io/v1beta1
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -1337,6 +2501,292 @@ spec:
             type: object
         type: object
     served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.syscallCount
+      name: Syscalls
+      type: integer
+    - jsonPath: .status.fileCount
+      name: Files
+      type: integer
+    - jsonPath: .status.rollbackCount
+      name: Rollbacks
+      type: integer
+    - jsonPath: .spec.node
+      name: Node
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: ContainerProfile is the learned behavioral baseline for a single
+          container.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ContainerProfileSpec identifies the container a learned profile
+              belongs to.
+            properties:
+              cgroupID:
+                description: |-
+                  CgroupID is the cgroup v2 id the eBPF data plane keys enforcement on.
+                  Signed because Kubernetes API types may not use unsigned integers; the
+                  serialized schema is int64 either way, and cgroup ids never approach the
+                  sign bit. Using uint64 here also broke server-side apply, whose
+                  structured-merge-diff reflection has no uint64 kind.
+                format: int64
+                type: integer
+              containerID:
+                description: ContainerID is the container runtime ID (if resolved).
+                type: string
+              namespace:
+                type: string
+              node:
+                description: Node is the node whose agent owns this profile.
+                type: string
+              podName:
+                description: PodName / Namespace of the container's pod.
+                type: string
+              policyRef:
+                description: PolicyRef is the name of the PahlevanPolicy that governs
+                  this container.
+                type: string
+              workload:
+                description: Workload identifies the owning Kubernetes workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion of the workload
+                    type: string
+                  kind:
+                    description: Kind of the workload
+                    type: string
+                  name:
+                    description: Name of the workload
+                    type: string
+                  namespace:
+                    description: Namespace of the workload
+                    type: string
+                  uid:
+                    description: UID of the workload
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - namespace
+                type: object
+            type: object
+          status:
+            description: |-
+              ContainerProfileStatus is the learned behavioral baseline reported by the
+              node agent. It is what the kernel enforces once the container is enforcing -
+              a first-class, inspectable, git-backupable record.
+            properties:
+              declaredCapabilities:
+                description: |-
+                  DeclaredCapabilities are the capabilities permitted by declaration rather
+                  than by observation, spelled without the CAP_ prefix like
+                  LearnedCapabilities.
+                items:
+                  type: string
+                type: array
+              declaredExecutables:
+                description: |-
+                  DeclaredExecutables are the binary paths permitted by declaration rather
+                  than by observation.
+                items:
+                  type: string
+                type: array
+              declaredFiles:
+                description: |-
+                  DeclaredFiles are the paths permitted because the policy declared them
+                  rather than because this container was observed opening them. A declared
+                  write is suffixed " (write)": declaring a write is a materially larger
+                  assertion than declaring a read, and the two must not read alike here.
+                items:
+                  type: string
+                type: array
+              declaredNetworkDestinations:
+                description: |-
+                  DeclaredNetworkDestinations are the ip:port destinations permitted by
+                  declaration rather than by observation.
+                items:
+                  type: string
+                type: array
+              denialCount:
+                description: |-
+                  DenialCount is the number of in-kernel denials observed since the current
+                  enforce transition. It resets on every transition and on rollback.
+                format: int32
+                type: integer
+              deniedCapabilities:
+                format: int32
+                type: integer
+              deniedExecs:
+                format: int32
+                type: integer
+              deniedFiles:
+                description: |-
+                  Per-signal breakdown of DenialCount. Split out because "twelve denials"
+                  and "twelve denied egress attempts" are very different findings, and the
+                  operator aggregates these into the governing policy's status.
+                format: int32
+                type: integer
+              deniedNetwork:
+                format: int32
+                type: integer
+              enforcementAttempts:
+                description: |-
+                  EnforcementAttempts is how many times this container has been transitioned
+                  to enforcing. More than one means an earlier attempt was rolled back.
+                format: int32
+                type: integer
+              enforcingSince:
+                format: date-time
+                type: string
+              fileCount:
+                format: int32
+                type: integer
+              firstSeen:
+                description: FirstSeen / EnforcingSince timestamps.
+                format: date-time
+                type: string
+              lastRollbackReason:
+                description: |-
+                  LastRollbackReason explains the most recent rollback (denial rate or the
+                  specific pod distress that was observed).
+                type: string
+              lastRollbackTime:
+                description: LastRollbackTime is when the most recent rollback happened.
+                format: date-time
+                type: string
+              lastUpdated:
+                description: LastUpdated is when the agent last refreshed this profile.
+                format: date-time
+                type: string
+              learnedCapabilities:
+                description: |-
+                  LearnedCapabilities is the set of Linux capabilities the container was
+                  observed using, as names without the CAP_ prefix so they match the
+                  spelling a pod spec uses in securityContext.capabilities.
+
+                  Reported because it was otherwise the only learned signal invisible from
+                  outside the agent, and because it is what lets admission reject a new
+                  revision asking for privilege the workload has never needed.
+                items:
+                  type: string
+                type: array
+              learnedExecutables:
+                description: LearnedExecutables is the set of binary paths the container
+                  executed.
+                items:
+                  type: string
+                type: array
+              learnedFiles:
+                description: LearnedFiles is the set of file paths the container opened
+                  during learning.
+                items:
+                  type: string
+                type: array
+              learnedNetworkDestinations:
+                description: LearnedNetworkDestinations is the set of egress destinations
+                  (ip:port).
+                items:
+                  type: string
+                type: array
+              learnedSyscalls:
+                description: LearnedSyscalls is the set of syscall numbers observed
+                  during learning.
+                items:
+                  format: int64
+                  type: integer
+                type: array
+              networkCount:
+                format: int32
+                type: integer
+              phase:
+                description: Phase is Learning or Enforcing.
+                enum:
+                - Learning
+                - Enforcing
+                type: string
+              rollbackCount:
+                description: |-
+                  RollbackCount is how many times self-healing returned this container from
+                  enforcing to learning because the learned baseline was breaking it.
+                format: int32
+                type: integer
+              seccomp:
+                description: |-
+                  Seccomp describes the profile generated from LearnedSyscalls, if the
+                  agent was configured to emit one.
+                properties:
+                  allowedSyscalls:
+                    description: |-
+                      AllowedSyscalls is how many syscalls the profile permits, including the
+                      safety baseline. TotalSyscalls is the size of the architecture's syscall
+                      table, so the pair states the privilege reduction without arithmetic.
+                    format: int32
+                    type: integer
+                  generatedAt:
+                    description: GeneratedAt is when the profile was last written.
+                    format: date-time
+                    type: string
+                  localhostProfile:
+                    description: |-
+                      LocalhostProfile is the value to put in the pod's
+                      securityContext.seccompProfile.localhostProfile. It is relative to the
+                      kubelet's seccomp root, which is what that field expects.
+                    type: string
+                  node:
+                    description: |-
+                      Node is the node the file lives on. The profile is written by each node's
+                      agent, so it exists only where that container ran.
+                    type: string
+                  path:
+                    description: Path is the absolute path on the node, for debugging.
+                    type: string
+                  skippedUnknown:
+                    description: |-
+                      SkippedUnknown counts learned syscall numbers with no name in this
+                      architecture's table. They cannot appear in a profile, so a non-zero
+                      value means the profile is narrower than what was observed.
+                    format: int32
+                    type: integer
+                  totalSyscalls:
+                    format: int32
+                    type: integer
+                type: object
+              syscallCount:
+                description: Counts for quick inspection / printcolumns.
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
     storage: true
     subresources:
       status: {}
@@ -1370,6 +2820,9 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    deprecated: true
+    deprecationWarning: policy.pahlevan.io/v1alpha1 AttackSurface is deprecated; use
+      policy.pahlevan.io/v1beta1
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -1458,6 +2911,122 @@ spec:
               riskScore:
                 description: RiskScore provides overall risk score
                 format: int32
+                type: integer
+              writableFiles:
+                description: WritableFiles lists writable file paths
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.riskScore
+      name: Risk
+      type: integer
+    - jsonPath: .status.lastAnalysis
+      name: Analyzed
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          AttackSurface is a computed, inspectable attack-surface report for a workload
+          (exposed syscalls/ports, writable files, capabilities, and an overall risk
+          score). It reuses the AttackSurfaceStatus schema already tracked on
+          PahlevanPolicy, promoted to a first-class resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AttackSurfaceSpec identifies the workload an attack-surface
+              report describes.
+            properties:
+              namespace:
+                description: Namespace of the analyzed workload.
+                type: string
+              policyRef:
+                description: PolicyRef is the PahlevanPolicy this surface was computed
+                  for.
+                type: string
+              workload:
+                description: Workload identifies the analyzed workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion of the workload
+                    type: string
+                  kind:
+                    description: Kind of the workload
+                    type: string
+                  name:
+                    description: Name of the workload
+                    type: string
+                  namespace:
+                    description: Namespace of the workload
+                    type: string
+                  uid:
+                    description: UID of the workload
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - namespace
+                type: object
+            type: object
+          status:
+            description: AttackSurfaceStatus provides attack surface analysis
+            properties:
+              capabilities:
+                description: Capabilities lists effective capabilities
+                items:
+                  type: string
+                type: array
+              exposedPorts:
+                description: ExposedPorts lists exposed network ports
+                items:
+                  format: int32
+                  type: integer
+                type: array
+              exposedSyscalls:
+                description: ExposedSyscalls lists exposed syscalls
+                items:
+                  type: string
+                type: array
+              lastAnalysis:
+                description: LastAnalysis indicates when analysis was last performed
+                format: date-time
+                type: string
+              riskScore:
+                description: |-
+                  RiskScore provides overall risk score, 0 to 100.
+
+                  Bounded for the same reason as Progress: it is the Risk printer column,
+                  and the analyzer's arithmetic has no upper clamp of its own.
+                format: int32
+                maximum: 100
+                minimum: 0
                 type: integer
               writableFiles:
                 description: WritableFiles lists writable file paths

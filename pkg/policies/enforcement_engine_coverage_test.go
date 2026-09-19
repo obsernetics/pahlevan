@@ -228,7 +228,7 @@ func TestCalculatePolicyQuality_NoProfileAndEmptyProfile(t *testing.T) {
 
 func TestApplyPolicyToEBPF_NilManager(t *testing.T) {
 	ee := NewEnforcementEngine(nil, nil)
-	err := ee.applyPolicyToEBPF("c1", &GeneratedPolicy{SyscallPolicy: &SyscallEnforcementPolicy{AllowedSyscalls: map[uint64]*SyscallRule{1: {}}}})
+	err := ee.applyPolicyToEBPF(context.Background(), "c1", &GeneratedPolicy{SyscallPolicy: &SyscallEnforcementPolicy{AllowedSyscalls: map[uint64]*SyscallRule{1: {}}}})
 	assert.Error(t, err)
 }
 
@@ -241,7 +241,7 @@ func TestApplyPolicyToEBPF_UnloadedManager(t *testing.T) {
 		FilePolicy:    &FileEnforcementPolicy{AllowedPaths: map[string]*FileRule{"/a": {}}},
 	}
 	// Collection not loaded -> error, but exercises the conversion path.
-	assert.Error(t, ee.applyPolicyToEBPF("c1", policy))
+	assert.Error(t, ee.applyPolicyToEBPF(context.Background(), "c1", policy))
 }
 
 func TestGeneratePolicy_EndToEnd_SeededProfile(t *testing.T) {

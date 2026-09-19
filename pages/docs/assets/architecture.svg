@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="Pahlevan architecture: a leader-elected operator and CRDs drive per-node privileged agents that run eBPF programs in the kernel">
+  <defs>
+    <style>
+      .card{fill:#0e1729;stroke:#28344b;stroke-width:1.5}
+      .grp{fill:#0b1220;stroke:#1f2a40;stroke-width:1.5;stroke-dasharray:6 5}
+      .title{fill:#e6edf7;font-size:23px;font-weight:700}
+      .h{fill:#7dd3fc;font-size:17px;font-weight:700}
+      .bt{fill:#e6edf7;font-size:16px;font-weight:700}
+      .s{fill:#93a4c0;font-size:13.5px}
+      .lbl{fill:#9fb3d1;font-size:13.5px;font-style:italic}
+      .accent{fill:#38bdf8;font-weight:700}
+      .edge{stroke:#5b7099;stroke-width:2.5;fill:none}
+    </style>
+    <marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#5b7099"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="600" fill="#070b14"/>
+  <text x="40" y="44" class="title">Pahlevan architecture</text>
+
+  <!-- ===== Control plane group ===== -->
+  <rect x="40" y="66" width="880" height="150" rx="14" class="grp"/>
+  <text x="60" y="92" class="h">Control plane &#183; cluster-wide, unprivileged</text>
+
+  <!-- CRDs (left) -->
+  <rect x="60" y="104" width="380" height="96" rx="12" class="card"/>
+  <text x="80" y="128" class="bt">Custom Resources</text>
+  <text x="80" y="150" class="s">PahlevanPolicy &#183; selector, window, mode</text>
+  <text x="80" y="169" class="s">ContainerProfile &#183; learned baseline</text>
+  <text x="80" y="188" class="s">AttackSurface &#183; risk &amp; exposure</text>
+
+  <!-- Operator (right) -->
+  <rect x="520" y="104" width="380" height="96" rx="12" class="card"/>
+  <text x="540" y="128" class="bt">Operator &#183; Deployment</text>
+  <text x="540" y="150" class="s">leader-elected &#183; hostUsers: false (userns)</text>
+  <text x="540" y="169" class="s">policy lifecycle &#183; status aggregation</text>
+  <text x="540" y="188" class="s">CEL ValidatingAdmissionPolicy</text>
+
+  <!-- CRDs -> Operator (clean horizontal) -->
+  <line x1="440" y1="152" x2="514" y2="152" class="edge" marker-end="url(#arw)"/>
+  <text x="447" y="144" class="lbl">reconciles</text>
+
+  <!-- ===== control plane <-> node =====
+       Two arrows, each anchored to a box. This used to be one vertical line
+       starting in the gap between the CRD and Operator cards and ending on the
+       node group's border, touching neither, with a single arrowhead and two
+       labels claiming it went both ways. -->
+
+  <!-- Operator -> Agent: the desired policy going down to the node. -->
+  <path d="M600,200 V248 H200 V332" class="edge" marker-end="url(#arw)"/>
+  <text x="212" y="241" class="lbl">desired policy &#8595;</text>
+
+  <!-- Agent -> Operator: what the node learned, and its status, coming back. -->
+  <path d="M280,340 V272 H680 V208" class="edge" marker-end="url(#arw)"/>
+  <text x="470" y="290" class="lbl">learning / status &#8593;</text>
+
+  <!-- ===== Node group ===== -->
+  <rect x="40" y="300" width="880" height="310" rx="14" class="grp"/>
+  <text x="60" y="326" class="h">Each node &#183; privileged data plane</text>
+
+  <!-- Agent (left) -->
+  <rect x="60" y="340" width="330" height="200" rx="12" class="card"/>
+  <text x="80" y="366" class="bt">Agent &#183; privileged DaemonSet</text>
+  <text x="80" y="392" class="s">CAP_BPF &#183; CAP_PERFMON &#183; hostPID</text>
+  <text x="80" y="414" class="s">loads &amp; attaches eBPF programs</text>
+  <text x="80" y="436" class="s">per-cgroup learn, then enforce</text>
+  <text x="80" y="458" class="s">seccomp profile generation</text>
+  <text x="80" y="480" class="s">cgroup-id &#8594; pod attribution</text>
+  <text x="80" y="502" class="s">(userns-safe)</text>
+
+  <!-- Agent -> kernel (clean horizontal) -->
+  <line x1="390" y1="430" x2="464" y2="430" class="edge" marker-end="url(#arw)"/>
+  <text x="397" y="422" class="lbl">load</text>
+
+  <!-- Kernel (right). All eight programs, split by whether they need the BPF
+       LSM - which is the distinction a reader needs, since four of them want a
+       boot parameter most distributions do not set. -->
+  <rect x="470" y="340" width="430" height="250" rx="12" fill="#0b1220" stroke="#28344b" stroke-width="1.5"/>
+  <text x="490" y="364" class="h">Linux kernel &#183; eBPF (CO-RE)</text>
+
+  <text x="490" y="384" class="s" font-size="11.5">BPF LSM &#8212; refuses in-kernel, needs lsm=bpf</text>
+  <rect x="490" y="392" width="190" height="40" rx="8" class="card"/>
+  <text x="502" y="408" class="bt" font-size="13">lsm/file_open</text>
+  <text x="502" y="424" class="s" font-size="11.5">read/write <tspan class="accent">&#8594; EPERM</tspan></text>
+
+  <rect x="690" y="392" width="190" height="40" rx="8" class="card"/>
+  <text x="702" y="408" class="bt" font-size="13">lsm/socket_connect</text>
+  <text x="702" y="424" class="s" font-size="11.5">egress <tspan class="accent">&#8594; EPERM</tspan></text>
+
+  <rect x="490" y="440" width="190" height="40" rx="8" class="card"/>
+  <text x="502" y="456" class="bt" font-size="13">lsm/bprm_check</text>
+  <text x="502" y="472" class="s" font-size="11.5">exec <tspan class="accent">&#8594; EPERM</tspan></text>
+
+  <rect x="690" y="440" width="190" height="40" rx="8" class="card"/>
+  <text x="702" y="456" class="bt" font-size="13">lsm/capable</text>
+  <text x="702" y="472" class="s" font-size="11.5">capability <tspan class="accent">&#8594; EPERM</tspan></text>
+
+  <text x="490" y="502" class="s" font-size="11.5">no BPF LSM needed &#8212; works on stock kernels</text>
+  <rect x="490" y="510" width="190" height="34" rx="8" class="card"/>
+  <text x="502" y="524" class="bt" font-size="13">tracepoint/sys_enter</text>
+  <text x="502" y="538" class="s" font-size="11.5">every syscall, with args</text>
+
+  <rect x="690" y="510" width="190" height="34" rx="8" class="card"/>
+  <text x="702" y="524" class="bt" font-size="13">kprobe/commit_creds</text>
+  <text x="702" y="538" class="s" font-size="11.5">escalation, no execve</text>
+
+  <rect x="490" y="552" width="190" height="34" rx="8" class="card"/>
+  <text x="502" y="566" class="bt" font-size="13">uretprobe/readline</text>
+  <text x="502" y="580" class="s" font-size="11.5">shell builtins</text>
+
+  <rect x="690" y="552" width="190" height="34" rx="8" fill="#0d1526" stroke="#28344b" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="702" y="566" class="bt" font-size="13">generic kprobe</text>
+  <text x="702" y="580" class="s" font-size="11.5">any symbol, no rebuild</text>
+</svg>
