@@ -1,4 +1,8 @@
 {{- if .Values.agent.enabled }}
+# The eBPF data plane, one pod per node. Kept deliberately in step with
+# deploy/base/daemonset-agent.yaml: the two are the same component installed
+# two ways, and every field that drifted between them was a bug that only
+# appeared for whichever half of the users picked the other installer.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -16,6 +20,9 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
+      # One node at a time. There is no surge option here on purpose: two
+      # agents on one node would both try to attach the same programs and the
+      # second attach fails with EEXIST.
       maxUnavailable: 1
   template:
     metadata:
@@ -33,14 +40,23 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "pahlevan.agentServiceAccountName" . }}
+      # Host PID so the host PIDs in kernel events resolve back to processes.
       hostPID: true
+      hostNetwork: false
+      hostIPC: false
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.agent.priorityClassName }}
+      # The kubelet evicts by priority under node pressure. An agent evicted
+      # ahead of the pods it watches leaves those pods running unmonitored.
       priorityClassName: {{ . }}
       {{- end }}
+      # Long enough for controller-runtime's 30s graceful shutdown, then the
+      # eBPF link detach, then the 5s observability flush. See the comment in
+      # deploy/base/daemonset-agent.yaml for why 30s truncated all three.
+      terminationGracePeriodSeconds: {{ .Values.agent.terminationGracePeriodSeconds }}
       containers:
       - name: agent
         image: {{ include "pahlevan.image" . }}
@@ -52,6 +68,13 @@ spec:
         - --learning-window={{ .Values.agent.learningWindow }}
         - --enforcement-delay={{ .Values.agent.enforcementDelay }}
         - --observability-exports={{ .Values.observability.exports }}
+        {{- if .Values.agent.seccomp.generate }}
+        # The generated profiles have to land under the kubelet's own seccomp
+        # root, because that is the only place a localhostProfile reference
+        # resolves. Written anywhere else they are files nothing can name.
+        - --seccomp-root={{ .Values.agent.seccomp.root }}
+        - --seccomp-dir={{ .Values.agent.seccomp.dir }}
+        {{- end }}
         securityContext:
           privileged: false
           runAsNonRoot: false
@@ -63,6 +86,12 @@ spec:
               {{- toYaml .Values.agent.capabilities | nindent 14 }}
             drop:
               - ALL
+          # Pinned Unconfined rather than left unset: a node started with
+          # --seccomp-default turns "unset" into RuntimeDefault, whose profile
+          # gates bpf(2) and perf_event_open(2) on the capability set, and the
+          # agent then fails program load with EPERM on that cluster only.
+          seccompProfile:
+            type: Unconfined
         resources:
           {{- toYaml .Values.agent.resources | nindent 10 }}
         ports:
@@ -70,18 +99,38 @@ spec:
           containerPort: {{ .Values.metrics.port }}
         - name: health
           containerPort: {{ .Values.health.port }}
+        # The agent loads and attaches its eBPF programs before it builds the
+        # manager that serves the health port, so nothing listens there for the
+        # whole of BTF parse, CO-RE relocation and verification. Without a
+        # startup probe the liveness probe hit connection-refused three times
+        # and killed the container at ~55s, forever, on exactly the nodes where
+        # loading is slowest. The startup probe holds liveness off for
+        # periodSeconds x failureThreshold and then kills promptly if it never
+        # comes up.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          periodSeconds: {{ .Values.agent.startupProbe.periodSeconds }}
+          failureThreshold: {{ .Values.agent.startupProbe.failureThreshold }}
+          timeoutSeconds: 3
         livenessProbe:
           httpGet:
             path: /healthz
             port: health
-          initialDelaySeconds: 15
           periodSeconds: 20
+          # The default 1s timeout is shorter than a GC pause on a node under
+          # the memory pressure this agent exists to survive, and a timed-out
+          # liveness probe is a kill.
+          timeoutSeconds: 3
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /readyz
             port: health
-          initialDelaySeconds: 5
           periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
         env:
         - name: PAHLEVAN_NODE_NAME
           valueFrom:
@@ -91,6 +140,22 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        # The namespace completes the OpenTelemetry resource. Grafana joins
+        # Loki, Tempo and Mimir on shared labels, so a resource that disagrees
+        # on k8s.namespace.name makes the join return nothing, which looks
+        # exactly like no data.
+        - name: PAHLEVAN_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # Without this the Go runtime sizes its scheduler from the node's core
+        # count - 128 on a big machine - while the cgroup allows a fraction of
+        # one core. The result is permanent throttling and stacks for threads
+        # that never get to run.
+        - name: GOMAXPROCS
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
         volumeMounts:
         - name: bpffs
           mountPath: /sys/fs/bpf
@@ -106,6 +171,13 @@ spec:
         - name: proc
           mountPath: /host/proc
           readOnly: true
+        {{- if .Values.agent.seccomp.generate }}
+        # Writable, and scoped to pahlevan's own subdirectory rather than the
+        # whole seccomp root: the agent creates the profiles it generates and
+        # nothing else there.
+        - name: seccomp-profiles
+          mountPath: {{ .Values.agent.seccomp.dir }}
+        {{- end }}
       volumes:
       - name: bpffs
         hostPath:
@@ -127,6 +199,12 @@ spec:
         hostPath:
           path: /proc
           type: Directory
+      {{- if .Values.agent.seccomp.generate }}
+      - name: seccomp-profiles
+        hostPath:
+          path: {{ .Values.agent.seccomp.dir }}
+          type: DirectoryOrCreate
+      {{- end }}
       {{- with .Values.agent.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

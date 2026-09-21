@@ -10,6 +10,7 @@ resources:
 - rbac.yaml
 - daemonset-agent.yaml
 - deployment-operator.yaml
+- pdb.yaml
 - service.yaml
 
 images:

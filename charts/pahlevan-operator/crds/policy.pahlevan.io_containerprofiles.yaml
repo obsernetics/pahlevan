@@ -1,0 +1,559 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: containerprofiles.policy.pahlevan.io
+spec:
+  group: policy.pahlevan.io
+  names:
+    kind: ContainerProfile
+    listKind: ContainerProfileList
+    plural: containerprofiles
+    shortNames:
+    - cprof
+    singular: containerprofile
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.syscallCount
+      name: Syscalls
+      type: integer
+    - jsonPath: .status.fileCount
+      name: Files
+      type: integer
+    - jsonPath: .status.rollbackCount
+      name: Rollbacks
+      type: integer
+    - jsonPath: .spec.node
+      name: Node
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    deprecated: true
+    deprecationWarning: policy.pahlevan.io/v1alpha1 ContainerProfile is deprecated;
+      use policy.pahlevan.io/v1beta1
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ContainerProfile is the learned behavioral baseline for a single
+          container.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ContainerProfileSpec identifies the container a learned profile
+              belongs to.
+            properties:
+              cgroupID:
+                description: |-
+                  CgroupID is the cgroup v2 id the eBPF data plane keys enforcement on.
+                  Signed because Kubernetes API types may not use unsigned integers; the
+                  serialized schema is int64 either way, and cgroup ids never approach the
+                  sign bit. Using uint64 here also broke server-side apply, whose
+                  structured-merge-diff reflection has no uint64 kind.
+                format: int64
+                type: integer
+              containerID:
+                description: ContainerID is the container runtime ID (if resolved).
+                type: string
+              namespace:
+                type: string
+              node:
+                description: Node is the node whose agent owns this profile.
+                type: string
+              podName:
+                description: PodName / Namespace of the container's pod.
+                type: string
+              policyRef:
+                description: PolicyRef is the name of the PahlevanPolicy that governs
+                  this container.
+                type: string
+              workload:
+                description: Workload identifies the owning Kubernetes workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion of the workload
+                    type: string
+                  kind:
+                    description: Kind of the workload
+                    type: string
+                  name:
+                    description: Name of the workload
+                    type: string
+                  namespace:
+                    description: Namespace of the workload
+                    type: string
+                  uid:
+                    description: UID of the workload
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - namespace
+                type: object
+            type: object
+          status:
+            description: |-
+              ContainerProfileStatus is the learned behavioral baseline reported by the
+              node agent. It is what the kernel enforces once the container is enforcing -
+              a first-class, inspectable, git-backupable record.
+            properties:
+              denialCount:
+                description: |-
+                  DenialCount is the number of in-kernel denials observed since the current
+                  enforce transition. It resets on every transition and on rollback.
+                format: int32
+                type: integer
+              deniedCapabilities:
+                format: int32
+                type: integer
+              deniedExecs:
+                format: int32
+                type: integer
+              deniedFiles:
+                description: |-
+                  Per-signal breakdown of DenialCount. Split out because "twelve denials"
+                  and "twelve denied egress attempts" are very different findings, and the
+                  operator aggregates these into the governing policy's status.
+                format: int32
+                type: integer
+              deniedNetwork:
+                format: int32
+                type: integer
+              enforcementAttempts:
+                description: |-
+                  EnforcementAttempts is how many times this container has been transitioned
+                  to enforcing. More than one means an earlier attempt was rolled back.
+                format: int32
+                type: integer
+              enforcingSince:
+                format: date-time
+                type: string
+              fileCount:
+                format: int32
+                type: integer
+              firstSeen:
+                description: FirstSeen / EnforcingSince timestamps.
+                format: date-time
+                type: string
+              lastRollbackReason:
+                description: |-
+                  LastRollbackReason explains the most recent rollback (denial rate or the
+                  specific pod distress that was observed).
+                type: string
+              lastRollbackTime:
+                description: LastRollbackTime is when the most recent rollback happened.
+                format: date-time
+                type: string
+              lastUpdated:
+                description: LastUpdated is when the agent last refreshed this profile.
+                format: date-time
+                type: string
+              learnedCapabilities:
+                description: |-
+                  LearnedCapabilities is the set of Linux capabilities the container was
+                  observed using, as names without the CAP_ prefix so they match the
+                  spelling a pod spec uses in securityContext.capabilities.
+
+                  Reported because it was otherwise the only learned signal invisible from
+                  outside the agent, and because it is what lets admission reject a new
+                  revision asking for privilege the workload has never needed.
+                items:
+                  type: string
+                type: array
+              learnedExecutables:
+                description: LearnedExecutables is the set of binary paths the container
+                  executed.
+                items:
+                  type: string
+                type: array
+              learnedFiles:
+                description: LearnedFiles is the set of file paths the container opened
+                  during learning.
+                items:
+                  type: string
+                type: array
+              learnedNetworkDestinations:
+                description: LearnedNetworkDestinations is the set of egress destinations
+                  (ip:port).
+                items:
+                  type: string
+                type: array
+              learnedSyscalls:
+                description: LearnedSyscalls is the set of syscall numbers observed
+                  during learning.
+                items:
+                  format: int64
+                  type: integer
+                type: array
+              networkCount:
+                format: int32
+                type: integer
+              phase:
+                description: Phase is Learning or Enforcing.
+                type: string
+              rollbackCount:
+                description: |-
+                  RollbackCount is how many times self-healing returned this container from
+                  enforcing to learning because the learned baseline was breaking it.
+                format: int32
+                type: integer
+              seccomp:
+                description: |-
+                  Seccomp describes the profile generated from LearnedSyscalls, if the
+                  agent was configured to emit one.
+                properties:
+                  allowedSyscalls:
+                    description: |-
+                      AllowedSyscalls is how many syscalls the profile permits, including the
+                      safety baseline. TotalSyscalls is the size of the architecture's syscall
+                      table, so the pair states the privilege reduction without arithmetic.
+                    format: int32
+                    type: integer
+                  generatedAt:
+                    description: GeneratedAt is when the profile was last written.
+                    format: date-time
+                    type: string
+                  localhostProfile:
+                    description: |-
+                      LocalhostProfile is the value to put in the pod's
+                      securityContext.seccompProfile.localhostProfile. It is relative to the
+                      kubelet's seccomp root, which is what that field expects.
+                    type: string
+                  node:
+                    description: |-
+                      Node is the node the file lives on. The profile is written by each node's
+                      agent, so it exists only where that container ran.
+                    type: string
+                  path:
+                    description: Path is the absolute path on the node, for debugging.
+                    type: string
+                  skippedUnknown:
+                    description: |-
+                      SkippedUnknown counts learned syscall numbers with no name in this
+                      architecture's table. They cannot appear in a profile, so a non-zero
+                      value means the profile is narrower than what was observed.
+                    format: int32
+                    type: integer
+                  totalSyscalls:
+                    format: int32
+                    type: integer
+                type: object
+              syscallCount:
+                description: Counts for quick inspection / printcolumns.
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.syscallCount
+      name: Syscalls
+      type: integer
+    - jsonPath: .status.fileCount
+      name: Files
+      type: integer
+    - jsonPath: .status.rollbackCount
+      name: Rollbacks
+      type: integer
+    - jsonPath: .spec.node
+      name: Node
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: ContainerProfile is the learned behavioral baseline for a single
+          container.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ContainerProfileSpec identifies the container a learned profile
+              belongs to.
+            properties:
+              cgroupID:
+                description: |-
+                  CgroupID is the cgroup v2 id the eBPF data plane keys enforcement on.
+                  Signed because Kubernetes API types may not use unsigned integers; the
+                  serialized schema is int64 either way, and cgroup ids never approach the
+                  sign bit. Using uint64 here also broke server-side apply, whose
+                  structured-merge-diff reflection has no uint64 kind.
+                format: int64
+                type: integer
+              containerID:
+                description: ContainerID is the container runtime ID (if resolved).
+                type: string
+              namespace:
+                type: string
+              node:
+                description: Node is the node whose agent owns this profile.
+                type: string
+              podName:
+                description: PodName / Namespace of the container's pod.
+                type: string
+              policyRef:
+                description: PolicyRef is the name of the PahlevanPolicy that governs
+                  this container.
+                type: string
+              workload:
+                description: Workload identifies the owning Kubernetes workload.
+                properties:
+                  apiVersion:
+                    description: APIVersion of the workload
+                    type: string
+                  kind:
+                    description: Kind of the workload
+                    type: string
+                  name:
+                    description: Name of the workload
+                    type: string
+                  namespace:
+                    description: Namespace of the workload
+                    type: string
+                  uid:
+                    description: UID of the workload
+                    type: string
+                required:
+                - apiVersion
+                - kind
+                - name
+                - namespace
+                type: object
+            type: object
+          status:
+            description: |-
+              ContainerProfileStatus is the learned behavioral baseline reported by the
+              node agent. It is what the kernel enforces once the container is enforcing -
+              a first-class, inspectable, git-backupable record.
+            properties:
+              declaredCapabilities:
+                description: |-
+                  DeclaredCapabilities are the capabilities permitted by declaration rather
+                  than by observation, spelled without the CAP_ prefix like
+                  LearnedCapabilities.
+                items:
+                  type: string
+                type: array
+              declaredExecutables:
+                description: |-
+                  DeclaredExecutables are the binary paths permitted by declaration rather
+                  than by observation.
+                items:
+                  type: string
+                type: array
+              declaredFiles:
+                description: |-
+                  DeclaredFiles are the paths permitted because the policy declared them
+                  rather than because this container was observed opening them. A declared
+                  write is suffixed " (write)": declaring a write is a materially larger
+                  assertion than declaring a read, and the two must not read alike here.
+                items:
+                  type: string
+                type: array
+              declaredNetworkDestinations:
+                description: |-
+                  DeclaredNetworkDestinations are the ip:port destinations permitted by
+                  declaration rather than by observation.
+                items:
+                  type: string
+                type: array
+              denialCount:
+                description: |-
+                  DenialCount is the number of in-kernel denials observed since the current
+                  enforce transition. It resets on every transition and on rollback.
+                format: int32
+                type: integer
+              deniedCapabilities:
+                format: int32
+                type: integer
+              deniedExecs:
+                format: int32
+                type: integer
+              deniedFiles:
+                description: |-
+                  Per-signal breakdown of DenialCount. Split out because "twelve denials"
+                  and "twelve denied egress attempts" are very different findings, and the
+                  operator aggregates these into the governing policy's status.
+                format: int32
+                type: integer
+              deniedNetwork:
+                format: int32
+                type: integer
+              enforcementAttempts:
+                description: |-
+                  EnforcementAttempts is how many times this container has been transitioned
+                  to enforcing. More than one means an earlier attempt was rolled back.
+                format: int32
+                type: integer
+              enforcingSince:
+                format: date-time
+                type: string
+              fileCount:
+                format: int32
+                type: integer
+              firstSeen:
+                description: FirstSeen / EnforcingSince timestamps.
+                format: date-time
+                type: string
+              lastRollbackReason:
+                description: |-
+                  LastRollbackReason explains the most recent rollback (denial rate or the
+                  specific pod distress that was observed).
+                type: string
+              lastRollbackTime:
+                description: LastRollbackTime is when the most recent rollback happened.
+                format: date-time
+                type: string
+              lastUpdated:
+                description: LastUpdated is when the agent last refreshed this profile.
+                format: date-time
+                type: string
+              learnedCapabilities:
+                description: |-
+                  LearnedCapabilities is the set of Linux capabilities the container was
+                  observed using, as names without the CAP_ prefix so they match the
+                  spelling a pod spec uses in securityContext.capabilities.
+
+                  Reported because it was otherwise the only learned signal invisible from
+                  outside the agent, and because it is what lets admission reject a new
+                  revision asking for privilege the workload has never needed.
+                items:
+                  type: string
+                type: array
+              learnedExecutables:
+                description: LearnedExecutables is the set of binary paths the container
+                  executed.
+                items:
+                  type: string
+                type: array
+              learnedFiles:
+                description: LearnedFiles is the set of file paths the container opened
+                  during learning.
+                items:
+                  type: string
+                type: array
+              learnedNetworkDestinations:
+                description: LearnedNetworkDestinations is the set of egress destinations
+                  (ip:port).
+                items:
+                  type: string
+                type: array
+              learnedSyscalls:
+                description: LearnedSyscalls is the set of syscall numbers observed
+                  during learning.
+                items:
+                  format: int64
+                  type: integer
+                type: array
+              networkCount:
+                format: int32
+                type: integer
+              phase:
+                description: Phase is Learning or Enforcing.
+                enum:
+                - Learning
+                - Enforcing
+                type: string
+              rollbackCount:
+                description: |-
+                  RollbackCount is how many times self-healing returned this container from
+                  enforcing to learning because the learned baseline was breaking it.
+                format: int32
+                type: integer
+              seccomp:
+                description: |-
+                  Seccomp describes the profile generated from LearnedSyscalls, if the
+                  agent was configured to emit one.
+                properties:
+                  allowedSyscalls:
+                    description: |-
+                      AllowedSyscalls is how many syscalls the profile permits, including the
+                      safety baseline. TotalSyscalls is the size of the architecture's syscall
+                      table, so the pair states the privilege reduction without arithmetic.
+                    format: int32
+                    type: integer
+                  generatedAt:
+                    description: GeneratedAt is when the profile was last written.
+                    format: date-time
+                    type: string
+                  localhostProfile:
+                    description: |-
+                      LocalhostProfile is the value to put in the pod's
+                      securityContext.seccompProfile.localhostProfile. It is relative to the
+                      kubelet's seccomp root, which is what that field expects.
+                    type: string
+                  node:
+                    description: |-
+                      Node is the node the file lives on. The profile is written by each node's
+                      agent, so it exists only where that container ran.
+                    type: string
+                  path:
+                    description: Path is the absolute path on the node, for debugging.
+                    type: string
+                  skippedUnknown:
+                    description: |-
+                      SkippedUnknown counts learned syscall numbers with no name in this
+                      architecture's table. They cannot appear in a profile, so a non-zero
+                      value means the profile is narrower than what was observed.
+                    format: int32
+                    type: integer
+                  totalSyscalls:
+                    format: int32
+                    type: integer
+                type: object
+              syscallCount:
+                description: Counts for quick inspection / printcolumns.
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
