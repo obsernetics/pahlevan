@@ -204,6 +204,19 @@ type Manager struct {
 	capabilities       *SystemCapabilities
 	capabilityChecker  *CapabilityChecker
 	mapSizing          MapSizing
+	// pins is the bpffs state that lets enforcement outlive this process.
+	// Never nil after NewManager; disabled rather than absent when a node
+	// cannot pin. See pinning.go.
+	pins *pinStore
+	// adoptedCollections are the collections taken over from a previous
+	// agent's pins; pinnedCollections are all the ones now recorded on bpffs,
+	// which is what the meta stamp must describe.
+	adoptedCollections collectionID
+	pinnedCollections  collectionID
+	// adoptedLinkNames are the hooks this agent inherited still-attached from
+	// its predecessor. Reported at attach time: "which hooks never went down"
+	// is the question an upgrade is judged on.
+	adoptedLinkNames []string
 }
 
 // The kernel marks a denied operation in the event it emits, so userspace can
@@ -584,6 +597,11 @@ func NewManager() (*Manager, error) {
 		counters:          counters,
 		capabilities:      capabilities,
 		capabilityChecker: capabilityChecker,
+		// Pinning is on by default. An agent that does not pin cannot survive
+		// its own rolling update, and a rolling update is the single most
+		// common way this agent restarts - so the safe default is the one that
+		// keeps the node enforcing. SetPinRoot("") turns it off.
+		pins: newPinStore(DefaultPinRoot()),
 	}, nil
 }
 
@@ -615,190 +633,112 @@ func (m *Manager) LoadPrograms() (err error) {
 	if !m.capabilities.HasTracepointSupport {
 		return fmt.Errorf("syscall monitoring requires tracepoint support which is not available on this system. Please ensure debugfs is mounted and kernel has tracepoint support")
 	}
-	_, syscallSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("syscall_monitor"),
-		observability.AttrRequired.Bool(true))
-	syscallSpecs, err := LoadSyscallMonitor()
-	if err != nil {
-		observability.EndSpan(syscallSpan, err)
-		return fmt.Errorf("failed to load syscall monitor specs: %w", err)
+
+	// Before creating anything, take over whatever a previous agent left
+	// pinned on bpffs. A collection adopted here is ALREADY loaded and its
+	// hooks are ALREADY attached - they never detached, because the pins kept
+	// them alive while no agent was running - so every block below skips it.
+	// That is the whole point: a rolling update, an OOM kill or an eviction no
+	// longer leaves the node unenforced, and the new agent inherits the
+	// learned allow-sets instead of starting from an empty map. See pinning.go.
+	m.adoptPinnedState()
+	// Whatever is loaded fresh is pinned as it goes; the stamp that makes it
+	// adoptable is written last, once everything it describes exists.
+	defer m.stampPins()
+
+	if !m.adoptedLoaded(collSyscall) {
+		_, syscallSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
+			observability.AttrProgram.String("syscall_monitor"),
+			observability.AttrRequired.Bool(true))
+		syscallSpecs, serr := m.specFor(collSyscall)
+		if serr != nil {
+			observability.EndSpan(syscallSpan, serr)
+			return fmt.Errorf("failed to load syscall monitor specs: %w", serr)
+		}
+		observability.RecordMapSizing(syscallSpan, m.mapSizesFor(collSyscall))
+		m.syscallSpecs = syscallSpecs
+		syscallColl, cerr := ebpf.NewCollection(syscallSpecs)
+		if cerr != nil {
+			observability.EndSpan(syscallSpan, cerr)
+			return fmt.Errorf("failed to create syscall collection: %w", cerr)
+		}
+		syscallSpan.End()
+		m.syscallCollection = syscallColl
+		m.pinCollection(collSyscall, syscallColl)
 	}
-	syscallSizes := map[string]uint32{
-		"syscall_seen": m.mapSizing.SyscallSeen,
-		"events":       m.mapSizing.RingBufBytes,
-	}
-	applyMapSizing(syscallSpecs, syscallSizes)
-	observability.RecordMapSizing(syscallSpan, syscallSizes)
-	m.syscallSpecs = syscallSpecs
-	syscallColl, err := ebpf.NewCollection(syscallSpecs)
-	if err != nil {
-		observability.EndSpan(syscallSpan, err)
-		return fmt.Errorf("failed to create syscall collection: %w", err)
-	}
-	syscallSpan.End()
-	m.syscallCollection = syscallColl
 
 	// The file (LSM) and network monitors are BEST-EFFORT: a kernel without the
 	// bpf LSM (file) or without the still-migrating network program should still
 	// run the agent in a degraded, syscall-only mode rather than fail outright.
-	_, fileSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("file_monitor"),
-		observability.AttrRequired.Bool(false))
-	if fileSpecs, ferr := LoadFileMonitor(); ferr == nil {
-		fileSizes := map[string]uint32{
-			"file_allowed": m.mapSizing.FileAllowed,
-			"file_events":  m.mapSizing.RingBufBytes,
-		}
-		applyMapSizing(fileSpecs, fileSizes)
-		observability.RecordMapSizing(fileSpan, fileSizes)
-		if fileColl, cerr := ebpf.NewCollection(fileSpecs); cerr == nil {
-			m.fileSpecs = fileSpecs
-			m.fileCollection = fileColl
-		} else {
-			// Degraded, not failed: the agent is designed to run syscall-only.
-			// Marking the span an error here would paint every kernel without
-			// the BPF LSM red.
-			observability.RecordDegraded(fileSpan, "file_monitor", cerr.Error())
-			log.Log.V(0).Info("file monitor unavailable; continuing without file observation", "error", cerr.Error())
-		}
-	} else {
-		observability.RecordDegraded(fileSpan, "file_monitor", ferr.Error())
-		log.Log.V(0).Info("file monitor spec unavailable; continuing without file observation", "error", ferr.Error())
-	}
-	fileSpan.End()
-
-	_, netSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("network_monitor"),
-		observability.AttrRequired.Bool(false))
-	if netSpecs, nerr := LoadNetworkMonitor(); nerr == nil {
-		netSizes := map[string]uint32{
-			"network_allowed": m.mapSizing.NetworkAllowed,
-			"network_events":  m.mapSizing.RingBufBytes,
-		}
-		applyMapSizing(netSpecs, netSizes)
-		observability.RecordMapSizing(netSpan, netSizes)
-		if netColl, cerr := ebpf.NewCollection(netSpecs); cerr == nil {
-			m.networkSpecs = netSpecs
-			m.networkCollection = netColl
-		} else {
-			observability.RecordDegraded(netSpan, "network_monitor", cerr.Error())
-			log.Log.V(0).Info("network monitor unavailable; continuing without network observation", "error", cerr.Error())
-		}
-	} else {
-		observability.RecordDegraded(netSpan, "network_monitor", nerr.Error())
-		log.Log.V(0).Info("network monitor spec unavailable; continuing without network observation", "error", nerr.Error())
-	}
-	netSpan.End()
-
-	_, capSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("capability_monitor"),
-		observability.AttrRequired.Bool(false))
-	if capSpecs, cerr2 := LoadCapabilityMonitor(); cerr2 == nil {
-		capSizes := map[string]uint32{"cap_events": m.mapSizing.RingBufBytes}
-		applyMapSizing(capSpecs, capSizes)
-		observability.RecordMapSizing(capSpan, capSizes)
-		if capColl, cerr := ebpf.NewCollection(capSpecs); cerr == nil {
-			m.capCollection = capColl
-		} else {
-			observability.RecordDegraded(capSpan, "capability_monitor", cerr.Error())
-			log.Log.V(0).Info("capability monitor unavailable; continuing without capability observation", "error", cerr.Error())
-		}
-	} else {
-		observability.RecordDegraded(capSpan, "capability_monitor", cerr2.Error())
-		log.Log.V(0).Info("capability monitor spec unavailable", "error", cerr2.Error())
-	}
-	capSpan.End()
+	m.loadBestEffort(ctx, collFile, "file_monitor", "file monitor", "continuing without file observation")
+	m.loadBestEffort(ctx, collNetwork, "network_monitor", "network monitor", "continuing without network observation")
+	m.loadBestEffort(ctx, collCapability, "capability_monitor", "capability monitor", "continuing without capability observation")
 
 	// The credential monitor is a kprobe, not an LSM hook, so it works on
 	// kernels without the BPF LSM enabled - which is most of them. It is the
 	// only monitor that reports a privilege escalation the workload never
 	// asked the kernel for through a syscall.
-	_, credSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("cred_monitor"),
-		observability.AttrRequired.Bool(false))
-	if credSpecs, cerr2 := LoadCredMonitor(); cerr2 == nil {
-		credSizes := map[string]uint32{"cred_events": m.mapSizing.RingBufBytes}
-		applyMapSizing(credSpecs, credSizes)
-		observability.RecordMapSizing(credSpan, credSizes)
-		if credColl, cerr := ebpf.NewCollection(credSpecs); cerr == nil {
-			m.credCollection = credColl
-		} else {
-			observability.RecordDegraded(credSpan, "cred_monitor", cerr.Error())
-			log.Log.V(0).Info("credential monitor unavailable; continuing without escalation detection", "error", cerr.Error())
-		}
-	} else {
-		observability.RecordDegraded(credSpan, "cred_monitor", cerr2.Error())
-		log.Log.V(0).Info("credential monitor spec unavailable", "error", cerr2.Error())
-	}
-	credSpan.End()
+	m.loadBestEffort(ctx, collCred, "cred_monitor", "credential monitor", "continuing without escalation detection")
 
 	// The shell monitor has no attach point until a shell is found to probe;
 	// loading it here means TraceShell can attach without a load latency
 	// spike at the moment an interactive session starts.
-	_, shellSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("shell_monitor"),
-		observability.AttrRequired.Bool(false))
-	if shellSpecs, serr := LoadShellMonitor(); serr == nil {
-		shellSizes := map[string]uint32{"shell_events": m.mapSizing.RingBufBytes}
-		applyMapSizing(shellSpecs, shellSizes)
-		observability.RecordMapSizing(shellSpan, shellSizes)
-		if shellColl, cerr := ebpf.NewCollection(shellSpecs); cerr == nil {
-			m.shellCollection = shellColl
-		} else {
-			observability.RecordDegraded(shellSpan, "shell_monitor", cerr.Error())
-			log.Log.V(0).Info("shell monitor unavailable; continuing without interactive command capture", "error", cerr.Error())
-		}
-	} else {
-		observability.RecordDegraded(shellSpan, "shell_monitor", serr.Error())
-		log.Log.V(0).Info("shell monitor spec unavailable", "error", serr.Error())
-	}
-	shellSpan.End()
+	m.loadBestEffort(ctx, collShell, "shell_monitor", "shell monitor", "continuing without interactive command capture")
 
 	// The generic kprobe is loaded but attached to nothing: a probe exists
 	// only once a policy names a symbol. Loading up front means the first
 	// attach is a link creation rather than a program load.
-	_, kpSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("generic_kprobe"),
-		observability.AttrRequired.Bool(false))
-	if kpSpecs, kerr := LoadGenericKprobe(); kerr == nil {
-		kpSizes := map[string]uint32{"kp_events": m.mapSizing.RingBufBytes}
-		applyMapSizing(kpSpecs, kpSizes)
-		observability.RecordMapSizing(kpSpan, kpSizes)
-		if kpColl, cerr := ebpf.NewCollection(kpSpecs); cerr == nil {
-			m.kprobeCollection = kpColl
-		} else {
-			observability.RecordDegraded(kpSpan, "generic_kprobe", cerr.Error())
-			log.Log.V(0).Info("generic kprobe unavailable; user-defined kernel probes disabled", "error", cerr.Error())
-		}
-	} else {
-		observability.RecordDegraded(kpSpan, "generic_kprobe", kerr.Error())
-		log.Log.V(0).Info("generic kprobe spec unavailable", "error", kerr.Error())
-	}
-	kpSpan.End()
+	m.loadBestEffort(ctx, collKprobe, "generic_kprobe", "generic kprobe", "user-defined kernel probes disabled")
 
-	_, execSpan := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
-		observability.AttrProgram.String("exec_monitor"),
-		observability.AttrRequired.Bool(false))
-	if execSpecs, eerr := LoadExecMonitor(); eerr == nil {
-		execSizes := map[string]uint32{
-			"exec_allowed": m.mapSizing.ExecAllowed,
-			"exec_events":  m.mapSizing.RingBufBytes,
-		}
-		applyMapSizing(execSpecs, execSizes)
-		observability.RecordMapSizing(execSpan, execSizes)
-		if execColl, cerr := ebpf.NewCollection(execSpecs); cerr == nil {
-			m.execCollection = execColl
-		} else {
-			observability.RecordDegraded(execSpan, "exec_monitor", cerr.Error())
-			log.Log.V(0).Info("exec monitor unavailable; continuing without exec observation", "error", cerr.Error())
-		}
-	} else {
-		observability.RecordDegraded(execSpan, "exec_monitor", eerr.Error())
-		log.Log.V(0).Info("exec monitor spec unavailable; continuing without exec observation", "error", eerr.Error())
-	}
-	execSpan.End()
+	m.loadBestEffort(ctx, collExec, "exec_monitor", "exec monitor", "continuing without exec observation")
 
 	return nil
+}
+
+// loadBestEffort loads, creates and pins one collection whose absence degrades
+// the agent rather than stopping it.
+//
+// Six near-identical blocks used to spell this out inline, which is how the
+// same "carry on without it" handling came to be written six times and why a
+// new collection was easy to add and easy to forget to pin. A collection
+// already adopted from bpffs is skipped outright: it is loaded, attached and
+// enforcing, and creating a second copy would double every hook.
+//
+// Called with m.mu held.
+func (m *Manager) loadBestEffort(ctx context.Context, id collectionID, program, label, note string) {
+	if m.adoptedLoaded(id) {
+		return
+	}
+	_, span := observability.StartSpan(ctx, observability.SpanEBPFProgramLoad,
+		observability.AttrProgram.String(program),
+		observability.AttrRequired.Bool(false))
+	defer span.End()
+
+	spec, serr := m.specFor(id)
+	if serr != nil {
+		observability.RecordDegraded(span, program, serr.Error())
+		log.Log.V(0).Info(label+" spec unavailable; "+note, "error", serr.Error())
+		return
+	}
+	observability.RecordMapSizing(span, m.mapSizesFor(id))
+
+	coll, cerr := ebpf.NewCollection(spec)
+	if cerr != nil {
+		// Degraded, not failed: the agent is designed to run syscall-only.
+		// Marking the span an error here would paint every kernel without
+		// the BPF LSM red.
+		observability.RecordDegraded(span, program, cerr.Error())
+		log.Log.V(0).Info(label+" unavailable; "+note, "error", cerr.Error())
+		return
+	}
+	*m.collectionSlot(id) = coll
+	switch id {
+	case collFile:
+		m.fileSpecs = spec
+	case collNetwork:
+		m.networkSpecs = spec
+	}
+	m.pinCollection(id, coll)
 }
 
 // AttachPrograms links the loaded programs to their kernel hooks.
@@ -841,7 +781,9 @@ func (m *Manager) AttachPrograms() (err error) {
 			observability.AttrProgram.String("syscall_monitor"),
 			observability.AttrHook.String("tracepoint/raw_syscalls:sys_enter"),
 			observability.AttrRequired.Bool(true))
-		l, aerr := link.Tracepoint("raw_syscalls", "sys_enter", prog, nil)
+		l, aerr := m.attachOrAdoptLink(collSyscall, linkSyscallTracepoint, func() (link.Link, error) {
+			return link.Tracepoint("raw_syscalls", "sys_enter", prog, nil)
+		})
 		observability.EndSpan(span, aerr)
 		if aerr != nil {
 			return fmt.Errorf("failed to attach tracepoint raw_syscalls/sys_enter: %w", aerr)
@@ -866,7 +808,9 @@ func (m *Manager) AttachPrograms() (err error) {
 				observability.AttrProgram.String("file_monitor"),
 				observability.AttrHook.String("lsm/file_open"),
 				observability.AttrRequired.Bool(false))
-			l, aerr := link.AttachLSM(link.LSMOptions{Program: prog})
+			l, aerr := m.attachOrAdoptLink(collFile, linkFileOpen, func() (link.Link, error) {
+				return link.AttachLSM(link.LSMOptions{Program: prog})
+			})
 			if aerr != nil {
 				// Degrade gracefully: without the bpf LSM active, keep running with
 				// syscall observation rather than failing the whole data plane.
@@ -890,7 +834,9 @@ func (m *Manager) AttachPrograms() (err error) {
 				observability.AttrProgram.String("network_monitor"),
 				observability.AttrHook.String("lsm/socket_connect"),
 				observability.AttrRequired.Bool(false))
-			l, aerr := link.AttachLSM(link.LSMOptions{Program: prog})
+			l, aerr := m.attachOrAdoptLink(collNetwork, linkSocketConnect, func() (link.Link, error) {
+				return link.AttachLSM(link.LSMOptions{Program: prog})
+			})
 			if aerr != nil {
 				observability.EndSpan(span, aerr)
 				log.Log.V(0).Info("lsm/socket_connect attach failed; network observation/enforcement disabled", "error", aerr.Error())
@@ -909,7 +855,9 @@ func (m *Manager) AttachPrograms() (err error) {
 				observability.AttrProgram.String("exec_monitor"),
 				observability.AttrHook.String("lsm/bprm_check_security"),
 				observability.AttrRequired.Bool(false))
-			l, aerr := link.AttachLSM(link.LSMOptions{Program: prog})
+			l, aerr := m.attachOrAdoptLink(collExec, linkBprmCheck, func() (link.Link, error) {
+				return link.AttachLSM(link.LSMOptions{Program: prog})
+			})
 			if aerr != nil {
 				observability.EndSpan(span, aerr)
 				log.Log.V(0).Info("lsm/bprm_check_security attach failed; exec observation/enforcement disabled", "error", aerr.Error())
@@ -930,6 +878,10 @@ func (m *Manager) AttachPrograms() (err error) {
 			// pid be retired rather than assumed still live.
 			{"sched", "sched_process_exit", "handle_sched_exit", "process exits will not be reported"},
 		} {
+			// Pinned under the hook's own name so a restart adopts each one
+			// individually: a kernel missing sched_process_exit must not cost
+			// the argv tracepoints their pins.
+			pinName := "tp_" + tp.group + "_" + tp.name
 			p := m.execCollection.Programs[tp.prog]
 			if p == nil {
 				continue
@@ -938,7 +890,9 @@ func (m *Manager) AttachPrograms() (err error) {
 				observability.AttrProgram.String(tp.prog),
 				observability.AttrHook.String("tracepoint/"+tp.group+":"+tp.name),
 				observability.AttrRequired.Bool(false))
-			l, aerr := link.Tracepoint(tp.group, tp.name, p, nil)
+			l, aerr := m.attachOrAdoptLink(collExec, pinName, func() (link.Link, error) {
+				return link.Tracepoint(tp.group, tp.name, p, nil)
+			})
 			if aerr != nil {
 				observability.EndSpan(span, aerr)
 				log.Log.V(0).Info("tracepoint attach failed; "+tp.note,
@@ -957,7 +911,9 @@ func (m *Manager) AttachPrograms() (err error) {
 				observability.AttrProgram.String("capability_monitor"),
 				observability.AttrHook.String("lsm/capable"),
 				observability.AttrRequired.Bool(false))
-			l, aerr := link.AttachLSM(link.LSMOptions{Program: prog})
+			l, aerr := m.attachOrAdoptLink(collCapability, linkCapable, func() (link.Link, error) {
+				return link.AttachLSM(link.LSMOptions{Program: prog})
+			})
 			if aerr != nil {
 				observability.EndSpan(span, aerr)
 				log.Log.V(0).Info("lsm/capable attach failed; capability observation disabled", "error", aerr.Error())
@@ -980,7 +936,9 @@ func (m *Manager) AttachPrograms() (err error) {
 				observability.AttrProgram.String("cred_monitor"),
 				observability.AttrHook.String("kprobe/commit_creds"),
 				observability.AttrRequired.Bool(false))
-			l, aerr := link.Kprobe("commit_creds", prog, nil)
+			l, aerr := m.attachOrAdoptLink(collCred, linkCommitCreds, func() (link.Link, error) {
+				return link.Kprobe("commit_creds", prog, nil)
+			})
 			if aerr != nil {
 				observability.EndSpan(span, aerr)
 				log.Log.V(0).Info("kprobe/commit_creds attach failed; privilege-escalation detection disabled", "error", aerr.Error())
@@ -1006,6 +964,17 @@ func (m *Manager) AttachPrograms() (err error) {
 		return fmt.Errorf("failed to setup event readers: %w", rerr)
 	}
 	readerSpan.End()
+
+	// State the restart outcome in one line, because it is the single fact an
+	// operator needs after a rolling update: either these hooks never left the
+	// kernel, or this node had a gap and had to start over.
+	if len(m.adoptedLinkNames) > 0 {
+		log.Log.V(0).Info("inherited still-attached kernel hooks from the previous agent; no enforcement gap",
+			"hooks", m.adoptedLinkNames)
+	} else if m.pins != nil && !m.pins.enabled {
+		log.Log.V(0).Info("eBPF state is not pinned; enforcement on this node will NOT survive an agent restart",
+			"reason", m.pins.disabledReason)
+	}
 
 	return nil
 }
@@ -1162,7 +1131,14 @@ func (m *Manager) Stop() {
 		}
 	}
 
-	// Detach every link.
+	// Release every link handle.
+	//
+	// NOT a detach when the link is pinned: the pin on bpffs is a second
+	// reference, so closing this process's descriptor leaves the program
+	// attached and enforcing with nobody running. That is exactly what makes a
+	// rolling update gapless, and it is why an uninstall has to be explicit -
+	// see Teardown and PurgePinnedState in pinning.go. Where pinning was
+	// unavailable, this is still a real detach and the old behavior stands.
 	for _, links := range [][]link.Link{
 		m.syscallLinks, m.networkLinks, m.fileLinks,
 		m.execLinks, m.capLinks, m.credLinks,

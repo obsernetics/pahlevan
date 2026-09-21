@@ -3454,6 +3454,21 @@ spec:
             resourceFieldRef:
               resource: limits.cpu
         volumeMounts:
+        # The host's bpffs, and the reason this agent survives its own rolling
+        # update. Programs, maps and links are pinned under
+        # /sys/fs/bpf/pahlevan/<namespace>, which is a second reference held by
+        # the filesystem rather than by the process - so when this pod stops,
+        # the LSM hooks stay attached and the learned allow-sets stay in the
+        # maps, and the replacement pod adopts them instead of coming up with
+        # nothing enforced and every map empty.
+        #
+        # It must be the HOST's bpffs (an emptyDir would vanish with the pod)
+        # and it must be writable. Bidirectional propagation is what makes the
+        # pins visible to the node and to a later pod. The pins are deliberately
+        # NOT removed when this pod terminates: uninstalling runs
+        # `pahlevan-agent --teardown-pinned-state` once per node, and nothing in
+        # the pod's own termination may do it, or every rolling update would
+        # detach every program on every node.
         - name: bpffs
           mountPath: /sys/fs/bpf
           mountPropagation: Bidirectional
