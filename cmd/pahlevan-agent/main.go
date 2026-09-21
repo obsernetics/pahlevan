@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -108,6 +109,9 @@ func main() {
 		notifyTemplate       string
 		notifyAllEvents      bool
 		notifyDedupe         time.Duration
+		pinRoot              string
+		teardownPins         bool
+		restoreFromProfiles  bool
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -184,6 +188,22 @@ func main() {
 			"via a uretprobe on readline. Off by default: recording what a person types is a "+
 			"decision an operator makes deliberately. Shells without readline (dash, busybox) "+
 			"cannot be probed and are unaffected.")
+	flag.StringVar(&pinRoot, "pin-root", ebpf.DefaultPinRoot(),
+		"bpffs directory holding this installation's pinned programs, maps and links. "+
+			"Pinning is what keeps enforcement attached across an agent restart - a rolling "+
+			"update, an OOM kill, an eviction - so the node is never left unenforced and the "+
+			"learned allow-sets are not lost. Empty disables pinning, and enforcement then "+
+			"stops the moment this process exits.")
+	flag.BoolVar(&teardownPins, "teardown-pinned-state", false,
+		"Detach everything Pahlevan has pinned under --pin-root and exit. This is the "+
+			"UNINSTALL path: it leaves the node with no Pahlevan programs in the kernel. "+
+			"Normal pod termination deliberately does NOT do this, because detaching on "+
+			"every SIGTERM is exactly what makes a rolling update leave nodes unprotected.")
+	flag.BoolVar(&restoreFromProfiles, "restore-from-profiles", true,
+		"When pinned state could not be adopted, rebuild the learned allow-sets from the "+
+			"published ContainerProfile resources for this node. A lossy fallback for nodes "+
+			"without bpffs: the profiles record paths but not write intent, and destinations "+
+			"but not transport, so it restores reads and TCP only.")
 	flag.StringVar(&podName, "pod-name", os.Getenv("PAHLEVAN_POD_NAME"),
 		"This agent pod's name, from the downward API. Becomes service.instance.id, "+
 			"without which every agent in the DaemonSet collapses into one series.")
@@ -193,6 +213,27 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// The uninstall path, and nothing else reaches it.
+	//
+	// Pinned programs outlive this process on purpose - that is what stops a
+	// rolling update from leaving the node unenforced - so removing Pahlevan
+	// has to be a deliberate act rather than a side effect of a pod stopping.
+	// Run this once per node when uninstalling; the DaemonSet's own
+	// termination must never invoke it, or every update would detach
+	// everything on every node all over again.
+	if teardownPins {
+		// Deliberately before the observability manager exists: there is
+		// nothing buffered to flush on this path, and an uninstall must not
+		// depend on a collector being reachable.
+		if err := ebpf.PurgePinnedState(pinRoot); err != nil {
+			setupLog.Error(err, "unable to tear down pinned eBPF state", "root", pinRoot)
+			os.Exit(1)
+		}
+		setupLog.Info("pinned eBPF state removed; no Pahlevan programs remain attached on this node",
+			"root", pinRoot)
+		return
+	}
 
 	if nodeName == "" {
 		setupLog.Info("warning: node name is empty; set --node-name or PAHLEVAN_NODE_NAME for correct node-scoped behavior")
@@ -237,6 +278,12 @@ func main() {
 		fatalf(err, "unable to initialize eBPF manager")
 	}
 	defer ebpfManager.Close()
+
+	// Point the data plane at this installation's bpffs directory before
+	// anything is loaded: LoadPrograms adopts whatever a previous agent left
+	// pinned there, so the node keeps enforcing across this restart instead of
+	// going dark and coming back with empty allow-sets.
+	ebpfManager.SetPinRoot(pinRoot)
 
 	if err := ebpfManager.LoadPrograms(); err != nil {
 		fatalf(err, "unable to load eBPF programs")
@@ -411,7 +458,28 @@ func main() {
 	if err := ebpfManager.Start(dataCtx); err != nil {
 		fatalf(err, "unable to start eBPF event readers")
 	}
-	setupLog.Info("eBPF data plane attached and running")
+	setupLog.Info("eBPF data plane attached and running",
+		"pinRoot", ebpfManager.PinRoot(), "adoptedPinnedState", ebpfManager.AdoptedPinnedState())
+
+	// Fallback, and only a fallback. When the pinned state was adopted the maps
+	// already hold the real allow-sets and touching them here would re-add
+	// entries an operator has since revoked. See restore.go.
+	if restoreFromProfiles && !ebpfManager.AdoptedPinnedState() {
+		rep, rerr := restoreAllowSetsFromProfiles(context.Background(), mgr.GetAPIReader(), ebpfManager, nodeName)
+		switch {
+		case rerr != nil:
+			// Not fatal: the containers re-learn. Saying so matters, though -
+			// an operator watching a workload get denied after an upgrade
+			// needs to know its baseline was not put back.
+			setupLog.Error(rerr, "could not rebuild allow-sets from container profiles; containers will re-learn")
+		case rep.Containers > 0:
+			setupLog.Info("rebuilt allow-sets from container profiles (lossy: reads and TCP only)",
+				"containers", rep.Containers, "entries", rep.Total(),
+				"files", rep.Files, "execs", rep.Executables,
+				"capabilities", rep.Capabilities, "destinations", rep.Destinations,
+				"problems", rep.Errors)
+		}
+	}
 
 	if grpcServer != nil {
 		go func() {
@@ -537,7 +605,17 @@ func main() {
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		fatalf(err, "unable to set up health check")
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	// Readiness reports whether the data plane is in the kernel, not whether
+	// the port is open. A ping-only probe marks this pod ready the moment it
+	// binds, so a rolling update moves on to the next node while this one has
+	// nothing attached - which is the same node-wide gap pinning exists to
+	// close, arriving by a different route.
+	if err := mgr.AddReadyzCheck("dataplane", func(_ *http.Request) error {
+		if !ebpfManager.Attached() {
+			return fmt.Errorf("eBPF data plane is not attached")
+		}
+		return nil
+	}); err != nil {
 		fatalf(err, "unable to set up ready check")
 	}
 
