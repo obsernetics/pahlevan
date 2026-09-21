@@ -31,6 +31,17 @@ spec:
     spec:
       serviceAccountName: {{ include "pahlevan.operatorServiceAccountName" . }}
       hostUsers: {{ .Values.operator.hostUsers }}
+      {{- with .Values.operator.priorityClassName }}
+      # While no replica holds the lease, no PahlevanPolicy is reconciled. An
+      # operator with no priority class is an ordinary Burstable pod and gets
+      # evicted under node pressure ahead of workloads that declared one.
+      priorityClassName: {{ . }}
+      {{- end }}
+      # Covers controller-runtime's 30s graceful shutdown plus the 5s
+      # observability flush. A SIGKILL before the manager stops also skips the
+      # leader-election release, so the standby waits out the whole lease with
+      # nothing reconciling.
+      terminationGracePeriodSeconds: {{ .Values.operator.terminationGracePeriodSeconds }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -66,18 +77,40 @@ spec:
           containerPort: {{ .Values.metrics.port }}
         - name: health
           containerPort: {{ .Values.health.port }}
+        # The probe server does not bind until mgr.Start, which is after the
+        # caches are built. On a cluster whose API server is slow to serve the
+        # initial list, or one where the CRDs were applied moments earlier and
+        # are not established yet, that outlasts three liveness failures and
+        # the kubelet killed an operator that was starting normally.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          periodSeconds: {{ .Values.operator.startupProbe.periodSeconds }}
+          failureThreshold: {{ .Values.operator.startupProbe.failureThreshold }}
+          timeoutSeconds: 3
         livenessProbe:
           httpGet:
             path: /healthz
             port: health
-          initialDelaySeconds: 15
           periodSeconds: 20
+          # 1s (the default) is shorter than a GC pause on a cluster-sized
+          # cache, and a timed-out liveness probe is a kill.
+          timeoutSeconds: 3
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /readyz
             port: health
-          initialDelaySeconds: 5
+          # This is what the PodDisruptionBudget counts as available, so a
+          # replica that is not serving must not report ready.
           periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      # preferred, not required: a single-node cluster must still be able to
+      # run both replicas, and a required rule leaves the second one Pending
+      # there forever. The PodDisruptionBudget covers the case where the
+      # preference was not honoured and both landed together.
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

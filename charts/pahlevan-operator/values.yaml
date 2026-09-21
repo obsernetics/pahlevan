@@ -44,14 +44,46 @@ agent:
     - SYS_ADMIN
     - SYS_RESOURCE
     - NET_ADMIN
+  # Sized from what the agent allocates, not from a round number. Since kernel
+  # 5.11 BPF map memory is charged to the creating process's memcg, so every
+  # preallocated map comes out of this limit and a limit below the map
+  # footprint is an OOM kill during startup. The declared maps sum to 6.1 MiB
+  # of key+value across all seven programs; per-entry kernel overhead pushes
+  # the real memlock several times higher, and pkg/ebpf/vmload_test.go
+  # measures it on a live kernel and fails above 64 MiB. On top of that the
+  # agent holds a controller-runtime cache whose size tracks the CLUSTER's
+  # object count, not the node's, and every agent holds its own copy.
+  #
+  # The CPU limit throttles the goroutines draining the ring buffers, and a
+  # throttled reader does not slow down - the kernel overwrites the buffer and
+  # the events are simply gone, which looks like a quiet node.
   resources:
     requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 200m
+      memory: 256Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: "1"
+      memory: 1Gi
   priorityClassName: system-node-critical
+  # Long enough for controller-runtime's 30s graceful shutdown, the eBPF link
+  # detach, and the 5s observability flush. At 30s the kubelet used to SIGKILL
+  # mid-unwind, leaving links attached behind a dead ring-buffer reader.
+  terminationGracePeriodSeconds: 60
+  # periodSeconds x failureThreshold is the budget the agent gets to load and
+  # attach its eBPF programs before the kubelet gives up: nothing listens on
+  # the health port until that finishes. Raise failureThreshold on nodes with
+  # very large BTF or a cold page cache.
+  startupProbe:
+    periodSeconds: 5
+    failureThreshold: 30
+  # Generated seccomp profiles. They must be written under the kubelet's own
+  # seccomp root, because that is the only place a localhostProfile reference
+  # resolves; anywhere else produces files nothing can name. Setting generate
+  # false drops both the flags and the hostPath mount.
+  seccomp:
+    generate: true
+    root: /var/lib/kubelet/seccomp
+    dir: /var/lib/kubelet/seccomp/pahlevan
   tolerations:
     - operator: Exists
   nodeSelector:
@@ -69,13 +101,36 @@ operator:
   # unprivileged host UID. Requires a Kubernetes version with UserNamespaces
   # available; set false on older clusters.
   hostUsers: false
+  # The operator's resident set tracks the cluster's object count: it caches
+  # pods, nodes, namespaces, services, deployments, replicasets, daemonsets,
+  # statefulsets and networkpolicies cluster-wide. 64Mi did not fit that cache
+  # past a few hundred pods, and the OOM lands during the initial list - the
+  # moment the cache is largest - so it reads as a crash loop on startup
+  # rather than as a resource problem.
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
+      cpu: 100m
+      memory: 128Mi
     limits:
-      cpu: 200m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
+  # While no replica holds the lease nothing reconciles, so the operator is
+  # cluster-critical even though it is not node-critical. Set to "" on a
+  # cluster that restricts the built-in system priority classes.
+  priorityClassName: system-cluster-critical
+  # Covers controller-runtime's 30s graceful shutdown plus the 5s
+  # observability flush. A SIGKILL before the manager stops also skips the
+  # leader-election release, so the standby waits out the whole lease.
+  terminationGracePeriodSeconds: 45
+  startupProbe:
+    periodSeconds: 2
+    failureThreshold: 30
+  # A node drain or a cluster upgrade can otherwise evict both replicas at
+  # once. maxUnavailable rather than minAvailable so that replicaCount: 1 does
+  # not make the cluster undrainable.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
   tolerations:
     - key: node-role.kubernetes.io/control-plane
       operator: Exists

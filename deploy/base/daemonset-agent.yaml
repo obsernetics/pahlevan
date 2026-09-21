@@ -36,8 +36,31 @@ spec:
       hostNetwork: false
       hostIPC: false
       # Priority so the security agent is not evicted under node pressure.
+      #
+      # system-node-critical outranks every ordinary workload, which is the
+      # point: the kubelet evicts by priority under memory pressure, and an
+      # agent evicted before the pods it watches leaves those pods running
+      # with nothing enforcing against them and nothing recording what they
+      # did. The node keeps its workloads and loses its monitor - the worst
+      # of the two outcomes.
       priorityClassName: system-node-critical
-      terminationGracePeriodSeconds: 30
+      # 30s (the default) is not enough to stop cleanly. On SIGTERM the agent
+      # unwinds in three stages: controller-runtime stops its runnables under
+      # its own GracefulShutdownTimeout, which defaults to 30s; then the
+      # deferred ebpf Close() detaches the links and releases the maps; then
+      # observability.Shutdown flushes buffered spans and metrics under the 5s
+      # deadline in pkg/observability/manager.go. 30 + detach + 5 does not fit
+      # in 30, so the kubelet used to SIGKILL mid-unwind: links left attached
+      # behind a dead reader (the ring buffers fill and the kernel drops), and
+      # the final window of denials never exported. 60 covers all three with
+      # room for a slow detach.
+      terminationGracePeriodSeconds: 60
+      #
+      # Deliberately no preStop hook. The only thing a preStop could do here is
+      # sleep, and sleeping does not help: the agent's links stay attached
+      # until the process exits, so a delay before SIGTERM just lengthens the
+      # window in which a terminating agent is still the one reading the ring
+      # buffers. Ordering is handled inside the process, not by the kubelet.
       containers:
       - name: agent
         image: ghcr.io/obsernetics/pahlevan:latest
@@ -94,13 +117,51 @@ spec:
             - NET_ADMIN
             drop:
             - ALL
+          # Pinned Unconfined, and pinned on purpose rather than left unset.
+          # Unset already means Unconfined today, but a node started with
+          # --seccomp-default silently turns unset into RuntimeDefault, and the
+          # container runtimes' default profile gates bpf(2) and
+          # perf_event_open(2) on the calling capability set. On a kernel where
+          # this agent runs with CAP_BPF/CAP_PERFMON the gate does not match and
+          # program load fails with EPERM - on that cluster only, for a reason
+          # nothing in this file would explain. The operator, the dashboard and
+          # every other component run RuntimeDefault; this container is the one
+          # exception and it says so out loud.
+          seccompProfile:
+            type: Unconfined
+        # Sized from what the agent actually allocates, not from a round
+        # number:
+        #
+        # memory - since kernel 5.11 BPF map memory is charged to the memcg of
+        #   the process that created the map, so every preallocated map comes
+        #   out of THIS limit and a limit below the map footprint is an OOM
+        #   kill during startup, before a single event is read. The declared
+        #   maps sum to 6.1 MiB of key+value across all seven programs
+        #   (file_allowed alone is 131072 entries); per-entry kernel overhead
+        #   pushes the real memlock several times higher, and
+        #   pkg/ebpf/vmload_test.go measures it on a live kernel and fails
+        #   above 64 MiB. 64 MiB is therefore the worst case the project
+        #   enforces for maps. On top of that the agent runs a
+        #   controller-runtime cache over pods, nodes, namespaces, services,
+        #   deployments, replicasets, daemonsets, statefulsets and
+        #   networkpolicies, and that cache scales with the size of the
+        #   CLUSTER, not of the node - every agent holds a copy. 256Mi
+        #   requested covers the maps plus a cache for a few hundred pods; 1Gi
+        #   of limit is the headroom a few thousand need. 512Mi was under the
+        #   cache on any cluster worth protecting.
+        #
+        # cpu - the limit throttles the goroutines draining the ring buffers.
+        #   A throttled reader does not slow down: the kernel overwrites the
+        #   buffer and the events are gone, which shows up as a quiet node
+        #   rather than as an error. 1 core is the ceiling a burst of execs
+        #   needs; 200m requested is the steady state.
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
+            cpu: 200m
+            memory: 256Mi
           limits:
-            cpu: 500m
-            memory: 512Mi
+            cpu: "1"
+            memory: 1Gi
         ports:
         - name: metrics
           containerPort: 8080
@@ -109,18 +170,54 @@ spec:
         # Uncomment alongside --grpc-bind-address above.
         # - name: grpc
         #   containerPort: 9090
+        # The startup probe is what makes the other two safe. The agent loads
+        # and attaches its eBPF programs BEFORE it constructs the manager that
+        # serves :8081 (cmd/pahlevan-agent/main.go calls LoadPrograms, then
+        # NewManager, then Start), so nothing is listening on the health port
+        # for the whole of BTF parsing, CO-RE relocation and verification.
+        # With only a liveness probe at initialDelaySeconds 15 /
+        # periodSeconds 20 the kubelet got three connection-refused failures
+        # and killed the container at ~55s - then did it again, forever, on
+        # exactly the nodes where loading is slowest (big BTF, cold page cache,
+        # a busy verifier). A startup probe suspends liveness until it passes,
+        # so the container gets 30 x 5s = 150s to come up and is killed
+        # immediately after that if it never does.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          periodSeconds: 5
+          failureThreshold: 30
+          timeoutSeconds: 3
         livenessProbe:
           httpGet:
             path: /healthz
             port: health
-          initialDelaySeconds: 15
+          # initialDelaySeconds is deliberately absent: the kubelet does not
+          # run this probe at all until the startup probe has succeeded, so a
+          # delay here would only add to the 150s already granted above.
           periodSeconds: 20
+          # The default 1s timeout is shorter than a stop-the-world pause on a
+          # node under the memory pressure this agent is meant to survive, and
+          # a timed-out liveness probe is a kill. 3s x 3 failures means the
+          # process has to be unresponsive for a full minute.
+          timeoutSeconds: 3
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /readyz
             port: health
-          initialDelaySeconds: 5
+          # Ready here means the probe server is up, which is after the eBPF
+          # programs are loaded but not necessarily after every link is
+          # attached: /readyz is still wired to healthz.Ping in
+          # cmd/pahlevan-agent/main.go, so it cannot report attachment. Until
+          # that check reports real enforcement state, treat readiness as
+          # "the process got past program load" and use the
+          # PahlevanNoContainersEnforcing alert in deploy/monitoring for the
+          # rest.
           periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
         env:
         - name: PAHLEVAN_NODE_NAME
           valueFrom:

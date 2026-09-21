@@ -28,6 +28,20 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: pahlevan-operator
+      # The operator is not node-critical, but it is cluster-critical: while no
+      # replica holds the lease, no PahlevanPolicy is reconciled, so a policy
+      # edited during an incident does not reach any node. Without a priority
+      # class the operator is an ordinary Burstable pod and the kubelet evicts
+      # it under node pressure ahead of workloads that declared one.
+      priorityClassName: system-cluster-critical
+      # SIGTERM -> controller-runtime stops its runnables under a 30s default
+      # GracefulShutdownTimeout, then observability flushes under the 5s
+      # deadline in pkg/observability/manager.go. The manager runs with
+      # LeaderElectionReleaseOnCancel, so the lease is given up on the way out
+      # and the standby takes over at once; a SIGKILL at 30s skips that release
+      # and the standby instead waits out the full lease duration with nothing
+      # reconciling. 45s covers 30 + 5 with margin.
+      terminationGracePeriodSeconds: 45
       # User namespaces (KEP-127, GA in recent Kubernetes): the operator's
       # in-container root maps to an unprivileged UID on the host.
       hostUsers: false
@@ -55,30 +69,67 @@ spec:
           capabilities:
             drop:
             - ALL
+        # The operator holds a controller-runtime cache over pods, nodes,
+        # namespaces, services, deployments, replicasets, daemonsets,
+        # statefulsets and networkpolicies for the whole cluster (see the
+        # ClusterRole in rbac.yaml), so its resident set tracks object count,
+        # not request rate. 64Mi did not fit that cache past a few hundred
+        # pods, and the symptom is an OOM kill during the initial list - the
+        # one moment the cache is largest - which reads as a crash loop on
+        # startup rather than as a resource problem. 128Mi requested / 512Mi
+        # limit covers a few thousand objects. The CPU limit only has to cover
+        # the reconcile burst after that same initial list.
         resources:
           requests:
-            cpu: 50m
-            memory: 64Mi
+            cpu: 100m
+            memory: 128Mi
           limits:
-            cpu: 200m
-            memory: 256Mi
+            cpu: 500m
+            memory: 512Mi
         ports:
         - name: metrics
           containerPort: 8080
         - name: health
           containerPort: 8081
+        # The probe server does not bind until mgr.Start runs, and before that
+        # the operator establishes its scheme and its caches. On a cluster
+        # whose API server is slow to serve the initial list - or one where the
+        # CRDs were applied moments earlier and are not established yet - that
+        # takes longer than the three liveness failures the old settings
+        # allowed, and the kubelet killed the operator while it was starting
+        # normally. The startup probe gives it 30 x 2s = 60s and holds liveness
+        # off until then.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          periodSeconds: 2
+          failureThreshold: 30
+          timeoutSeconds: 3
         livenessProbe:
           httpGet:
             path: /healthz
             port: health
-          initialDelaySeconds: 15
           periodSeconds: 20
+          # 1s (the default) is shorter than a GC pause on a cache this size,
+          # and a timed-out liveness probe kills the container.
+          timeoutSeconds: 3
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /readyz
             port: health
-          initialDelaySeconds: 5
+          # Readiness is what the PodDisruptionBudget in pdb.yaml counts. A
+          # replica that is not serving must not be counted as available, or a
+          # drain would be allowed to take the last working one.
           periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      # preferred, not required: a single-node cluster (kind, a laptop, CI)
+      # must still be able to run both replicas, and a required rule would
+      # leave the second one Pending forever there. On a real cluster the
+      # preference separates them, and pdb.yaml keeps a drain from taking both
+      # in the case where it did not.
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

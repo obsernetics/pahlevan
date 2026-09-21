@@ -1,0 +1,34 @@
+{{- if and .Values.operator.enabled .Values.operator.podDisruptionBudget.enabled }}
+# Without a budget the eviction API takes both operator replicas at once. A
+# cluster upgrade drains nodes back to back, and the anti-affinity in
+# deployment.yaml is `preferred`, so on a small or unbalanced cluster both
+# replicas can be on the node being drained. Losing both means nothing
+# reconciles a PahlevanPolicy until one reschedules and wins the lease again -
+# during the upgrade, which is when policy changes tend to be made.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pahlevan.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pahlevan.labels" . | nindent 4 }}
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/component: control-plane
+spec:
+  # maxUnavailable, not minAvailable. `minAvailable: 1` with
+  # operator.replicaCount set to 1 permits zero disruptions, so a drain of that
+  # node blocks forever and anyone who scaled the operator down has silently
+  # made their cluster undrainable. maxUnavailable permits one eviction at a
+  # time at any replica count, so the drain proceeds one replica at a time.
+  maxUnavailable: {{ .Values.operator.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+# There is deliberately no budget for the agent DaemonSet. `kubectl drain`
+# deletes DaemonSet pods directly rather than evicting them, so a budget would
+# not protect the agent from a drain at all; what it would do is sit
+# permanently at zero allowed disruptions once a node is cordoned - a
+# DaemonSet pod there can never become available again - and wedge the
+# descheduler and the cluster autoscaler cluster-wide.

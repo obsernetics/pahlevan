@@ -4,8 +4,15 @@
 # pkg/metrics/dashboard_test.go, which assert the same for the dashboard.
 #
 # The rules are deliberately few. An alert per metric produces noise that gets
-# muted, and a muted alert is worse than no alert. These four cover the
-# failure modes an operator cannot see any other way.
+# muted, and a muted alert is worse than no alert. These cover the failure
+# modes an operator cannot see any other way.
+#
+# Two groups. pahlevan.enforcement is about enforcement going wrong while the
+# components are running. pahlevan.availability is about the components not
+# running at all, which every rule in the first group is blind to: they are
+# built on series the agent records, and a crash-looping agent records
+# nothing, so its expressions return no data and no-data is not a firing
+# alert. A fleet with no agent on it looked identical to a quiet one.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -125,3 +132,64 @@ spec:
           "lsm/... attach failed" in the agent log and confirm lsm=bpf is on the
           kernel command line). Pahlevan is currently an observability tool
           only.
+
+  - name: pahlevan.availability
+    rules:
+    - alert: PahlevanAgentDown
+      # Scoped per node, because that is the blast radius: one agent down means
+      # one kernel with nothing attached to it, while every other node keeps
+      # reporting healthily and the fleet-wide rules above stay silent.
+      #
+      # The job label comes from the Service the ServiceMonitor in this
+      # directory selects (pahlevan-agent-metrics under deploy/base, or
+      # <release>-agent-metrics under the chart), hence the match rather than
+      # an exact name.
+      expr: up{job=~".*agent-metrics"} == 0
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: The Pahlevan agent on {{ $labels.node }} is not responding
+        description: >-
+          The node's agent has failed three consecutive scrapes. Nothing is
+          enforcing or recording on that node, and no other rule here will say
+          so: they are all built on series this agent produces. Check for a
+          CrashLoopBackOff - the usual cause is eBPF program load failing or
+          taking longer than the startup probe allows on this kernel.
+
+    - alert: PahlevanAgentAbsent
+      # The case the per-node rule cannot express: no agent series at all.
+      # A deleted DaemonSet, a failed rollout that took every pod, or a
+      # ServiceMonitor that stopped selecting anything all look the same to
+      # Prometheus - empty - and empty never fires.
+      expr: absent(up{job=~".*agent-metrics"})
+      for: 15m
+      labels:
+        severity: critical
+      annotations:
+        summary: Prometheus is scraping no Pahlevan agent anywhere
+        description: >-
+          Not one agent target exists. Either the DaemonSet is gone, every pod
+          is failing to start, or the ServiceMonitor no longer matches the
+          agent Service. The cluster is running with no enforcement and no
+          record of what its workloads did.
+
+    - alert: PahlevanOperatorHasNoLeader
+      # Both replicas can be Running and Ready with neither holding the lease:
+      # a lost lease, a throttled API server, or an RBAC change that removed
+      # the leases grant. Nothing reconciles in that state and no pod looks
+      # unhealthy. leader_election_master_status is registered by
+      # controller-runtime, labelled with the lease name the operator passes as
+      # LeaderElectionID.
+      expr: max(leader_election_master_status{name="pahlevan-operator-lock"}) == 0
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: No Pahlevan operator replica holds the leader lease
+        description: >-
+          Every operator replica reports itself a backup. No PahlevanPolicy is
+          being reconciled, so a policy created or edited now takes effect
+          nowhere, while the pods stay Ready and nothing else complains. Check
+          the operator log for leader-election renewal errors and that the
+          leases RoleBinding in pahlevan-system still exists.

@@ -1,0 +1,42 @@
+# The operator is leader-elected across two replicas, and without a budget the
+# eviction API will take both of them at once. That is not a theoretical
+# ordering: a cluster upgrade drains nodes back to back, and the anti-affinity
+# in deployment-operator.yaml is `preferred`, so on a small or unbalanced
+# cluster both replicas can be sitting on the node being drained. Losing both
+# means no PahlevanPolicy is reconciled until a replica reschedules and wins
+# the lease again - during the upgrade, which is exactly when policy changes
+# tend to be made.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pahlevan-operator
+  namespace: pahlevan-system
+  labels:
+    app.kubernetes.io/name: pahlevan-operator
+    app.kubernetes.io/part-of: pahlevan
+spec:
+  # maxUnavailable, not minAvailable. They look interchangeable at two replicas
+  # and they are not:
+  #
+  #   minAvailable: 1 with replicaCount reduced to 1 permits zero disruptions,
+  #   so `kubectl drain` blocks on that node forever and an operator who set
+  #   replicaCount: 1 has silently made their cluster undrainable.
+  #
+  #   maxUnavailable: 1 permits exactly one eviction at a time at any replica
+  #   count, including 1. The drain proceeds - one replica at a time, waiting
+  #   for each to come back Ready elsewhere - which is the behaviour wanted.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pahlevan-operator
+# There is deliberately no budget for the agent DaemonSet.
+#
+# `kubectl drain` deletes DaemonSet pods directly instead of evicting them
+# (that is what --ignore-daemonsets means), so a budget would not protect the
+# agent from a drain in the first place. What it WOULD do is block every other
+# eviction path that does go through the API - the descheduler, the cluster
+# autoscaler, node-problem-detector - because a DaemonSet pod on a cordoned or
+# NotReady node can never become available again, so a budget covering it sits
+# permanently at zero allowed disruptions and wedges scale-down cluster-wide.
+# The agent's availability is protected by priorityClassName and by the
+# RollingUpdate maxUnavailable in daemonset-agent.yaml instead.

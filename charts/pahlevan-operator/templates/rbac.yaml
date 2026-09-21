@@ -18,6 +18,27 @@ rules:
 - apiGroups: [""]
   resources: ["pods", "nodes"]
   verbs: ["get", "list", "watch"]
+# namespaces back PahlevanPolicy's selector.namespaceSelector, which matches on
+# the namespace's own labels.
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+# The agent runs AttackSurfaceAnalyzerReconciler, which Owns() these and lists
+# them. Without the grant its informers never sync and the manager exits after
+# the cache timeout: measured as four restarts in ten minutes, each one wiping
+# the learned baseline. This chart shipped without them while
+# deploy/base/rbac.yaml had them, so a Helm install crash-looped where a
+# kubectl apply of the same release did not. Read-only, because the agent
+# never writes them.
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
@@ -51,11 +72,21 @@ rules:
   resources: ["pahlevanpolicies/status", "containerprofiles/status", "attacksurfaces/status"]
   verbs: ["get", "update", "patch"]
 - apiGroups: [""]
-  resources: ["pods", "nodes", "namespaces"]
+  resources: ["pods", "nodes", "namespaces", "services"]
+  verbs: ["get", "list", "watch"]
+# Same workload kinds the agent lists, for the same reason: the controllers
+# that own them cannot start without the grant, and a manager whose informers
+# never sync exits after the cache timeout.
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
+# CEL ValidatingAdmissionPolicy lifecycle (replaces the legacy webhook).
 - apiGroups: ["admissionregistration.k8s.io"]
   resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
