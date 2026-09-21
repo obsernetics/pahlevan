@@ -345,6 +345,60 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
+##@ Supply Chain
+
+# The release image, SBOM and install.yaml are signed keyless in CI, so there
+# is no key here to guard and nothing in this section can sign anything: these
+# targets only verify, and they run the same commands docs/packages.md tells
+# readers to run. Keeping them here means a change to the release workflow
+# that breaks verification is one `make verify-release` away from being
+# noticed, instead of waiting for somebody downstream to report it.
+COSIGN ?= cosign
+SYFT ?= syft
+RELEASE_IMAGE ?= ghcr.io/obsernetics/pahlevan
+RELEASE_VERSION ?= $(VERSION)
+
+# The exact Fulcio certificate identity the release workflow signs under: the
+# workflow file, in this repository, at the tag being released. cosign
+# compares this string, so a signature made by any other workflow, repository
+# or tag fails - which is the property that makes a stolen registry token
+# useless for publishing something that verifies.
+COSIGN_IDENTITY ?= https://github.com/obsernetics/pahlevan/.github/workflows/ci.yml@refs/tags/$(RELEASE_VERSION)
+COSIGN_ISSUER ?= https://token.actions.githubusercontent.com
+RELEASE_URL = https://github.com/obsernetics/pahlevan/releases/download/$(RELEASE_VERSION)
+
+.PHONY: verify-image
+verify-image: ## Verify the released image signature and its SBOM attestation.
+	$(COSIGN) verify \
+		--certificate-identity "$(COSIGN_IDENTITY)" \
+		--certificate-oidc-issuer "$(COSIGN_ISSUER)" \
+		$(RELEASE_IMAGE):$(RELEASE_VERSION)
+	$(COSIGN) verify-attestation --type spdxjson \
+		--certificate-identity "$(COSIGN_IDENTITY)" \
+		--certificate-oidc-issuer "$(COSIGN_ISSUER)" \
+		$(RELEASE_IMAGE):$(RELEASE_VERSION) >/dev/null
+
+.PHONY: verify-assets
+verify-assets: ## Download the release assets and verify their signature and checksums.
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	for f in install.yaml sbom.spdx.json SHA256SUMS SHA256SUMS.cosign.bundle; do \
+		curl -sSfL -o "$$tmp/$$f" "$(RELEASE_URL)/$$f"; \
+	done && \
+	$(COSIGN) verify-blob \
+		--bundle "$$tmp/SHA256SUMS.cosign.bundle" \
+		--certificate-identity "$(COSIGN_IDENTITY)" \
+		--certificate-oidc-issuer "$(COSIGN_ISSUER)" \
+		"$$tmp/SHA256SUMS" && \
+	cd "$$tmp" && sha256sum -c SHA256SUMS
+
+.PHONY: verify-release
+verify-release: verify-image verify-assets ## Verify everything a release publishes.
+
+.PHONY: sbom
+sbom: ## Generate an SPDX SBOM for IMG locally (needs syft).
+	$(SYFT) scan $(IMG) -o spdx-json=sbom.spdx.json
+	@echo "wrote sbom.spdx.json"
+
 ##@ Build Dependencies
 
 ## Location to install dependencies to

@@ -85,6 +85,7 @@ and a single-file Kubernetes manifest. Release notes live in
                     <li><a href="#container-image">Container image</a></li>
                     <li><a href="#helm-chart">Helm chart</a></li>
                     <li><a href="#raw-manifest">Raw manifest</a></li>
+                    <li><a href="#verifying-the-supply-chain">Verifying the supply chain</a></li>
                     <li><a href="#after-installing">After installing</a></li>
                 </ul>
             </aside>
@@ -184,6 +185,101 @@ containing the CRDs, RBAC, the operator Deployment, and the agent DaemonSet:</p>
 <p>Review before applying:</p>
 <pre><code class="language-bash">curl -sSL https://github.com/obsernetics/pahlevan/releases/download/v3.4.1/install.yaml | less
 </code></pre>
+<h2 id="verifying-the-supply-chain">Verifying the supply chain</h2>
+<p>The agent runs privileged on every node with <code>CAP_BPF</code>, and <code>install.yaml</code> is
+applied with cluster-admin-shaped permissions. Neither should be trusted
+because it happens to sit at a <code>ghcr.io</code> or <code>github.com</code> URL: anyone who
+obtains a registry or repository token can put something there. Every release
+is therefore signed, shipped with an SBOM, and accompanied by build
+provenance.</p>
+<p>Signing is <strong>keyless</strong>. There is no Pahlevan public key to fetch and no
+long-lived private key in repository secrets - a key like that would be as
+useful to an attacker as the token it is supposed to defend against, and its
+signatures would never expire. Instead the release workflow exchanges a
+short-lived GitHub OIDC token for a Sigstore certificate valid for ten
+minutes, and that certificate records which workflow in which repository
+produced the artifact. So verification asks about identity, not possession:
+<em>was this built by this repository's release workflow?</em></p>
+<p>Install <a href="https://github.com/sigstore/cosign" target="_blank" rel="noopener">cosign</a> v3.0.6 or newer - that is
+the version the release workflow signs with - and set the two values that
+every command below shares:</p>
+<pre><code class="language-bash">VERSION=v3.4.1
+IDENTITY=&quot;https://github.com/obsernetics/pahlevan/.github/workflows/ci.yml@refs/tags/${VERSION}&quot;
+ISSUER=&quot;https://token.actions.githubusercontent.com&quot;
+</code></pre>
+<p><code>IDENTITY</code> is the workflow file that does the signing, at the exact tag being
+released. It is not a name somebody chose; it is what GitHub puts in the
+certificate, and cosign fails the verification if the artifact was signed by
+any other workflow, any other repository, or any other tag.</p>
+<h3 id="image-signature">Image signature</h3>
+<pre><code class="language-bash">cosign verify \
+  --certificate-identity &quot;$IDENTITY&quot; \
+  --certificate-oidc-issuer &quot;$ISSUER&quot; \
+  ghcr.io/obsernetics/pahlevan:${VERSION}
+</code></pre>
+<p>The image is signed by digest, so this also works - and is the better habit -
+against a digest pin:</p>
+<pre><code class="language-bash">cosign verify \
+  --certificate-identity &quot;$IDENTITY&quot; \
+  --certificate-oidc-issuer &quot;$ISSUER&quot; \
+  ghcr.io/obsernetics/pahlevan@sha256:&lt;digest&gt;
+</code></pre>
+<p>A successful run prints the verified payload. A tag that was moved onto an
+image nobody signed fails with <code>no signatures found</code>, and an artifact signed
+by a different workflow fails with a certificate identity mismatch.</p>
+<h3 id="sbom">SBOM</h3>
+<p>The SBOM is SPDX 2.3 JSON, attached to the image as a Sigstore attestation and
+also attached to the GitHub release as <code>sbom.spdx.json</code>.</p>
+<p>Verify and read the copy attached to the image:</p>
+<pre><code class="language-bash">cosign verify-attestation --type spdxjson \
+  --certificate-identity &quot;$IDENTITY&quot; \
+  --certificate-oidc-issuer &quot;$ISSUER&quot; \
+  ghcr.io/obsernetics/pahlevan:${VERSION} \
+  | jq -r '.payload | @base64d | fromjson | .predicate' &gt; sbom.spdx.json
+</code></pre>
+<p>It describes the <code>linux/amd64</code> image. The published image is a multi-platform
+index, and the SBOM is generated from the variant the release runner resolves,
+so an <code>arm64</code> deployment should treat it as the package inventory of the same
+source build rather than a byte-level statement about the image it pulls.</p>
+<h3 id="build-provenance">Build provenance</h3>
+<p>Provenance is a SLSA statement generated and signed by GitHub from the release
+run's own metadata: which commit, which workflow, which run built the artifact.
+It is pushed to the registry alongside the image and recorded for the release
+assets.</p>
+<pre><code class="language-bash">gh attestation verify \
+  oci://ghcr.io/obsernetics/pahlevan:${VERSION} \
+  --repo obsernetics/pahlevan
+</code></pre>
+<p><code>gh attestation</code> needs GitHub CLI v2.49 or newer.</p>
+<h3 id="release-assets">Release assets</h3>
+<p>Each release carries <code>SHA256SUMS</code> covering <code>install.yaml</code> and
+<code>sbom.spdx.json</code>, plus <code>SHA256SUMS.cosign.bundle</code>, the keyless signature over
+that checksum file. Verifying the signature and then the checksums covers
+every asset with one identity check:</p>
+<pre><code class="language-bash">base=&quot;https://github.com/obsernetics/pahlevan/releases/download/${VERSION}&quot;
+curl -sSLO &quot;${base}/install.yaml&quot;
+curl -sSLO &quot;${base}/sbom.spdx.json&quot;
+curl -sSLO &quot;${base}/SHA256SUMS&quot;
+curl -sSLO &quot;${base}/SHA256SUMS.cosign.bundle&quot;
+
+cosign verify-blob \
+  --bundle SHA256SUMS.cosign.bundle \
+  --certificate-identity &quot;$IDENTITY&quot; \
+  --certificate-oidc-issuer &quot;$ISSUER&quot; \
+  SHA256SUMS
+
+sha256sum -c SHA256SUMS
+</code></pre>
+<p>Only apply the manifest once both commands have passed:</p>
+<pre><code class="language-bash">kubectl apply -f install.yaml
+</code></pre>
+<p>Provenance for <code>install.yaml</code> can be checked the same way as the image's:</p>
+<pre><code class="language-bash">gh attestation verify install.yaml --repo obsernetics/pahlevan
+</code></pre>
+<p>Signatures, SBOMs and provenance are produced by the release workflow, so they
+exist for releases published after it gained those steps. Tags older than that
+have no signature to verify, and <code>cosign verify</code> will say so rather than pass
+quietly.</p>
 <h2 id="after-installing">After installing</h2>
 <p>Verify both workloads are up, then apply a policy:</p>
 <pre><code class="language-bash">kubectl -n pahlevan-system get pods

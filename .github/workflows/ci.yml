@@ -355,6 +355,21 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless signing. The job mints a short-lived OIDC token, Fulcio
+      # exchanges it for a certificate that expires in ten minutes, and that
+      # certificate - not a key anyone holds - is what binds the signature to
+      # this repository and this workflow file.
+      #
+      # The alternative is a long-lived cosign private key in repository
+      # secrets, and that key is in exactly the same compromise class as the
+      # registry token this whole exercise exists to defend against: anyone
+      # who exfiltrates it can sign an image that verifies perfectly and
+      # forever, with nothing in the signature to say it was not produced
+      # here. A Fulcio certificate cannot be replayed a day later.
+      id-token: write
+      # actions/attest-build-provenance writes the provenance statement
+      # through GitHub's attestations API, which needs its own scope.
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -400,6 +415,7 @@ jobs:
             type=semver,pattern={{major}}
 
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -418,6 +434,95 @@ jobs:
             VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
             COMMIT=${{ github.sha }}
             DATE=${{ github.event.head_commit.timestamp }}
+
+      # Everything below runs on version tags only. A branch build publishes
+      # tags that move - `main`, `latest`, and on the default branch those are
+      # rewritten on every merge - so a signature on one of them would attest
+      # to whatever happened to be there at signing time and say nothing about
+      # what somebody pulls an hour later. A release tag is the immutable
+      # thing worth binding an identity to.
+      #
+      # cosign is pinned to an exact release rather than floated. cosign 3
+      # changed the default on-registry layout for signatures and
+      # attestations, so the installed version is what decides whether the
+      # `cosign verify` invocation printed in docs/packages.md is the correct
+      # one. A silent bump there turns working documentation into a support
+      # thread.
+      - name: Install cosign
+        if: github.ref_type == 'tag'
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      # Signed by digest, never by tag. A tag is a mutable pointer: signing
+      # `:v3.4.1` would leave whoever can push to the registry free to move
+      # that tag onto a different image, while the old signature sits in the
+      # registry still looking valid to anyone who verifies the tag.
+      - name: Sign the image
+        if: github.ref_type == 'tag'
+        env:
+          IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE_DIGEST}"
+
+      # SPDX rather than CycloneDX: SPDX 2.3 is the ISO/IEC 5962 standard
+      # document format, `cosign attest --type spdxjson` names it natively so
+      # the attestation carries a well-known predicate type instead of a
+      # custom one, and GitHub's own dependency tooling ingests it. Nothing
+      # published here needs what CycloneDX adds on top - VEX statements and
+      # service/dependency modelling - so the standardised format wins.
+      #
+      # syft is pointed at the pushed multi-architecture index and resolves it
+      # to the runner's own platform, so this SBOM describes the linux/amd64
+      # image. docs/packages.md says so rather than letting an arm64 operator
+      # assume otherwise.
+      - name: Generate the image SBOM
+        if: github.ref_type == 'tag'
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          # The release job attaches this to the GitHub release; the action's
+          # own artifact upload would just be a second copy under a name
+          # nobody looks for.
+          upload-artifact: false
+
+      # Attested to the image as well as attached to the release, because the
+      # two reach different people. Someone auditing a running cluster has a
+      # digest and no idea which GitHub release it came from; the attestation
+      # travels with the image and answers them without a second lookup.
+      - name: Attest the SBOM to the image
+        if: github.ref_type == 'tag'
+        env:
+          IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign attest --yes --type spdxjson \
+            --predicate sbom.spdx.json "${IMAGE_DIGEST}"
+
+      - name: Upload the SBOM for the release job
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          if-no-files-found: error
+
+      # actions/attest-build-provenance rather than the SLSA generator
+      # reusable workflow: the provenance is built by GitHub from this run's
+      # own metadata and signed against the same Fulcio identity as everything
+      # else in this job, so there is no second workflow to keep pinned and no
+      # second signing identity that can drift away from the one documented in
+      # docs/packages.md.
+      - name: Attest build provenance for the image
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   # One status check for branch protection to require, instead of six that
   # would each have to be listed and kept in sync as jobs are added or renamed.
@@ -455,6 +560,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
+      # Same reasoning as push-image: the release assets are signed against a
+      # ten-minute Fulcio certificate instead of a private key parked in
+      # repository secrets.
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -464,10 +574,58 @@ jobs:
           # is computed by the GitHub API from the tag, not from a local log.
           fetch-depth: 1
 
+      - name: Download the image SBOM
+        uses: actions/download-artifact@v7
+        with:
+          name: sbom
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+        with:
+          # Kept identical to push-image: one cosign version across the
+          # release means one documented verification command.
+          cosign-release: v3.0.6
+
+      # The manifest needs the same provenance as the image it deploys.
+      # docs/packages.md tells people to pipe this URL straight into
+      # `kubectl apply`, which creates a privileged DaemonSet with CAP_BPF on
+      # every node - so an unverifiable install.yaml is a larger hole than an
+      # unverifiable image, not a smaller one.
+      #
+      # One SHA256SUMS covering every asset, and the signature over that file
+      # rather than over each asset: one signature to check, and no way to
+      # swap a single asset without breaking it.
+      - name: Checksum the release assets
+        run: |
+          set -euo pipefail
+          sha256sum install.yaml sbom.spdx.json > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Sign the checksums
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+
+      # install.yaml is attested directly as well. The checksum signature
+      # proves the file came from this workflow; the provenance attestation
+      # records which run, which commit and which source repository built it,
+      # which is what an auditor asking "does this match the repo" needs.
+      - name: Attest build provenance for the release assets
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: |
+            install.yaml
+            sbom.spdx.json
+
       - name: Publish release with install.yaml
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: install.yaml
+          files: |
+            install.yaml
+            sbom.spdx.json
+            SHA256SUMS
+            SHA256SUMS.cosign.bundle
