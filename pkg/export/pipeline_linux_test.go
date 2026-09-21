@@ -134,6 +134,90 @@ func TestNewPipelineStdoutOnly(t *testing.T) {
 	}
 }
 
+// recordingEnqueuer counts how many events it received and can be made to
+// refuse every event, to test that a refusal from one sink never stops the
+// others from being offered the event.
+type recordingEnqueuer struct {
+	accept bool
+	got    []*Event
+}
+
+func (r *recordingEnqueuer) Enqueue(e *Event) bool {
+	r.got = append(r.got, e)
+	return r.accept
+}
+
+func TestTeeEnqueueEmpty(t *testing.T) {
+	var tee Tee
+	if !tee.Enqueue(&Event{}) {
+		t.Error("an empty Tee should report success: there is nothing to refuse")
+	}
+}
+
+func TestTeeEnqueueAllAccept(t *testing.T) {
+	a := &recordingEnqueuer{accept: true}
+	b := &recordingEnqueuer{accept: true}
+	tee := Tee{a, b}
+	ev := &Event{Type: "file"}
+	if !tee.Enqueue(ev) {
+		t.Error("Enqueue = false, want true when every sink accepts")
+	}
+	if len(a.got) != 1 || a.got[0] != ev {
+		t.Errorf("sink a received %v, want [%v]", a.got, ev)
+	}
+	if len(b.got) != 1 || b.got[0] != ev {
+		t.Errorf("sink b received %v, want [%v]", b.got, ev)
+	}
+}
+
+// A refusal from one sink must not stop the event from reaching the others:
+// one full queue must not silently deprive the rest of the tee.
+func TestTeeEnqueuePartialRefusalStillOffersAll(t *testing.T) {
+	full := &recordingEnqueuer{accept: false}
+	ok := &recordingEnqueuer{accept: true}
+	tee := Tee{full, ok}
+	ev := &Event{Type: "network"}
+	if tee.Enqueue(ev) {
+		t.Error("Enqueue = true, want false when a sink refused")
+	}
+	if len(full.got) != 1 {
+		t.Errorf("the refusing sink received %d events, want 1", len(full.got))
+	}
+	if len(ok.got) != 1 {
+		t.Errorf("the accepting sink received %d events, want 1 (it must still be offered the event)", len(ok.got))
+	}
+}
+
+// A nil entry can appear in cfg.Tee when a caller passes an untyped nil
+// Enqueuer; it must be skipped rather than panicking.
+func TestTeeEnqueueSkipsNilSink(t *testing.T) {
+	ok := &recordingEnqueuer{accept: true}
+	tee := Tee{nil, ok}
+	if !tee.Enqueue(&Event{}) {
+		t.Error("Enqueue = false, want true: the only non-nil sink accepted")
+	}
+	if len(ok.got) != 1 {
+		t.Errorf("the non-nil sink received %d events, want 1", len(ok.got))
+	}
+}
+
+// acceptingEnqueuer is a zero-allocation Enqueuer for benchmarking the fan-out
+// itself, without the accumulating slice recordingEnqueuer uses for
+// assertions skewing the allocation count.
+type acceptingEnqueuer struct{}
+
+func (acceptingEnqueuer) Enqueue(*Event) bool { return true }
+
+func BenchmarkTeeEnqueue(b *testing.B) {
+	sinks := Tee{acceptingEnqueuer{}, acceptingEnqueuer{}, acceptingEnqueuer{}}
+	ev := &Event{Type: "file", CgroupID: 1}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sinks.Enqueue(ev)
+	}
+}
+
 func TestPipelineFlushAndDropped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.json")
 	p, err := New(Config{FilePath: path, QueueCapacity: 8, BatchSize: 1, FlushInterval: time.Millisecond})
