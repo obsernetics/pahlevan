@@ -209,6 +209,10 @@ compiled-in tables, which makes them usable in CI and in a bug report.</p>
 <td>The seccomp profiles generated from learned behavior. <code>profile patch</code> prints the workload patch that applies one, and applies nothing itself.</td>
 </tr>
 <tr>
+<td><code>pahlevan netpol</code></td>
+<td>A <code>networking.k8s.io/v1</code> NetworkPolicy built from the traffic that was actually observed. It refuses to write a selector wider than the evidence, prints rather than applies, and <code>--diff</code> shows what applying would displace. See <a href="network-policy.html">generating a NetworkPolicy</a>.</td>
+</tr>
+<tr>
 <td><code>pahlevan events</code></td>
 <td>The agent's JSON-lines event log, filtered by type, pod or denial, as a stream that composes with <code>jq</code>.</td>
 </tr>

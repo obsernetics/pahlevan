@@ -51,6 +51,7 @@ compiled-in tables, which makes them usable in CI and in a bug report.
 | `pahlevan policy` | List, describe, create, update and delete policies. |
 | `pahlevan policy explain -f` | **No cluster.** Translates a policy file offline and names every part of it the data plane cannot enforce. `--strict` exits non-zero, for CI. |
 | `pahlevan profile` | The seccomp profiles generated from learned behavior. `profile patch` prints the workload patch that applies one, and applies nothing itself. |
+| `pahlevan netpol` | A `networking.k8s.io/v1` NetworkPolicy built from the traffic that was actually observed. It refuses to write a selector wider than the evidence, prints rather than applies, and `--diff` shows what applying would displace. See [generating a NetworkPolicy](network-policy.md). |
 | `pahlevan events` | The agent's JSON-lines event log, filtered by type, pod or denial, as a stream that composes with `jq`. |
 | `pahlevan ui` | An interactive view of the live event stream, per-workload counts and the coverage table. Falls back to a plain summary off a terminal. |
 | `pahlevan coverage` | **No cluster.** The eBPF detectors, their kernel hooks, and the MITRE ATT&CK techniques their observations are evidence for. |

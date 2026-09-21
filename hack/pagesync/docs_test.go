@@ -142,6 +142,7 @@ func rootForDocs() *cobra.Command {
 		commands.NewPolicyCommand(),
 		commands.NewAttackSurfaceCommand(),
 		commands.NewProfileCommand(),
+		commands.NewNetpolCommand(),
 		commands.NewStatusCommand(),
 		commands.NewEventsCommand(),
 		commands.NewLogsCommand(),
