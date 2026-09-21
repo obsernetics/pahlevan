@@ -107,7 +107,7 @@ and a single-file Kubernetes manifest. Release notes live in
 <td>Most recent build of the default branch</td>
 </tr>
 <tr>
-<td><code>v3.4.1</code></td>
+<td><code>v3.5.0</code></td>
 <td>Immutable release tag (recommended for production)</td>
 </tr>
 <tr>
@@ -120,7 +120,7 @@ and a single-file Kubernetes manifest. Release notes live in
 </tr>
 </tbody>
 </table>
-<pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.4.1
+<pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.5.0
 </code></pre>
 <p>One image ships all three binaries:</p>
 <ul>
@@ -133,16 +133,16 @@ lifecycle, aggregates status, and owns admission.</li>
 <p>The runtime layer is <strong>distroless</strong>: no shell, no package manager, and no
 userland beyond the binaries themselves.</p>
 <h3 id="verifying-the-image">Verifying the image</h3>
-<pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.4.1
+<pre><code class="language-bash">docker pull ghcr.io/obsernetics/pahlevan:v3.5.0
 
 # Inspect the manifest, digest, architecture, and labels
-docker inspect ghcr.io/obsernetics/pahlevan:v3.4.1
+docker inspect ghcr.io/obsernetics/pahlevan:v3.5.0
 
 # Digest only (pin this in air-gapped or regulated environments)
-docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/obsernetics/pahlevan:v3.4.1
+docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/obsernetics/pahlevan:v3.5.0
 
 # Confirm the entrypoints exist without a shell in the image
-docker run --rm --entrypoint /pahlevan-operator ghcr.io/obsernetics/pahlevan:v3.4.1 --help
+docker run --rm --entrypoint /pahlevan-operator ghcr.io/obsernetics/pahlevan:v3.5.0 --help
 </code></pre>
 <p>Pin by digest rather than by tag when you need a byte-for-byte reproducible
 deployment:</p>
@@ -159,7 +159,7 @@ helm install pahlevan pahlevan/pahlevan-operator \
 <pre><code class="language-bash">helm install pahlevan pahlevan/pahlevan-operator \
   -n pahlevan-system --create-namespace \
   --set image.repository=ghcr.io/obsernetics/pahlevan \
-  --set image.tag=v3.4.1
+  --set image.tag=v3.5.0
 </code></pre>
 <p>Show the resolved values and the available versions:</p>
 <pre><code class="language-bash">helm search repo pahlevan --versions
@@ -180,10 +180,10 @@ containing the CRDs, RBAC, the operator Deployment, and the agent DaemonSet:</p>
 <pre><code class="language-bash">kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/download/install.yaml
 </code></pre>
 <p>Pin to a specific release instead of <code>latest</code>:</p>
-<pre><code class="language-bash">kubectl apply -f https://github.com/obsernetics/pahlevan/releases/download/v3.4.1/install.yaml
+<pre><code class="language-bash">kubectl apply -f https://github.com/obsernetics/pahlevan/releases/download/v3.5.0/install.yaml
 </code></pre>
 <p>Review before applying:</p>
-<pre><code class="language-bash">curl -sSL https://github.com/obsernetics/pahlevan/releases/download/v3.4.1/install.yaml | less
+<pre><code class="language-bash">curl -sSL https://github.com/obsernetics/pahlevan/releases/download/v3.5.0/install.yaml | less
 </code></pre>
 <h2 id="verifying-the-supply-chain">Verifying the supply chain</h2>
 <p>The agent runs privileged on every node with <code>CAP_BPF</code>, and <code>install.yaml</code> is
@@ -203,7 +203,7 @@ produced the artifact. So verification asks about identity, not possession:
 <p>Install <a href="https://github.com/sigstore/cosign" target="_blank" rel="noopener">cosign</a> v3.0.6 or newer - that is
 the version the release workflow signs with - and set the two values that
 every command below shares:</p>
-<pre><code class="language-bash">VERSION=v3.4.1
+<pre><code class="language-bash">VERSION=v3.5.0
 IDENTITY=&quot;https://github.com/obsernetics/pahlevan/.github/workflows/ci.yml@refs/tags/${VERSION}&quot;
 ISSUER=&quot;https://token.actions.githubusercontent.com&quot;
 </code></pre>

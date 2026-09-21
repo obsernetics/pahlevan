@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-09-22
+
+Releases are signed now, and the shipped manifests are sized for real clusters
+rather than for a demo.
+
+### Added
+
+- Keyless cosign signatures on the released image, signed by digest rather than
+  by tag, so moving a tag cannot leave an old signature still looking valid.
+  Each release also carries an SPDX SBOM attested to the image, build provenance
+  for the image and for `install.yaml`, and a `SHA256SUMS` signed with
+  `cosign sign-blob`. `make verify-release` checks all of it and
+  `docs/packages.md` documents the certificate identity to verify against.
+  Signing is gated to tag pushes, so `main` and `latest` stay unsigned by
+  design, and tags published before this release fail verification rather than
+  passing quietly.
+- A `PodDisruptionBudget` for the operator, deliberately `maxUnavailable` rather
+  than `minAvailable`: at one replica a `minAvailable: 1` budget permits zero
+  disruptions and makes the node permanently undrainable. The agent gets none by
+  design, because `kubectl drain` deletes DaemonSet pods rather than evicting
+  them, so a budget there protects nothing and wedges the descheduler once the
+  node is cordoned.
+
+### Fixed
+
+- The agent loads and verifies its BPF programs before the manager binds its
+  health port, so the only probe was a liveness check whose three default
+  failures killed the container at roughly 55 seconds, on exactly the nodes
+  where loading is slowest. Both components now have startup probes, with
+  explicit timeouts and failure thresholds on the others.
+- The Helm chart shipped one of the three CRDs, and that one came from an older
+  `controller-gen`. Helm never templates `crds/`, so `helm install` created no
+  `ContainerProfile` and no `AttackSurface`, and the controllers watching them
+  never synced. All three are now byte-identical to `config/crd`.
+- Chart RBAC was missing four grants that `deploy/base` has, so a Helm install
+  crash-looped where `kubectl apply` of the same release did not, and every
+  restart wiped the learned baseline. The chart pod spec is brought to parity
+  with the base, including `GOMAXPROCS`, the namespace variable the telemetry
+  join needs, and the seccomp settings.
+- Agent and operator resource requests sat below the BPF map footprint, which
+  kernel 5.11 and later charge to the creating container's memcg, so a pod could
+  be scheduled onto a node that could not hold its maps and be OOM-killed at map
+  creation. Requests and limits are now sized against the ceiling the on-kernel
+  test already enforces, and the guard reads that ceiling from the test rather
+  than repeating the number.
+
 ## [3.4.1] - 2026-09-21
 
 ### Changed
@@ -593,7 +639,8 @@ observe and deny in the kernel.
   with the `PahlevanPolicy` CRD, a learning phase, enforcement modes, self-healing,
   observability, and Helm plus manifest based installation.
 
-[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/obsernetics/pahlevan/compare/v3.4.1...v3.5.0
 [3.0.0]: https://github.com/obsernetics/pahlevan/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/obsernetics/pahlevan/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/obsernetics/pahlevan/releases/tag/v1.0.0

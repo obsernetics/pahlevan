@@ -16,12 +16,12 @@ ghcr.io/obsernetics/pahlevan
 | Tag | Meaning |
 |---|---|
 | `latest` | Most recent build of the default branch |
-| `<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->` | Immutable release tag (recommended for production) |
+| `<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->` | Immutable release tag (recommended for production) |
 | `main` | Rolling tag for the default branch |
 | `main-<sha>` | Per-commit build of the default branch, useful for bisecting |
 
 ```bash
-docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->
+docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->
 ```
 
 One image ships all three binaries:
@@ -38,16 +38,16 @@ userland beyond the binaries themselves.
 ### Verifying the image
 
 ```bash
-docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->
+docker pull ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->
 
 # Inspect the manifest, digest, architecture, and labels
-docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->
+docker inspect ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->
 
 # Digest only (pin this in air-gapped or regulated environments)
-docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->
+docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->
 
 # Confirm the entrypoints exist without a shell in the image
-docker run --rm --entrypoint /pahlevan-operator ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync--> --help
+docker run --rm --entrypoint /pahlevan-operator ghcr.io/obsernetics/pahlevan:<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync--> --help
 ```
 
 Pin by digest rather than by tag when you need a byte-for-byte reproducible
@@ -74,7 +74,7 @@ Useful overrides:
 helm install pahlevan pahlevan/pahlevan-operator \
   -n pahlevan-system --create-namespace \
   --set image.repository=ghcr.io/obsernetics/pahlevan \
-  --set image.tag=<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->
+  --set image.tag=<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->
 ```
 
 Show the resolved values and the available versions:
@@ -111,13 +111,13 @@ kubectl apply -f https://github.com/obsernetics/pahlevan/releases/latest/downloa
 Pin to a specific release instead of `latest`:
 
 ```bash
-kubectl apply -f https://github.com/obsernetics/pahlevan/releases/download/<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->/install.yaml
+kubectl apply -f https://github.com/obsernetics/pahlevan/releases/download/<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->/install.yaml
 ```
 
 Review before applying:
 
 ```bash
-curl -sSL https://github.com/obsernetics/pahlevan/releases/download/<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->/install.yaml | less
+curl -sSL https://github.com/obsernetics/pahlevan/releases/download/<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->/install.yaml | less
 ```
 
 ## Verifying the supply chain
@@ -143,7 +143,7 @@ the version the release workflow signs with - and set the two values that
 every command below shares:
 
 ```bash
-VERSION=<!--pahlevan:sync version-->v3.4.1<!--/pahlevan:sync-->
+VERSION=<!--pahlevan:sync version-->v3.5.0<!--/pahlevan:sync-->
 IDENTITY="https://github.com/obsernetics/pahlevan/.github/workflows/ci.yml@refs/tags/${VERSION}"
 ISSUER="https://token.actions.githubusercontent.com"
 ```
