@@ -2,6 +2,7 @@ package adaptive
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -88,15 +89,16 @@ func TestHandleNetworkEvent_Learning(t *testing.T) {
 		t.Errorf("learned dests = %d, want 2", got)
 	}
 
-	// netKey must be stable and distinct per ip:port.
-	if netKey(1, 80) == netKey(1, 81) {
-		t.Error("netKey should differ by port")
+	// destKey must be stable and distinct per ip:port.
+	one := netip.MustParseAddr("1.0.0.0")
+	if destKey(one, 80) == destKey(one, 81) {
+		t.Error("destKey should differ by port")
 	}
 	// Compare separately-computed keys rather than one expression against
 	// itself, which the compiler folds into a tautology.
-	first, second := netKey(1, 80), netKey(1, 80)
+	first, second := destKey(one, 80), destKey(one, 80)
 	if first != second {
-		t.Error("netKey should be deterministic")
+		t.Error("destKey should be deterministic")
 	}
 }
 

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"net/netip"
+
 	"context"
+	"github.com/obsernetics/pahlevan/pkg/netidentity"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -245,9 +248,18 @@ func TestRefreshNetmap(t *testing.T) {
 		}
 		fc := fake.NewClientBuilder().WithScheme(newRefreshTestScheme(t)).WithObjects(svc, pod, node).Build()
 		r := netmap.New()
+		idx := netidentity.New(netidentity.Options{})
 
-		err := refreshNetmap(context.Background(), fc, r)
+		err := refreshNetmap(context.Background(), fc, r, idx)
 		require.NoError(t, err)
+
+		// The same walk feeds the identity index, so a missed watch event
+		// cannot leave a dead pod answering for its address forever.
+		assert.Equal(t, 2, idx.Len(), "the Service and pod addresses are indexed")
+		peer, ok := idx.Lookup(netip.MustParseAddr("10.0.0.6"))
+		require.True(t, ok)
+		assert.Equal(t, netidentity.PeerPod, peer.Kind)
+		assert.Equal(t, "web-1", peer.Name)
 	})
 
 	t.Run("List errors are aggregated rather than returned on first failure", func(t *testing.T) {
@@ -257,10 +269,16 @@ func TestRefreshNetmap(t *testing.T) {
 		fc := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()
 		r := netmap.New()
 
-		err := refreshNetmap(context.Background(), fc, r)
+		err := refreshNetmap(context.Background(), fc, r, netidentity.New(netidentity.Options{}))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "services")
 		assert.Contains(t, err.Error(), "pods")
 		assert.Contains(t, err.Error(), "nodes")
+		assert.Contains(t, err.Error(), "namespaces")
+	})
+
+	t.Run("a nil index is tolerated", func(t *testing.T) {
+		fc := fake.NewClientBuilder().WithScheme(newRefreshTestScheme(t)).Build()
+		require.NoError(t, refreshNetmap(context.Background(), fc, netmap.New(), nil))
 	})
 }

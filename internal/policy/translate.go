@@ -38,6 +38,18 @@ const maxPortsPerRule = 1024
 // dropping an unrepresentable rule is how a policy comes to look enforced when
 // it is not.
 func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Time) (adaptive.Decision, []string) {
+	return TranslateIn(name, spec, now, Context{})
+}
+
+// TranslateIn is Translate with the cluster state a selector peer needs to be
+// expanded into addresses. Translate is TranslateIn with none, which is what
+// the operator and the unit tests use.
+func TranslateIn(
+	name string,
+	spec policyv1alpha1.PahlevanPolicySpec,
+	now time.Time,
+	ctx Context,
+) (adaptive.Decision, []string) {
 	var warnings []string
 
 	d := adaptive.Decision{
@@ -95,7 +107,7 @@ func Translate(name string, spec policyv1alpha1.PahlevanPolicySpec, now time.Tim
 	o := &d.Overrides
 	warnings = append(warnings, applyFilePolicy(o, spec.FilePolicy)...)
 	warnings = append(warnings, applySyscallPolicy(o, spec.SyscallPolicy)...)
-	warnings = append(warnings, applyNetworkPolicy(o, spec.NetworkPolicy)...)
+	warnings = append(warnings, applyNetworkPolicy(o, spec.NetworkPolicy, ctx)...)
 	warnings = append(warnings, applyExceptions(o, spec.EnforcementConfig.Exceptions, now)...)
 
 	if !o.Empty() && d.Mode != adaptive.ModeBlocking {
@@ -361,7 +373,7 @@ func parseIDs(field string, values []string, warnings []string) ([]uint32, []str
 	return out, warnings
 }
 
-func applyNetworkPolicy(o *adaptive.Overrides, np *policyv1alpha1.NetworkPolicy) []string {
+func applyNetworkPolicy(o *adaptive.Overrides, np *policyv1alpha1.NetworkPolicy, ctx Context) []string {
 	if np == nil {
 		return nil
 	}
@@ -383,13 +395,19 @@ func applyNetworkPolicy(o *adaptive.Overrides, np *policyv1alpha1.NetworkPolicy)
 		o.NetworkRelax |= ebpf.RelaxDNS
 	}
 	for i, rule := range np.EgressRules {
-		dests, warns := translateEgressRule(i, rule)
+		dests, selected, warns := translateEgressRule(i, rule, ctx)
 		warnings = append(warnings, warns...)
 		if isDeny(rule.Action) {
 			o.DeniedDestinations = append(o.DeniedDestinations, dests...)
-		} else {
-			o.AllowedDestinations = append(o.AllowedDestinations, dests...)
+			// A deny rule written with a selector is not tracked as a
+			// selector destination: withdrawing a denial when a pod stops
+			// matching would re-permit the address, and a rule whose removal
+			// grants access is not a thing a deny rule should ever do. The
+			// set is simply re-derived on the next reconcile.
+			continue
 		}
+		o.AllowedDestinations = append(o.AllowedDestinations, dests...)
+		o.SelectorDestinations = append(o.SelectorDestinations, selected...)
 	}
 	return warnings
 }
@@ -397,12 +415,18 @@ func applyNetworkPolicy(o *adaptive.Overrides, np *policyv1alpha1.NetworkPolicy)
 // translateEgressRule expands one rule into concrete destinations. Only exact
 // host addresses survive: the allow-set is a hash of (address, port), so a
 // prefix shorter than /32 or /128 has no representation in it.
-func translateEgressRule(idx int, rule policyv1alpha1.NetworkRule) ([]adaptive.Destination, []string) {
-	var warnings []string
+//
+// The second return is the subset that came from a selector peer, which the
+// controller re-derives on every reconcile; see adaptive.Overrides.
+func translateEgressRule(
+	idx int,
+	rule policyv1alpha1.NetworkRule,
+	ctx Context,
+) (dests []adaptive.Destination, selected []adaptive.Destination, warnings []string) {
 	ports, portWarn := rulePorts(idx, rule.Ports)
 	warnings = append(warnings, portWarn...)
 	if len(ports) == 0 {
-		return nil, warnings
+		return nil, nil, warnings
 	}
 
 	var ips []net.IP
@@ -421,22 +445,28 @@ func translateEgressRule(idx int, rule policyv1alpha1.NetworkRule) ([]adaptive.D
 			}
 			ips = append(ips, ip)
 		case peer.PodSelector != nil || peer.NamespaceSelector != nil:
-			warnings = append(warnings, fmt.Sprintf(
-				"egressRules[%d] selects peers by label, which cannot be resolved to a fixed "+
-					"address at policy translation time; use an ipBlock", idx))
+			// A selector peer is expanded against the identity index into the
+			// addresses matching it right now. Programmed exactly like an
+			// ipBlock, and recorded as selector derived so the set can be
+			// corrected as pods come and go.
+			sel, warns := ctx.resolveSelectorPeer(
+				fmt.Sprintf("egressRules[%d] peer", idx), peer, ports)
+			warnings = append(warnings, warns...)
+			selected = append(selected, sel...)
 		}
 	}
-	if len(ips) == 0 {
-		return nil, warnings
-	}
 
-	dests := make([]adaptive.Destination, 0, len(ips)*len(ports))
+	dests = make([]adaptive.Destination, 0, len(ips)*len(ports)+len(selected))
 	for _, ip := range ips {
 		for _, p := range ports {
 			dests = append(dests, adaptive.Destination{IP: ip, Port: p})
 		}
 	}
-	return dests, warnings
+	dests = append(dests, selected...)
+	if len(dests) == 0 {
+		return nil, nil, warnings
+	}
+	return dests, selected, warnings
 }
 
 func rulePorts(idx int, ports []policyv1alpha1.NetworkPort) ([]uint16, []string) {
@@ -786,6 +816,17 @@ func (d Declaration) ReportInto(status *policyv1beta1.ContainerProfileStatus) {
 // The declaration is read from the v1beta1 spec directly, because it is the one
 // thing the down-conversion cannot carry.
 func TranslateSpec(name string, spec policyv1beta1.PahlevanPolicySpec, now time.Time) (adaptive.Decision, Declaration, []string) {
+	return TranslateSpecIn(name, spec, now, Context{})
+}
+
+// TranslateSpecIn is TranslateSpec with the cluster state a selector peer
+// needs to be expanded into addresses.
+func TranslateSpecIn(
+	name string,
+	spec policyv1beta1.PahlevanPolicySpec,
+	now time.Time,
+	ctx Context,
+) (adaptive.Decision, Declaration, []string) {
 	var spoke policyv1alpha1.PahlevanPolicy
 	if err := spoke.ConvertFrom(&policyv1beta1.PahlevanPolicy{Spec: spec}); err != nil {
 		// Unreachable today: the conversion is field-by-field assignment and
@@ -795,7 +836,7 @@ func TranslateSpec(name string, spec policyv1beta1.PahlevanPolicySpec, now time.
 		return adaptive.Decision{PolicyName: name}, Declaration{},
 			[]string{fmt.Sprintf("policy could not be translated: %v", err)}
 	}
-	d, warnings := Translate(name, spoke.Spec, now)
+	d, warnings := TranslateIn(name, spoke.Spec, now, ctx)
 
 	// An Off policy governs nothing, so there is nothing to declare into. This
 	// mirrors Translate, which stops for the same reason.

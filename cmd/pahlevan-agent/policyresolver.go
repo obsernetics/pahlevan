@@ -15,6 +15,7 @@ import (
 	"github.com/obsernetics/pahlevan/internal/policy"
 	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
+	"github.com/obsernetics/pahlevan/pkg/netidentity"
 )
 
 // policyResolver answers, for a given cgroup/container, which PahlevanPolicy
@@ -27,6 +28,11 @@ type policyResolver struct {
 	c        client.Client
 	nodeName string
 
+	// peers resolves a policy's selector peers into the addresses matching
+	// them right now, so a namespaceSelector peer enforces something instead
+	// of being warned about and dropped. Nil degrades to the old behavior.
+	peers policy.PeerIndex
+
 	mu        sync.RWMutex
 	podsByUID map[string]*corev1.Pod
 	policies  []policyv1beta1.PahlevanPolicy
@@ -34,7 +40,10 @@ type policyResolver struct {
 	nsLabels map[string]map[string]string
 
 	// warned de-duplicates translation warnings so an unrepresentable rule is
-	// reported once rather than on every reconcile.
+	// reported once rather than on every reconcile. Keyed by policy name and
+	// holding only the most recent warning set, so it is bounded by the number
+	// of policies: selector peer warnings carry counts that change as pods
+	// come and go, and keying on the text itself would grow without limit.
 	warned sync.Map
 
 	// declarations remembers what each container's policy declared, keyed by
@@ -51,6 +60,14 @@ func newPolicyResolver(c client.Client, nodeName string) *policyResolver {
 		podsByUID: map[string]*corev1.Pod{},
 		nsLabels:  map[string]map[string]string{},
 	}
+}
+
+// WithPeers attaches the identity index the selector peers are resolved
+// against. Separate from the constructor because the index is shared with the
+// adaptive controller and is wired once, in main.
+func (r *policyResolver) WithPeers(idx policy.PeerIndex) *policyResolver {
+	r.peers = idx
+	return r
 }
 
 // Refresh reloads the node's pods and the cluster's policies into the cache.
@@ -124,7 +141,10 @@ func (r *policyResolver) Resolve(_ uint64, ref attribution.ContainerRef) (adapti
 		// server, shown in the profile, and never reaches the kernel - which
 		// is worse than not having the field, because the operator believes
 		// their nightly job is covered.
-		d, decl, warnings := policy.TranslateSpec(pol.Name, pol.Spec, time.Now())
+		// The policy's namespace matters: a peer with no namespaceSelector is
+		// scoped to it, exactly as in a NetworkPolicy.
+		d, decl, warnings := policy.TranslateSpecIn(pol.Name, pol.Spec, time.Now(),
+			policy.Context{Namespace: pol.Namespace, Peers: r.peers})
 		r.noteWarnings(pol.Name, warnings)
 		r.noteDeclaration(ref, decl)
 		return d, true
@@ -156,15 +176,21 @@ func (r *policyResolver) DeclarationFor(containerID string) (policy.Declaration,
 // noteWarnings logs each translation warning once per policy generation. A
 // policy whose rules cannot be represented must say so; repeating it on every
 // reconcile would bury it instead. Callers must hold at least r.mu.RLock.
+//
+// Selector peers are re-resolved on every reconcile, so their warnings change
+// as pods come and go. Only the most recent set is remembered, per policy: a
+// selector that went from matching nothing to matching three pods says so once
+// rather than staying silent behind an earlier, different warning, and the
+// table cannot grow with churn.
 func (r *policyResolver) noteWarnings(name string, warnings []string) {
 	if len(warnings) == 0 {
 		return
 	}
-	key := name + "\x00" + strings.Join(warnings, "\x00")
-	if _, seen := r.warned.Load(key); seen {
+	key := strings.Join(warnings, "\x00")
+	if prev, seen := r.warned.Load(name); seen && prev == key {
 		return
 	}
-	r.warned.Store(key, struct{}{})
+	r.warned.Store(name, key)
 	for _, w := range warnings {
 		log.Log.WithName("policy").Info("policy rule is not fully representable",
 			"policy", name, "warning", w)
@@ -334,23 +360,9 @@ func runtimeContainerID(s string) string {
 	return s
 }
 
-// ownerWorkload walks one level up from the pod's controller reference, and a
-// second level for the ReplicaSet a Deployment owns, which is the only
-// indirection worth unwinding: nobody thinks in ReplicaSets.
+// ownerWorkload names the workload that owns a pod. It delegates to
+// netidentity, which needs the same answer to record a learned peer by the
+// part of its identity that survives a rescheduling.
 func ownerWorkload(p *corev1.Pod) (kind, name string) {
-	for i := range p.OwnerReferences {
-		ref := &p.OwnerReferences[i]
-		if ref.Controller == nil || !*ref.Controller {
-			continue
-		}
-		if ref.Kind == "ReplicaSet" {
-			// A ReplicaSet is named <deployment>-<pod-template-hash>. Trimming
-			// the hash is how kubectl presents it too.
-			if idx := strings.LastIndex(ref.Name, "-"); idx > 0 {
-				return "Deployment", ref.Name[:idx]
-			}
-		}
-		return ref.Kind, ref.Name
-	}
-	return "", ""
+	return netidentity.OwnerWorkload(p)
 }

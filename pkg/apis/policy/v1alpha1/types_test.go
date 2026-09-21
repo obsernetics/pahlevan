@@ -219,6 +219,8 @@ func fullContainerProfile() *ContainerProfile {
 			LearnedSyscalls:            []int64{0, 1, 257},
 			LearnedFiles:               []string{"/etc/hostname"},
 			LearnedNetworkDestinations: []string{"1:80"},
+			LearnedNetworkPeers:        []string{"pod:prod/api:80"},
+			NetworkPeerCount:           1,
 			SyscallCount:               3,
 			FileCount:                  1,
 			NetworkCount:               1,
