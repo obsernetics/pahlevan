@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-09-21
+
+### Changed
+
+- Batched four of five open Dependabot bumps onto one PR rather than merging
+  them one at a time: `github.com/onsi/gomega` 1.43.0 -> 1.43.1,
+  `golang.org/x/net` 0.58.0 -> 0.59.0, `github.com/onsi/ginkgo/v2` 2.32.2 ->
+  2.33.0, and `github.com/yuin/goldmark` 1.7.17 -> 1.8.6, plus their
+  transitive updates. The fifth, `google.golang.org/grpc` 1.83.2 -> 1.84.0,
+  was left out: `govulncheck` flags 1.84.0 with
+  [GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443), a server panic via
+  missing authority or Host headers, reachable through `pkg/grpcapi`'s
+  `Serve` call. The only fix is a v1.85.0-dev pseudo-version with no stable
+  tag yet, so grpc stays at 1.83.2, which is itself a fixed version for the
+  1.83.x branch.
+
+### Fixed
+
+- `Tee.Enqueue`, which fans one event out to every live consumer on the
+  export pipeline (the gRPC stream among them), had no test at all despite
+  the documented guarantee that a refusal from one sink must not stop the
+  event from reaching the others. Added coverage for the empty tee,
+  all-accept, partial-refusal and a nil sink in the list, plus a benchmark
+  for the hot path.
+
 ## [3.4.0] - 2026-09-19
 
 The console, and the first answer to rare behaviour. Learning is a wall-clock
