@@ -1,7 +1,7 @@
-[1;38;5;81mpahlevan[0m  [38;5;245m1 ovr[0m  [38;5;245m2 pol[0m  [38;5;245m3 prf[0m  [38;5;245m4 wkl[0m [48;5;24m [0m[1;38;5;231;48;5;24m5 evt[0m[48;5;24m [0m [38;5;245m6 atk[0m  [38;5;245m7 cov[0m  [38;5;245m? hlp[0m 
+[1;38;5;81mpahlevan[0m  [38;5;245m1 ovr[0m  [38;5;245m2 pol[0m  [38;5;245m3 prf[0m  [38;5;245m4 wkl[0m [48;5;24m [0m[1;38;5;231;48;5;24m5 evt[0m[48;5;24m [0m [38;5;245m6 flw[0m  [38;5;245m7 atk[0m  [38;5;245m8 cov[0m  [38;5;245m? hlp[0m 
 [38;5;81m╭─[0m[1;38;5;81m events [0m[38;5;81m─────────────────────────────────────────────────────────────────────────╮[0m
 [38;5;81m│[0m  [1;38;5;245mTIME    [0m  [1;38;5;245mVERDICT[0m  [1;38;5;245mTYPE   [0m  [1;38;5;245mPROCESS   [0m  [1;38;5;245mWORKLOAD      [0m  [1;38;5;245mDETAIL                [0m  [38;5;81m│[0m
-[38;5;81m│[0m [1;38;5;231;48;5;238m 12:00:17  allow    network  python3     prod/api        tcp prod/postgres:5432 [0m [38;5;81m│[0m
+[38;5;81m│[0m [1;38;5;231;48;5;238m 12:00:17  allow    network  python3     prod/api        tcp 10.104.22.9:5432   [0m [38;5;81m│[0m
 [38;5;81m│[0m  12:00:16  allow    file     nginx       prod/web        read /srv/www/index.h…  [38;5;81m│[0m
 [38;5;81m│[0m  12:00:15  ✖ DENY   file     sh          prod/api        write /etc/passwd       [38;5;81m│[0m
 [38;5;81m│[0m  12:00:14  ✖ DENY   capabi…  sh          prod/api        capability CAP_SYS_AD…  [38;5;81m│[0m
@@ -9,13 +9,13 @@
 [38;5;81m│[0m  12:00:12  ✖ DENY   process  sh          prod/api        exec /tmp/xmrig         [38;5;81m│[0m
 [38;5;81m│[0m  12:00:11  ✖ DENY   file     sh          prod/api        read /etc/shadow        [38;5;81m│[0m
 [38;5;81m│[0m  12:00:10  allow    file     nginx       prod/web        read /srv/www/style.c…  [38;5;81m│[0m
-[38;5;81m│[0m  12:00:09  allow    network  python3     prod/api        tcp prod/postgres:5432  [38;5;81m│[0m
+[38;5;81m│[0m  12:00:09  allow    network  python3     prod/api        tcp 10.104.22.9:5432    [38;5;81m│[0m
 [38;5;81m│[0m  12:00:08  allow    file     nginx       prod/web        read /srv/www/app.js    [38;5;81m│[0m
 [38;5;81m│[0m  12:00:07  allow    process  python3     prod/api        exec /usr/bin/python3   [38;5;81m│[0m
 [38;5;81m│[0m  12:00:06  allow    file     nginx       prod/web        write /var/log/nginx/…  [38;5;81m│[0m
-[38;5;81m│[0m  12:00:05  allow    network  python3     prod/api        tcp prod/redis:6379     [38;5;81m│[0m
+[38;5;81m│[0m  12:00:05  allow    network  python3     prod/api        tcp 10.104.31.4:6379    [38;5;81m│[0m
 [38;5;81m│[0m  12:00:04  allow    file     python3     prod/api        read /app/config.yaml   [38;5;81m│[0m
-[38;5;81m│[0m  12:00:03  allow    network  python3     prod/api        tcp prod/postgres:5432  [38;5;81m│[0m
+[38;5;81m│[0m  12:00:03  allow    network  python3     prod/api        tcp 10.104.22.9:5432    [38;5;81m│[0m
 [38;5;81m│[0m  12:00:02  allow    file     nginx       prod/web        read /srv/www/index.h…  [38;5;81m│[0m
 [38;5;81m│[0m  12:00:01  allow    file     nginx       prod/web        read /etc/nginx/nginx…  [38;5;81m│[0m
 [38;5;81m│[0m                                                                                  [38;5;81m│[0m

@@ -66,8 +66,8 @@ func defaultKeys() keyMap {
 			key.WithHelp("shift+tab", "previous view"),
 		),
 		Jump: key.NewBinding(
-			key.WithKeys("1", "2", "3", "4", "5", "6", "7"),
-			key.WithHelp("1-7", "jump to a view"),
+			key.WithKeys("1", "2", "3", "4", "5", "6", "7", "8"),
+			key.WithHelp("1-8", "jump to a view"),
 		),
 		Enter: key.NewBinding(
 			key.WithKeys("enter"),

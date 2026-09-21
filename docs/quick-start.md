@@ -214,9 +214,28 @@ was refused, by whom, and its parent process.
 
 `pahlevan ui` is an interactive view of what the agents are reporting: a live
 event stream, per-workload counts of what was observed and what was refused,
-and the ATT&CK coverage table. It is a reader - it never changes a policy, a
-mode or a profile, so it cannot be the thing that turns enforcement off during
-an incident.
+the observed traffic folded by identity, and the ATT&CK coverage table. It is a
+reader - it never changes a policy, a mode or a profile, so it cannot be the
+thing that turns enforcement off during an incident.
+
+The views, in tab order:
+
+| View | Shows |
+|---|---|
+| overview | How much of the fleet is learning, how much is enforcing, what has been refused |
+| policies | Every PahlevanPolicy, its phase and how much of its fleet reached enforcement |
+| profiles | Every container's learned baseline and what it has refused |
+| workloads | The event stream folded by owning workload |
+| events | The live tail, newest first |
+| flows | The same traffic folded by identity: workload to peer with ports, and namespace to namespace, with denied flows marked |
+| attack surface | What remains reachable for a workload, and its risk score |
+| coverage | The eBPF detectors and the ATT&CK techniques their events are evidence for |
+
+The flows view is the one to open before writing a NetworkPolicy, because it
+answers "who talks to whom" rather than "what happened just now". A peer whose
+kind is `-` is an address the cluster could not name, which is the shape
+exfiltration takes. `pahlevan netpol` turns the same picture into a manifest;
+see [generating a NetworkPolicy](network-policy.md).
 
 It reads the agent's gRPC event stream:
 
@@ -256,10 +275,10 @@ session has a fixed memory cost rather than a growing one.
 
 | Key | Does |
 |---|---|
-| `1` `2` `3` | Events, workloads, coverage |
+| `1` to `8` | Jump straight to a view, in the order of the table above |
 | `tab` / `shift-tab`, or `h` / `l` | Previous / next view |
 | `j` `k`, arrows, `pgup` `pgdn`, `g` `G` | Move, page, jump to top or bottom |
-| `enter` | On the workloads view, open the selected workload's detail |
+| `enter` | Open the selected row's detail. On a narrow terminal the detail replaces the list; `esc` goes back |
 | `/` | Filter; `esc` clears it |
 | `space` | Pause and resume the stream |
 | `c` | Clear the retained events |
