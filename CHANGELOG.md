@@ -14,6 +14,16 @@ rather than for a demo.
 
 ### Added
 
+- Enforcement survives an agent restart. The agent closed every BPF handle on
+  exit, so a DaemonSet rolling update detached every program and the
+  replacement started with empty maps: the node was unprotected for the whole
+  reload and the learned baseline was gone. Programs, maps and links are now
+  pinned to bpffs and adopted on startup. Adoption is refused when it would be
+  unsafe, including a digest over the compiled BPF objects so new userland
+  never runs against old programs, and any pinning failure degrades to the
+  previous behaviour rather than refusing to start. Where pinned state cannot
+  be adopted, allow-sets are rebuilt from ContainerProfiles, a path that is
+  lossy by construction and documented as such.
 - Keyless cosign signatures on the released image, signed by digest rather than
   by tag, so moving a tag cannot leave an old signature still looking valid.
   Each release also carries an SPDX SBOM attested to the image, build provenance
@@ -32,6 +42,10 @@ rather than for a demo.
 
 ### Fixed
 
+- `/readyz` reported ready as soon as the health port bound, so a rollout
+  advanced before any program was attached. It now reports actual attachment.
+  It deliberately ignores the best-effort LSM hooks, so a kernel without BPF
+  LSM does not block a rollout forever.
 - The agent loads and verifies its BPF programs before the manager binds its
   health port, so the only probe was a liveness check whose three default
   failures killed the container at roughly 55 seconds, on exactly the nodes
