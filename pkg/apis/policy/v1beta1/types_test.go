@@ -267,6 +267,8 @@ func fullContainerProfile() *ContainerProfile {
 			LearnedSyscalls:            []int64{1, 2, 3},
 			LearnedFiles:               []string{"/etc/nginx/nginx.conf"},
 			LearnedNetworkDestinations: []string{"10.0.0.1:443"},
+			LearnedNetworkPeers:        []string{"service:prod/postgres:443"},
+			NetworkPeerCount:           1,
 			LearnedExecutables:         []string{"/usr/sbin/nginx"},
 			LearnedCapabilities:        []string{"NET_BIND_SERVICE"},
 			// Declared, not learned: the fixture carries both so DeepCopy is

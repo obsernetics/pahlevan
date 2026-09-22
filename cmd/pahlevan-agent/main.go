@@ -32,6 +32,7 @@ import (
 	"github.com/obsernetics/pahlevan/pkg/export"
 	"github.com/obsernetics/pahlevan/pkg/grpcapi"
 	"github.com/obsernetics/pahlevan/pkg/metrics"
+	"github.com/obsernetics/pahlevan/pkg/netidentity"
 	"github.com/obsernetics/pahlevan/pkg/netname"
 	"github.com/obsernetics/pahlevan/pkg/observability"
 
@@ -330,8 +331,15 @@ func main() {
 	// lookup on the denial path is a map read rather than a DNS query - a burst
 	// of denials must not become a burst of DNS traffic.
 	netResolver := netmap.New()
-	polResolver := newPolicyResolver(mgr.GetClient(), nodeName)
+	// Turns the address into who it is, rather than what it should be called.
+	// Watch-fed and reuse-aware, because this one is consulted by decisions: a
+	// selector peer is expanded through it into the addresses the kernel
+	// allow-set holds, and egress is learned against it so a baseline names a
+	// workload rather than an address that belongs to somebody else next week.
+	peerIndex := netidentity.New(netidentity.Options{})
+	polResolver := newPolicyResolver(mgr.GetClient(), nodeName).WithPeers(peerIndex)
 	adaptiveCtl := adaptive.NewController(ctrl.Log.WithName("adaptive"), ebpfManager, attrResolver, polResolver)
+	adaptiveCtl.Peers = peerIndex
 	adaptiveCtl.SeccompDir = seccompDir
 	adaptiveCtl.SeccompRoot = seccompRoot
 	adaptiveCtl.Client = mgr.GetClient()
@@ -500,6 +508,13 @@ func main() {
 	// Run the adaptive control loop once the cache is synced (mgr.Add starts it
 	// after leader-election/cache readiness).
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		// Watch handlers first, so the index tracks pod churn as it happens. A
+		// ten-second refresh is far too slow for this one: a CNI reassigns a
+		// freed pod address within a second or two, and an index that lags is
+		// an index that hands a dead pod's identity to its successor.
+		if err := watchIdentities(ctx, mgr, peerIndex); err != nil {
+			setupLog.Error(err, "identity index will rely on the periodic refresh alone")
+		}
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		refresh := func() {
@@ -509,7 +524,7 @@ func main() {
 			if err := attrResolver.Refresh(); err != nil {
 				setupLog.V(1).Info("cgroup refresh failed", "error", err.Error())
 			}
-			if err := refreshNetmap(ctx, mgr.GetClient(), netResolver); err != nil {
+			if err := refreshNetmap(ctx, mgr.GetClient(), netResolver, peerIndex); err != nil {
 				setupLog.V(1).Info("destination map refresh failed", "error", err.Error())
 			}
 		}
@@ -625,32 +640,82 @@ func main() {
 	}
 }
 
-// refreshNetmap rebuilds the address map from the manager's cache.
+// watchIdentities registers the identity index on the informers the manager
+// already runs for pods, services, nodes and namespaces.
+//
+// A handler added after the cache has synced still receives a synthetic add
+// for everything already in it, so registering here - inside the runnable,
+// which starts after cache sync - populates the index without a separate list.
+func watchIdentities(ctx context.Context, mgr manager.Manager, idx *netidentity.Store) error {
+	var errs []string
+	for _, obj := range []client.Object{
+		&corev1.Pod{}, &corev1.Service{}, &corev1.Node{}, &corev1.Namespace{},
+	} {
+		informer, err := mgr.GetCache().GetInformer(ctx, obj)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%T: %v", obj, err))
+			continue
+		}
+		if _, err := informer.AddEventHandler(idx.Handler()); err != nil {
+			errs = append(errs, fmt.Sprintf("%T: %v", obj, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// refreshNetmap rebuilds the address map and reconciles the identity index
+// from the manager's cache.
 //
 // Listing through the cached client rather than the API server is what makes
 // this cheap enough to run on the same ten-second tick as everything else: the
 // informers are already watching pods and services for the policy resolver, so
 // this is a walk over memory rather than three cluster-wide LISTs.
-func refreshNetmap(ctx context.Context, c client.Client, r *netmap.Resolver) error {
+//
+// The identity index is watch-fed and does not need this to be correct, but it
+// does need it to stay correct: a delete the watch dropped leaves a binding
+// nothing else will ever remove, and a binding that outlives its pod is the
+// stale identity the index exists to prevent. A kind whose List failed is left
+// out of the snapshot rather than passed as empty, which would withdraw every
+// live identity of that kind.
+func refreshNetmap(ctx context.Context, c client.Client, r *netmap.Resolver, idx *netidentity.Store) error {
 	var (
 		svcs  corev1.ServiceList
 		pods  corev1.PodList
 		nodes corev1.NodeList
+		nss   corev1.NamespaceList
 	)
 	// Errors are collected rather than returned on the first failure: a
 	// resolver built from two of the three sources is much better than one
 	// built from none, and the missing kind simply resolves as external.
 	var errs []string
+	var snap netidentity.Snapshot
 	if err := c.List(ctx, &svcs); err != nil {
 		errs = append(errs, "services: "+err.Error())
+	} else {
+		snap.Services = svcs.Items
 	}
 	if err := c.List(ctx, &pods); err != nil {
 		errs = append(errs, "pods: "+err.Error())
+	} else {
+		snap.Pods = pods.Items
 	}
 	if err := c.List(ctx, &nodes); err != nil {
 		errs = append(errs, "nodes: "+err.Error())
+	} else {
+		snap.Nodes = nodes.Items
+	}
+	if err := c.List(ctx, &nss); err != nil {
+		errs = append(errs, "namespaces: "+err.Error())
+	} else {
+		snap.Namespaces = nss.Items
 	}
 	r.Refresh(netmap.Snapshot{Services: svcs.Items, Pods: pods.Items, Nodes: nodes.Items})
+	if idx != nil {
+		idx.Sync(snap)
+	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}

@@ -392,12 +392,12 @@ func TestUnrepresentableNetworkInputs(t *testing.T) {
 		{"ingress is out of scope",
 			policyv1alpha1.NetworkPolicy{IngressRules: []policyv1alpha1.NetworkRule{{}}},
 			"egress only"},
-		{"label-selected peers have no fixed address",
+		{"label-selected peers need an index this translation has no access to",
 			policyv1alpha1.NetworkPolicy{EgressRules: []policyv1alpha1.NetworkRule{{
 				Ports: []policyv1alpha1.NetworkPort{{Port: i32(80)}},
 				Peers: []policyv1alpha1.NetworkPeer{{PodSelector: &policyv1alpha1.LabelSelector{}}},
 			}}},
-			"cannot be resolved to a fixed address"},
+			"this agent cannot resolve to addresses"},
 		{"a rule with no ports seeds nothing",
 			policyv1alpha1.NetworkPolicy{EgressRules: []policyv1alpha1.NetworkRule{{
 				Peers: []policyv1alpha1.NetworkPeer{{IPBlock: &policyv1alpha1.IPBlock{CIDR: "10.0.0.1/32"}}},

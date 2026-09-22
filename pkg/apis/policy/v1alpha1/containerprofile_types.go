@@ -46,6 +46,33 @@ type ContainerProfileStatus struct {
 	// LearnedNetworkDestinations is the set of egress destinations (ip:port).
 	LearnedNetworkDestinations []string `json:"learnedNetworkDestinations,omitempty"`
 
+	// LearnedNetworkPeers is the same observed egress as
+	// LearnedNetworkDestinations, recorded as what the peer is rather than as
+	// where it was: "pod:prod/api:5432", "service:prod/postgres:5432",
+	// "node:worker-1:10250", and "external:cloud-metadata:80" for the address
+	// ranges worth naming as a class rather than one by one.
+	//
+	// A pod address is leased, not owned. The CNI hands it back seconds after
+	// the pod dies and gives it to whatever is scheduled next, so a baseline
+	// of addresses is wrong in both directions: a peer that is rescheduled
+	// onto a new address drops out of a baseline that should still hold, and
+	// a new workload that inherits the old address walks into one that should
+	// have broken. A namespace, a workload and a port survive the first and do
+	// not transfer in the second.
+	//
+	// Genuinely external destinations are not listed here beyond their class.
+	// They have no Kubernetes identity to record, pkg/netname names them on
+	// the export path, and leaving them out keeps this list bounded: an
+	// outbound scan touches thousands of distinct addresses, and a learned set
+	// an attacker can grow at will does not belong in a CR.
+	LearnedNetworkPeers []string `json:"learnedNetworkPeers,omitempty"`
+
+	// NetworkPeerCount is how many distinct identities the container was
+	// observed talking to. Reported next to NetworkCount because the two
+	// answer different questions: "forty addresses" and "three workloads" can
+	// be the same week of traffic.
+	NetworkPeerCount int32 `json:"networkPeerCount,omitempty"`
+
 	// LearnedExecutables is the set of binary paths the container executed.
 	LearnedExecutables []string `json:"learnedExecutables,omitempty"`
 

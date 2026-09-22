@@ -58,6 +58,23 @@ type Overrides struct {
 	AllowedDestinations []Destination
 	DeniedDestinations  []Destination
 
+	// SelectorDestinations are the subset of AllowedDestinations that came
+	// from a namespaceSelector or podSelector peer rather than from a literal
+	// ipBlock. They are seeded exactly like the others - the kernel allow-set
+	// has one kind of entry and no notion of where it came from - but their
+	// provenance is kept here because they are the only entries whose set
+	// changes while a container is enforcing.
+	//
+	// A selector names a set of workloads, and that set moves: a pod is
+	// rescheduled onto a new address, a pod is relabelled out of the selector,
+	// a namespace is deleted. An entry seeded because a pod matched has to be
+	// withdrawn when that pod stops matching, or the selector means "whatever
+	// matched the first time this container enforced", which is not what it
+	// says. Withdrawing it requires knowing which entries were selector
+	// derived, because withdrawing a learned destination would break the
+	// workload.
+	SelectorDestinations []Destination
+
 	// AllowedSyscalls and DeniedSyscalls adjust the generated seccomp profile
 	// rather than a BPF map: syscalls are enforced by seccomp, while the BPF
 	// syscall program is observation-only.

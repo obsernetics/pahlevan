@@ -204,9 +204,15 @@ type cgState struct {
 	// path alone let an attacker append a root-equivalent account afterwards.
 	files      map[string]struct{}
 	writeFiles map[string]struct{}
-	dests      map[string]struct{}
-	execs      map[string]struct{}
-	caps       map[uint32]struct{}
+	// dests is the learned egress set in address terms (ip:port), which is
+	// what the kernel allow-set literally holds. peers is the same traffic in
+	// identity terms, which is what survives a peer being rescheduled onto a
+	// different address and what does not transfer to whoever inherits the old
+	// one. See netpeer.go.
+	dests map[destID]struct{}
+	peers map[peerID]struct{}
+	execs map[string]struct{}
+	caps  map[uint32]struct{}
 
 	// Enforcement health tracking.
 	enforcingSince time.Time
@@ -290,6 +296,12 @@ type Controller struct {
 	// Nil disables recording entirely, which is what the unit tests use.
 	Metrics *metrics.Manager
 
+	// Peers, when set, resolves a destination address to the Kubernetes
+	// identity behind it, so egress is learned as "prod/postgres:5432" rather
+	// than only as an address that will belong to somebody else next week.
+	// Nil leaves the address-only behavior untouched.
+	Peers PeerIndex
+
 	mu    sync.Mutex
 	state map[uint64]*cgState
 }
@@ -326,7 +338,8 @@ func (c *Controller) track(cgroupID uint64) *cgState {
 			syscalls:      make(map[uint64]struct{}),
 			files:         make(map[string]struct{}),
 			writeFiles:    make(map[string]struct{}),
-			dests:         make(map[string]struct{}),
+			dests:         make(map[destID]struct{}),
+			peers:         make(map[peerID]struct{}),
 			execs:         make(map[string]struct{}),
 			caps:          make(map[uint32]struct{}),
 		}
@@ -384,13 +397,9 @@ func (c *Controller) HandleNetworkEvent(e *ebpf.NetworkEvent) error {
 		return nil
 	}
 	if st.phase == PhaseLearning {
-		st.dests[netKey(e.DstIP, e.DstPort)] = struct{}{}
+		c.learnDestination(st, e)
 	}
 	return nil
-}
-
-func netKey(ip uint32, port uint16) string {
-	return fmt.Sprintf("%d:%d", ip, port)
 }
 
 // HandleProcessEvent records an observed executable for the cgroup's learning set.
@@ -554,6 +563,11 @@ func (c *Controller) Reconcile() {
 		case PhaseLearning:
 			c.maybeEnforce(id, st)
 		case PhaseEnforcing:
+			// Selector peers first. A pod that has stopped matching must stop
+			// being permitted before anything else is decided about this
+			// container, and a pod that has started matching must be permitted
+			// before the next event can be denied for its absence.
+			c.refreshSelectorPeers(id, st)
 			c.maybeRollback(id, st)
 		}
 	}
@@ -674,7 +688,8 @@ func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 	c.recordEnforceTransition(st, now.Sub(st.learningSince))
 	c.log.Info("container transitioned to enforcing",
 		"cgroup", id, "pod", st.ref.PodUID, "attempt", st.attempts,
-		"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests), "execs", len(st.execs), "caps", len(st.caps))
+		"syscalls", len(st.syscalls), "files", len(st.files), "dests", len(st.dests),
+		"peers", len(st.peers), "execs", len(st.execs), "caps", len(st.caps))
 }
 
 // ApplyOverrides writes an operator's corrections into the kernel allow-sets for
@@ -767,10 +782,6 @@ func (c *Controller) applyOverrides(id uint64, st *cgState, o Overrides) {
 		"procFilter", ebpf.FilterMaskString(o.ProcFilter.Mask()),
 		"networkRelax", ebpf.NetworkRelaxString(o.NetworkRelax),
 		"failed", failed)
-}
-
-func destString(d Destination) string {
-	return net.JoinHostPort(d.IP.String(), fmt.Sprint(d.Port))
 }
 
 // maybeRollback checks a recently-enforcing container for signs that the learned
@@ -1053,9 +1064,14 @@ func (c *Controller) persistProfile(st *cgState) {
 	sort.Strings(files)
 	dests := make([]string, 0, len(st.dests))
 	for d := range st.dests {
-		dests = append(dests, d)
+		dests = append(dests, d.String())
 	}
 	sort.Strings(dests)
+	peers := make([]string, 0, len(st.peers))
+	for pr := range st.peers {
+		peers = append(peers, pr.String())
+	}
+	sort.Strings(peers)
 	execs := make([]string, 0, len(st.execs))
 	for e := range st.execs {
 		execs = append(execs, e)
@@ -1097,6 +1113,8 @@ func (c *Controller) persistProfile(st *cgState) {
 			LearnedSyscalls:            syscalls,
 			LearnedFiles:               files,
 			LearnedNetworkDestinations: dests,
+			LearnedNetworkPeers:        peers,
+			NetworkPeerCount:           int32(len(peers)),
 			LearnedExecutables:         execs,
 			LearnedCapabilities:        caps,
 			SyscallCount:               int32(len(syscalls)),
