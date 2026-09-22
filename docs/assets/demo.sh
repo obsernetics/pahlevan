@@ -173,7 +173,7 @@ pahlevan() {
       # console does, so the demo's earlier output is still there afterwards.
       local frame
       printf '\033[?1049h'
-      for frame in overview policies workloads events coverage; do
+      for frame in overview policies workloads events flows coverage; do
         printf '\033[H\033[2J'
         cat "${DEMO_CONSOLE}/${frame}.ansi"
         sleep 3

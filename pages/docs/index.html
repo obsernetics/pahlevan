@@ -132,6 +132,11 @@
                     <p>Four of Pahlevan&#39;s eight eBPF programs attach to BPF LSM hooks, and those hooks are the only place the data plane can refuse a request before it takes effect. A BPF LSM program attaches...</p>
                     <span class="doc-card-more">Read &#8594;</span>
                 </a>
+                <a class="doc-card" href="network-policy.html">
+                    <h2>Generating a NetworkPolicy from what was observed</h2>
+                    <p>pahlevan netpol turns a learned network baseline into a networking.k8s.io/v1 NetworkPolicy you can review and apply.</p>
+                    <span class="doc-card-more">Read &#8594;</span>
+                </a>
                 <a class="doc-card" href="readme.html">
                     <h2>Pahlevan Documentation</h2>
                     <p>Pahlevan is an eBPF Kubernetes security operator. It learns what a container actually does, then refuses everything else in the kernel, at the LSM hook, before the operation completes.</p>

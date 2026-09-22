@@ -125,6 +125,8 @@ func (m *Model) bodyBlock(w, h int) string {
 		body = m.workloadsBody(w, h)
 	case ViewEvents:
 		body = m.eventsBody(w, h)
+	case ViewFlows:
+		body = m.flowsBody(w, h)
 	case ViewSurface:
 		body = m.surfaceBody(w, h)
 	case ViewCoverage:

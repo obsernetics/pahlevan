@@ -28,6 +28,7 @@ const (
 	ViewProfiles
 	ViewWorkloads
 	ViewEvents
+	ViewFlows
 	ViewSurface
 	ViewCoverage
 	ViewHelp
@@ -37,7 +38,7 @@ const (
 // in it: it is a screen you open and leave, not a place you tab through.
 var views = []View{
 	ViewOverview, ViewPolicies, ViewProfiles, ViewWorkloads,
-	ViewEvents, ViewSurface, ViewCoverage,
+	ViewEvents, ViewFlows, ViewSurface, ViewCoverage,
 }
 
 func (v View) String() string {
@@ -52,6 +53,8 @@ func (v View) String() string {
 		return "workloads"
 	case ViewEvents:
 		return "events"
+	case ViewFlows:
+		return "flows"
 	case ViewSurface:
 		return "attack surface"
 	case ViewCoverage:
@@ -78,6 +81,8 @@ func (v View) abbrev() string {
 		return "wkl"
 	case ViewEvents:
 		return "evt"
+	case ViewFlows:
+		return "flw"
 	case ViewSurface:
 		return "atk"
 	case ViewCoverage:
@@ -160,15 +165,24 @@ type Model struct {
 	focus    pane
 
 	// Event side.
-	events     *ring
-	workloads  map[string]*Workload
-	order      []string
-	paused     bool
-	total      uint64
-	denied     uint64
-	sourceName string
-	ended      bool
-	err        error
+	events    *ring
+	workloads map[string]*Workload
+	order     []string
+	// Flows are the same stream folded by identity, on two axes: workload to
+	// peer, and namespace to namespace. Folded on arrival rather than scanned
+	// per frame, because the ring is a window and the flow table is not: a
+	// pair that scrolled out of the ring is still a pair the cluster has.
+	flows        map[string]*Flow
+	flowOrder    []string
+	nsFlows      map[string]*NamespaceFlow
+	nsFlowOrder  []string
+	flowsDropped int
+	paused       bool
+	total        uint64
+	denied       uint64
+	sourceName   string
+	ended        bool
+	err          error
 
 	// Cluster side. A nil cluster is the replay case: the cluster panes say
 	// so rather than sitting on an empty table that looks like a healthy
@@ -265,6 +279,8 @@ func New(opts Options) *Model {
 		view:       ViewOverview,
 		events:     newRing(capacity),
 		workloads:  map[string]*Workload{},
+		flows:      map[string]*Flow{},
+		nsFlows:    map[string]*NamespaceFlow{},
 		cursors:    map[View]int{},
 		offsets:    map[View]int{},
 		ctx:        ctx,
@@ -440,6 +456,9 @@ func (m *Model) ingest(e export.Event) {
 		m.events.push(e)
 	}
 	m.foldWorkload(e)
+	if e.Type == export.EventTypeNetwork {
+		m.foldFlow(e)
+	}
 }
 
 func (m *Model) foldWorkload(e export.Event) {
@@ -723,6 +742,8 @@ func (m *Model) rowCount() int {
 		return len(m.filteredWorkloads())
 	case ViewEvents:
 		return m.eventRowCount()
+	case ViewFlows:
+		return len(m.filteredFlows())
 	case ViewSurface:
 		return len(m.filteredSurfaces())
 	case ViewCoverage:
@@ -734,7 +755,7 @@ func (m *Model) rowCount() int {
 // hasDetail reports whether the current view has a detail pane to focus.
 func (m *Model) hasDetail() bool {
 	switch m.view {
-	case ViewPolicies, ViewProfiles, ViewWorkloads, ViewSurface, ViewCoverage:
+	case ViewPolicies, ViewProfiles, ViewWorkloads, ViewFlows, ViewSurface, ViewCoverage:
 		return true
 	}
 	return false

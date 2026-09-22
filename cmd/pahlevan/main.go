@@ -185,6 +185,7 @@ redirected, the same invocation prints this help, so scripts keep working.`,
 	cmd.AddCommand(grouped(groupInspect,
 		commands.NewPolicyCommand(),
 		commands.NewProfileCommand(),
+		commands.NewNetpolCommand(),
 		commands.NewAttackSurfaceCommand(),
 		commands.NewCoverageCommand(),
 	)...)

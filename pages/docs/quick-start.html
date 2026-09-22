@@ -260,9 +260,57 @@ was refused, by whom, and its parent process.</p>
 <h2 id="watch-it-work">Watch it work</h2>
 <p><code>pahlevan ui</code> is an interactive view of what the agents are reporting: a live
 event stream, per-workload counts of what was observed and what was refused,
-and the ATT&amp;CK coverage table. It is a reader - it never changes a policy, a
-mode or a profile, so it cannot be the thing that turns enforcement off during
-an incident.</p>
+the observed traffic folded by identity, and the ATT&amp;CK coverage table. It is a
+reader - it never changes a policy, a mode or a profile, so it cannot be the
+thing that turns enforcement off during an incident.</p>
+<p>The views, in tab order:</p>
+<table>
+<thead>
+<tr>
+<th>View</th>
+<th>Shows</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>overview</td>
+<td>How much of the fleet is learning, how much is enforcing, what has been refused</td>
+</tr>
+<tr>
+<td>policies</td>
+<td>Every PahlevanPolicy, its phase and how much of its fleet reached enforcement</td>
+</tr>
+<tr>
+<td>profiles</td>
+<td>Every container's learned baseline and what it has refused</td>
+</tr>
+<tr>
+<td>workloads</td>
+<td>The event stream folded by owning workload</td>
+</tr>
+<tr>
+<td>events</td>
+<td>The live tail, newest first</td>
+</tr>
+<tr>
+<td>flows</td>
+<td>The same traffic folded by identity: workload to peer with ports, and namespace to namespace, with denied flows marked</td>
+</tr>
+<tr>
+<td>attack surface</td>
+<td>What remains reachable for a workload, and its risk score</td>
+</tr>
+<tr>
+<td>coverage</td>
+<td>The eBPF detectors and the ATT&amp;CK techniques their events are evidence for</td>
+</tr>
+</tbody>
+</table>
+<p>The flows view is the one to open before writing a NetworkPolicy, because it
+answers &quot;who talks to whom&quot; rather than &quot;what happened just now&quot;. A peer whose
+kind is <code>-</code> is an address the cluster could not name, which is the shape
+exfiltration takes. <code>pahlevan netpol</code> turns the same picture into a manifest;
+see <a href="network-policy.html">generating a NetworkPolicy</a>.</p>
 <p>It reads the agent's gRPC event stream:</p>
 <pre><code class="language-bash">pahlevan ui --grpc localhost:9090
 </code></pre>
@@ -298,8 +346,8 @@ session has a fixed memory cost rather than a growing one.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>1</code> <code>2</code> <code>3</code></td>
-<td>Events, workloads, coverage</td>
+<td><code>1</code> to <code>8</code></td>
+<td>Jump straight to a view, in the order of the table above</td>
 </tr>
 <tr>
 <td><code>tab</code> / <code>shift-tab</code>, or <code>h</code> / <code>l</code></td>
@@ -311,7 +359,7 @@ session has a fixed memory cost rather than a growing one.</p>
 </tr>
 <tr>
 <td><code>enter</code></td>
-<td>On the workloads view, open the selected workload's detail</td>
+<td>Open the selected row's detail. On a narrow terminal the detail replaces the list; <code>esc</code> goes back</td>
 </tr>
 <tr>
 <td><code>/</code></td>

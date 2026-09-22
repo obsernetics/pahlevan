@@ -41,6 +41,7 @@ var demoFrames = []struct {
 	{"policies", ViewPolicies},
 	{"workloads", ViewWorkloads},
 	{"events", ViewEvents},
+	{"flows", ViewFlows},
 	{"coverage", ViewCoverage},
 }
 
@@ -87,10 +88,20 @@ func demoStream() []export.Event {
 			Process: export.ProcessInfo{Comm: comm}, Kubernetes: ref,
 			File: &export.FileInfo{Path: path, SyscallName: op}}
 	}
-	netw := func(sec int, a export.Action, comm, dst string, port uint16, ref *export.KubernetesRef) export.Event {
+	// A real network event carries both the address the kernel saw and the
+	// identity the cluster gave it. The events view shows the address, because
+	// that is what was observed; the flows view folds by the identity, because
+	// that is what a policy is written against. The fixture has to carry both,
+	// or the recording would show one of those views doing the other's job.
+	netw := func(sec int, a export.Action, comm, ip, name, kind string, port uint16,
+		ref *export.KubernetesRef,
+	) export.Event {
 		return export.Event{Timestamp: at(sec), Type: export.EventTypeNetwork, Action: a,
 			Process: export.ProcessInfo{Comm: comm}, Kubernetes: ref,
-			Network: &export.NetworkInfo{DestinationIP: dst, DestinationPort: port, Protocol: "TCP"}}
+			Network: &export.NetworkInfo{
+				DestinationIP: ip, DestinationPort: port, Protocol: "TCP",
+				DestinationName: name, DestinationKind: kind,
+			}}
 	}
 	exec := func(sec int, a export.Action, comm, bin string, ref *export.KubernetesRef) export.Event {
 		return export.Event{Timestamp: at(sec), Type: export.EventTypeProcess, Action: a,
@@ -105,22 +116,22 @@ func demoStream() []export.Event {
 	return []export.Event{
 		file(1, allow, "nginx", "/etc/nginx/nginx.conf", "read", web),
 		file(2, allow, "nginx", "/srv/www/index.html", "read", web),
-		netw(3, allow, "python3", "prod/postgres", 5432, api),
+		netw(3, allow, "python3", "10.104.22.9", "prod/postgres", "service", 5432, api),
 		file(4, allow, "python3", "/app/config.yaml", "read", api),
-		netw(5, allow, "python3", "prod/redis", 6379, api),
+		netw(5, allow, "python3", "10.104.31.4", "prod/redis", "service", 6379, api),
 		file(6, allow, "nginx", "/var/log/nginx/access.log", "write", web),
 		exec(7, allow, "python3", "/usr/bin/python3", api),
 		file(8, allow, "nginx", "/srv/www/app.js", "read", web),
-		netw(9, allow, "python3", "prod/postgres", 5432, api),
+		netw(9, allow, "python3", "10.104.22.9", "prod/postgres", "service", 5432, api),
 		file(10, allow, "nginx", "/srv/www/style.css", "read", web),
 		// The attacker, with a shell in the API pod.
 		file(11, deny, "sh", "/etc/shadow", "read", api),
 		exec(12, deny, "sh", "/tmp/xmrig", api),
-		netw(13, deny, "sh", "203.0.113.7", 4444, api),
+		netw(13, deny, "sh", "203.0.113.7", "", "", 4444, api),
 		capa(14, "sh", "CAP_SYS_ADMIN", api),
 		file(15, deny, "sh", "/etc/passwd", "write", api),
 		file(16, allow, "nginx", "/srv/www/index.html", "read", web),
-		netw(17, allow, "python3", "prod/postgres", 5432, api),
+		netw(17, allow, "python3", "10.104.22.9", "prod/postgres", "service", 5432, api),
 	}
 }
 

@@ -33,4 +33,4 @@ Sleep 1200ms
 
 Type "pahlevan"
 Enter
-Sleep 17s
+Sleep 20s
