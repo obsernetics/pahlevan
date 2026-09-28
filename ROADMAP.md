@@ -339,6 +339,16 @@ polish item.
   slice forever, and a `TracerProvider` built with zero span processors that
   reported tracing as enabled. Still uninstrumented:
   `internal/learner.SyscallLearner` itself.
+- **Done in the tree: the `policyRef` field is populated.** `ContainerProfile`
+  declared it from the start and nothing ever set it: the live controller
+  (`internal/adaptive`) never copied the resolver's answer into the spec, so
+  every profile it wrote left `profilesync`'s `PahlevanPolicy` lookup with
+  nothing to key on, and that policy's syscall overrides silently never reached
+  the generated seccomp profile. A learning container now has the governing
+  policy resolved live, since it has no frozen decision yet; an enforcing one
+  gets the name frozen at its enforce transition, matching the overrides and
+  seccomp profile generated from that same decision, rather than a live
+  re-resolve that could name a policy whose overrides were never applied.
 - **Done in the tree: the API is graduated to `v1beta1`.** All three kinds now
   serve both versions, with `v1beta1` as the storage version and `v1alpha1`
   served, marked deprecated and carrying a warning. Conversion is written field
@@ -369,8 +379,6 @@ Worth doing, not next.
   elsewhere. This needs a stable, node-independent profile representation,
   since the current allow-sets are keyed by cgroup id.
 - **Planned: cluster-scoped policy**, since `PahlevanPolicy` is namespaced only.
-- **Planned: populate the `policyRef` field** that `ContainerProfile` declares.
-  The image, pod labels and owning workload are already on every event.
 - **Planned: file operation coverage beyond open**, such as rename, unlink, and
   chmod.
 - **Planned: a real OpenTelemetry path**, or removal of the current wiring. A

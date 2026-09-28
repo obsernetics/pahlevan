@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-09-28
+
+### Fixed
+
+- `ContainerProfile.Spec.PolicyRef` is now populated. The field has existed
+  since the type was added, but the live controller never set it when
+  persisting a profile, so it was always empty. That silently broke
+  `profilesync`'s lookup of a policy's `syscallPolicy` overrides (they never
+  reached a generated seccomp profile) and the CLI's per-policy grouping in
+  `pahlevan netpol generate` and `pahlevan attacksurface`. A learning
+  container now gets the field resolved live; an enforcing one gets it frozen
+  at its enforce transition, matching the overrides and seccomp profile
+  generated from that same decision.
+
+### Changed
+
+- Dependency batch: `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/cli-runtime`
+  and `k8s.io/client-go` to 0.37.1, `github.com/onsi/gomega` to 1.44.0, and
+  `google.golang.org/grpc` to 1.84.0. `actions/download-artifact` to v8 in CI.
+
 ## [3.5.0] - 2026-09-22
 
 Releases are signed now, and the shipped manifests are sized for real clusters

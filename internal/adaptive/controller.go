@@ -1041,6 +1041,27 @@ func (c *Controller) localhostProfile(path string) string {
 	return rel
 }
 
+// governingPolicyName returns the PahlevanPolicy name to record on a
+// ContainerProfile's spec.
+//
+// An enforcing container reports the policy frozen at its enforce transition
+// (st.policyName), matching the overrides and seccomp profile that were
+// generated from that same decision: all three describe one point in time, and
+// a live re-resolve here could report a policy whose overrides were never
+// actually applied. A learning container has no frozen decision yet, so it is
+// resolved fresh - a cheap call backed by the informer cache - rather than
+// left blank, since the resolver already knows the governing policy well
+// before enforcement begins. Callers must hold c.mu.
+func (c *Controller) governingPolicyName(st *cgState) string {
+	if st.phase == PhaseEnforcing {
+		return st.policyName
+	}
+	if d, ok := c.policies.Resolve(st.cgroupID, st.ref); ok {
+		return d.PolicyName
+	}
+	return ""
+}
+
 // persistProfile upserts a ContainerProfile CR reflecting the container's learned
 // baseline and phase. Best-effort: skips when no client is set or the pod isn't
 // resolved yet. Uses server-side apply so it creates or converges.
@@ -1102,6 +1123,7 @@ func (c *Controller) persistProfile(st *cgState) {
 			},
 		},
 		Spec: policyv1alpha1.ContainerProfileSpec{
+			PolicyRef:   c.governingPolicyName(st),
 			PodName:     podName,
 			Namespace:   ns,
 			ContainerID: st.ref.ContainerID,
