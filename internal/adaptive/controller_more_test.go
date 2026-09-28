@@ -47,6 +47,33 @@ func (p fakePoliciesMeta) PodMeta(string) (string, string, bool) {
 	return p.ns, p.name, p.metaOK
 }
 
+// fakePoliciesNamed is a PolicyResolver whose answer can be changed between
+// calls (pointer receiver), so a test can prove a value the controller froze
+// at an earlier transition survives the resolver's answer changing afterward.
+type fakePoliciesNamed struct {
+	policyName string
+	blocking   bool
+	ok         bool
+	ns, name   string
+	metaOK     bool
+}
+
+func (p *fakePoliciesNamed) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
+	mode := ModeMonitoring
+	if p.blocking {
+		mode = ModeBlocking
+	}
+	return Decision{
+		PolicyName:  p.policyName,
+		Mode:        mode,
+		SelfHealing: SelfHealingDecision{Enabled: true},
+	}, p.ok
+}
+
+func (p *fakePoliciesNamed) PodMeta(string) (string, string, bool) {
+	return p.ns, p.name, p.metaOK
+}
+
 // newRuntimeScheme returns a scheme with the Pahlevan CRDs and core/v1, so both
 // ContainerProfile persistence and pod reads / Event writes can be faked.
 func newRuntimeScheme(t *testing.T) *runtime.Scheme {
@@ -203,6 +230,131 @@ func TestPersistProfile_SkippedWhenUnresolved(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Errorf("expected no persisted profiles, got %d", len(list.Items))
+	}
+}
+
+// governingPolicyName is what makes a ContainerProfile's PolicyRef usable:
+// profilesync keys its PahlevanPolicy lookup off that field, and it was going
+// out empty for every profile the live controller ever wrote because nothing
+// copied the resolver's answer into the spec.
+func TestGoverningPolicyName_LearningResolvesLive(t *testing.T) {
+	resolver := &fakePoliciesNamed{policyName: "checkout", ok: true}
+	c := NewController(logr.Discard(), &fakeEnforcer{}, nil, resolver)
+	c.mu.Lock()
+	st := c.track(1)
+	c.mu.Unlock()
+
+	if got := c.governingPolicyName(st); got != "checkout" {
+		t.Errorf("governingPolicyName (learning, resolved) = %q, want checkout", got)
+	}
+
+	// The resolver's answer can change call to call (a policy edit, a selector
+	// no longer matching); a learning container has no frozen decision yet, so
+	// it must track that rather than a stale first answer.
+	resolver.policyName = "billing"
+	if got := c.governingPolicyName(st); got != "billing" {
+		t.Errorf("governingPolicyName (learning, changed) = %q, want billing", got)
+	}
+}
+
+func TestGoverningPolicyName_LearningUnresolvedIsEmpty(t *testing.T) {
+	resolver := &fakePoliciesNamed{ok: false}
+	c := NewController(logr.Discard(), &fakeEnforcer{}, nil, resolver)
+	c.mu.Lock()
+	st := c.track(1)
+	c.mu.Unlock()
+
+	if got := c.governingPolicyName(st); got != "" {
+		t.Errorf("governingPolicyName (unresolved) = %q, want empty", got)
+	}
+}
+
+func TestGoverningPolicyName_EnforcingIsFrozen(t *testing.T) {
+	resolver := &fakePoliciesNamed{policyName: "checkout", ok: true}
+	c := NewController(logr.Discard(), &fakeEnforcer{}, nil, resolver)
+	c.mu.Lock()
+	st := c.track(1)
+	st.phase = PhaseEnforcing
+	st.policyName = "checkout" // frozen at the enforce transition
+	c.mu.Unlock()
+
+	// The live resolver now answers something else - a rename, a reassignment
+	// - but an already-enforcing container's overrides and seccomp profile were
+	// generated from the frozen decision, so PolicyRef must keep describing
+	// that same decision rather than one that was never actually applied.
+	resolver.policyName = "billing"
+	if got := c.governingPolicyName(st); got != "checkout" {
+		t.Errorf("governingPolicyName (enforcing) = %q, want frozen checkout", got)
+	}
+}
+
+// TestPersistProfile_PolicyRef_Learning proves the fix end to end: a learning
+// container's persisted ContainerProfile carries the governing policy's name,
+// which profilesync.render needs to look up that policy's syscall overrides.
+func TestPersistProfile_PolicyRef_Learning(t *testing.T) {
+	cl := newTestScheme(t).Build()
+	resolver := &fakePoliciesNamed{policyName: "checkout", blocking: false, ok: true,
+		ns: "prod", name: "checkout-1", metaOK: true}
+	c := NewController(logr.Discard(), &fakeEnforcer{}, nil, resolver)
+	c.Client = cl
+	c.Node = "node-1"
+
+	c.mu.Lock()
+	st := c.track(42)
+	st.ref.PodUID = "pod-uid-42"
+	c.mu.Unlock()
+
+	c.Reconcile()
+	if st.phase != PhaseLearning {
+		t.Fatalf("expected the container to stay in Learning (monitoring mode), got %s", st.phase)
+	}
+
+	cp := &policyv1alpha1.ContainerProfile{}
+	name := profileName(st.ref)
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "prod"}, cp); err != nil {
+		t.Fatalf("expected persisted ContainerProfile %q: %v", name, err)
+	}
+	if cp.Spec.PolicyRef != "checkout" {
+		t.Errorf("Spec.PolicyRef = %q, want checkout", cp.Spec.PolicyRef)
+	}
+}
+
+// TestPersistProfile_PolicyRef_FrozenWhileEnforcing proves the persisted field
+// keeps describing the decision the overrides and seccomp profile came from,
+// even once the resolver would answer differently.
+func TestPersistProfile_PolicyRef_FrozenWhileEnforcing(t *testing.T) {
+	cl := newTestScheme(t).Build()
+	resolver := &fakePoliciesNamed{policyName: "checkout", blocking: true, ok: true,
+		ns: "prod", name: "checkout-1", metaOK: true}
+	c := NewController(logr.Discard(), &fakeEnforcer{}, nil, resolver)
+	c.Client = cl
+	c.Node = "node-1"
+	base := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return base }
+
+	c.mu.Lock()
+	st := c.track(43)
+	st.ref.PodUID = "pod-uid-43"
+	c.mu.Unlock()
+
+	c.now = func() time.Time { return base.Add(time.Minute) }
+	c.Reconcile()
+	if st.phase != PhaseEnforcing {
+		t.Fatalf("expected the container to be Enforcing, got %s", st.phase)
+	}
+
+	// The policy is renamed/reassigned after the enforce transition.
+	resolver.policyName = "billing"
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
+	c.Reconcile()
+
+	cp := &policyv1alpha1.ContainerProfile{}
+	name := profileName(st.ref)
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "prod"}, cp); err != nil {
+		t.Fatalf("expected persisted ContainerProfile %q: %v", name, err)
+	}
+	if cp.Spec.PolicyRef != "checkout" {
+		t.Errorf("Spec.PolicyRef = %q, want frozen checkout, got %q (resolver's live answer leaked through)", cp.Spec.PolicyRef, cp.Spec.PolicyRef)
 	}
 }
 
