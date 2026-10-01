@@ -231,6 +231,8 @@ type cgState struct {
 	baseline ContainerBaseline
 	// capLogged keeps the attempt-cap message to one line per container.
 	capLogged bool
+	// reviewLogged keeps the review-held message to one line per container.
+	reviewLogged bool
 	// overrides are the operator corrections applied at the last enforce
 	// transition, retained so the generated seccomp profile matches what the
 	// kernel was actually told.
@@ -631,8 +633,8 @@ func (c *Controller) recordFleetMetrics() {
 }
 
 // maybeEnforce flips a learning container to enforcing when its window has
-// elapsed, its policy is blocking, it is not in a post-rollback cooldown, and it
-// has attempts left. Callers must hold c.mu.
+// elapsed, its policy is blocking, review is not held, it is not in a
+// post-rollback cooldown, and it has attempts left. Callers must hold c.mu.
 func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 	d, ok := c.policies.Resolve(id, st.ref)
 	if !ok || !d.Blocking() {
@@ -643,6 +645,14 @@ func (c *Controller) maybeEnforce(id uint64, st *cgState) {
 	// startup differs from its steady state is observed in both before anything
 	// is denied. Before this it was parsed from the CRD and dropped.
 	if now.Sub(st.learningSince) < d.EnforceAfter() {
+		return
+	}
+	if d.ReviewHeld {
+		if !st.reviewLogged {
+			st.reviewLogged = true
+			c.log.Info("learning window elapsed but the policy requires review before enforcing; staying in learning",
+				"cgroup", id, "pod", st.ref.PodUID, "policy", d.PolicyName)
+		}
 		return
 	}
 	if now.Before(st.holdUntil) {

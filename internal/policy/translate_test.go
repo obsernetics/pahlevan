@@ -94,6 +94,36 @@ func TestNegativeDurationsAreClamped(t *testing.T) {
 	assert.True(t, hasWarning(warnings, "gracePeriod is negative"))
 }
 
+func TestReviewHeld(t *testing.T) {
+	tests := []struct {
+		name          string
+		requireReview bool
+		reviewedAt    *metav1.Time
+		want          bool
+	}{
+		{name: "not required", requireReview: false, want: false},
+		{name: "not required even if reviewedAt is somehow set",
+			requireReview: false, reviewedAt: &metav1.Time{Time: now}, want: false},
+		{name: "required and not yet reviewed", requireReview: true, want: true},
+		{name: "required and reviewed",
+			requireReview: true, reviewedAt: &metav1.Time{Time: now}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, warnings := Translate("p", policyv1alpha1.PahlevanPolicySpec{
+				LearningConfig: policyv1alpha1.LearningConfig{
+					Duration:      dur(5 * time.Minute),
+					RequireReview: tc.requireReview,
+					ReviewedAt:    tc.reviewedAt,
+				},
+				EnforcementConfig: policyv1alpha1.EnforcementConfig{Mode: policyv1alpha1.EnforcementModeBlocking},
+			}, now)
+			assert.Empty(t, warnings)
+			assert.Equal(t, tc.want, d.ReviewHeld)
+		})
+	}
+}
+
 // An Off policy governs nothing, so nothing else is worth translating or
 // warning about.
 func TestOffModeSkipsTranslation(t *testing.T) {

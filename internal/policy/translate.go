@@ -62,6 +62,7 @@ func TranslateIn(
 	if spec.EnforcementConfig.GracePeriod != nil {
 		d.GracePeriod = spec.EnforcementConfig.GracePeriod.Duration
 	}
+	d.ReviewHeld = spec.LearningConfig.RequireReview && spec.LearningConfig.ReviewedAt == nil
 
 	d.SelfHealing = adaptive.SelfHealingDecision{
 		Enabled:   spec.SelfHealing.Enabled,

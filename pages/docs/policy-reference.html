@@ -222,6 +222,19 @@ allows the policy to leave <code>Learning</code> before <code>duration</code> ha
 <code>minSamples</code> is the floor that makes that safe: the phase advances early only
 when at least <code>minSamples</code> samples have been collected and learning progress has
 reached 80 percent.</p>
+<p><code>requireReview</code> holds the per-container transition open past
+<code>duration + gracePeriod</code>: a container whose window has elapsed stays in
+<code>Learning</code> until an operator sets <code>reviewedAt</code>, so the baseline it is about to
+enforce gets looked at first rather than trusted on first use. It is checked
+once, at the moment the container would otherwise transition, so changing the
+baseline afterwards does not reopen the hold. Off by default; every existing
+policy keeps transitioning exactly as before.</p>
+<pre><code class="language-yaml">learningConfig:
+  duration: &quot;10m&quot;
+  requireReview: true
+  # set once the learned baseline has been reviewed:
+  # reviewedAt: &quot;2026-10-01T12:00:00Z&quot;
+</code></pre>
 <p>Two fields in this block are accepted and do nothing. <code>windowSize</code> is read only
 by a sampling-window learner that the agent and the operator never construct, so
 it has no effect in any deployment. <code>lifecycleAware</code> is stored and displayed and

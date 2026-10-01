@@ -310,7 +310,10 @@ binary it executes is added to that cgroup's allow-set. Syscalls are observed
 in parallel and deduplicated per <code>(cgroup, syscall)</code>.</li>
 <li><strong>Transition.</strong> On <code>learningConfig.autoTransition</code>, or when you flip
 <code>enforcementConfig.mode</code> by hand, the policy moves to enforcement and a
-seccomp profile is generated from the learned syscall set.</li>
+seccomp profile is generated from the learned syscall set. If
+<code>learningConfig.requireReview</code> is set, the transition holds here until
+<code>learningConfig.reviewedAt</code> is set, so the baseline gets looked at before it
+becomes the thing enforced.</li>
 <li><strong>Enforce.</strong> An open of an unlearned path, an egress to an unlearned
 destination, or an exec of an unlearned binary is <strong>denied in-kernel with
 <code>EPERM</code></strong> by the LSM hook, before the operation completes. A detection tool

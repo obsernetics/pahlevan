@@ -605,6 +605,10 @@ func (in *LearningConfig) DeepCopyInto(out *LearningConfig) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.ReviewedAt != nil {
+		in, out := &in.ReviewedAt, &out.ReviewedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.ExpectedBehavior != nil {
 		in, out := &in.ExpectedBehavior, &out.ExpectedBehavior
 		*out = new(ExpectedBehavior)

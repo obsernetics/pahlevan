@@ -171,7 +171,10 @@ to put in a YAML file yet.
    in parallel and deduplicated per `(cgroup, syscall)`.
 3. **Transition.** On `learningConfig.autoTransition`, or when you flip
    `enforcementConfig.mode` by hand, the policy moves to enforcement and a
-   seccomp profile is generated from the learned syscall set.
+   seccomp profile is generated from the learned syscall set. If
+   `learningConfig.requireReview` is set, the transition holds here until
+   `learningConfig.reviewedAt` is set, so the baseline gets looked at before it
+   becomes the thing enforced.
 4. **Enforce.** An open of an unlearned path, an egress to an unlearned
    destination, or an exec of an unlearned binary is **denied in-kernel with
    `EPERM`** by the LSM hook, before the operation completes. A detection tool
