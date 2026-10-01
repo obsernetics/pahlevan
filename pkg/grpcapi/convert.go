@@ -139,28 +139,6 @@ func eventTypeToProto(t export.EventType) apiv1alpha1.EventType {
 	}
 }
 
-// EventTypeFromProto is the inverse, for turning a client's filter back into
-// the names the rest of the codebase uses.
-func EventTypeFromProto(t apiv1alpha1.EventType) (export.EventType, bool) {
-	switch t {
-	case apiv1alpha1.EventType_EVENT_TYPE_SYSCALL:
-		return export.EventTypeSyscall, true
-	case apiv1alpha1.EventType_EVENT_TYPE_FILE:
-		return export.EventTypeFile, true
-	case apiv1alpha1.EventType_EVENT_TYPE_NETWORK:
-		return export.EventTypeNetwork, true
-	case apiv1alpha1.EventType_EVENT_TYPE_PROCESS:
-		return export.EventTypeProcess, true
-	case apiv1alpha1.EventType_EVENT_TYPE_CAPABILITY:
-		return export.EventTypeCapability, true
-	default:
-		return "", false
-	}
-}
-
-// EventTypeToProto maps a name from the CLI or config onto the wire enum.
-func EventTypeToProto(t export.EventType) apiv1alpha1.EventType { return eventTypeToProto(t) }
-
 func actionToProto(a export.Action) apiv1alpha1.Action {
 	switch a {
 	case export.ActionDeny:
