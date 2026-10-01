@@ -99,6 +99,21 @@ type LearningConfig struct {
 
 	// LifecycleAware enables lifecycle-based learning transitions
 	LifecycleAware bool `json:"lifecycleAware,omitempty"`
+
+	// RequireReview holds a container in learning once its window and grace
+	// period have elapsed, until ReviewedAt is set. A workload already
+	// compromised when learning starts has its malicious behaviour baselined;
+	// this is the point at which an operator can look at the learned baseline
+	// before it becomes the thing that is enforced.
+	//
+	// Checked once, at the moment the container would otherwise transition: a
+	// baseline that changes after review is not re-reviewed.
+	RequireReview bool `json:"requireReview,omitempty"`
+
+	// ReviewedAt is set by an operator after reviewing the learned baseline,
+	// clearing the RequireReview hold. Nil means not yet reviewed. Ignored when
+	// RequireReview is false.
+	ReviewedAt *metav1.Time `json:"reviewedAt,omitempty"`
 }
 
 // EnforcementConfig controls enforcement behavior

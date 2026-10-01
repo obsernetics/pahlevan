@@ -149,6 +149,22 @@ allows the policy to leave `Learning` before `duration` has elapsed, and
 when at least `minSamples` samples have been collected and learning progress has
 reached 80 percent.
 
+`requireReview` holds the per-container transition open past
+`duration + gracePeriod`: a container whose window has elapsed stays in
+`Learning` until an operator sets `reviewedAt`, so the baseline it is about to
+enforce gets looked at first rather than trusted on first use. It is checked
+once, at the moment the container would otherwise transition, so changing the
+baseline afterwards does not reopen the hold. Off by default; every existing
+policy keeps transitioning exactly as before.
+
+```yaml
+learningConfig:
+  duration: "10m"
+  requireReview: true
+  # set once the learned baseline has been reviewed:
+  # reviewedAt: "2026-10-01T12:00:00Z"
+```
+
 Two fields in this block are accepted and do nothing. `windowSize` is read only
 by a sampling-window learner that the agent and the operator never construct, so
 it has no effect in any deployment. `lifecycleAware` is stored and displayed and

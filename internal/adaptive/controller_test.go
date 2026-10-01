@@ -199,6 +199,7 @@ type fakePolicies struct {
 	selfHealingDisabled bool
 	rollbackThreshold   int
 	rollbackWindow      time.Duration
+	reviewHeld          bool
 }
 
 func (p fakePolicies) Resolve(uint64, attribution.ContainerRef) (Decision, bool) {
@@ -212,6 +213,7 @@ func (p fakePolicies) Resolve(uint64, attribution.ContainerRef) (Decision, bool)
 		Window:      p.window,
 		GracePeriod: p.gracePeriod,
 		Overrides:   p.overrides,
+		ReviewHeld:  p.reviewHeld,
 		SelfHealing: SelfHealingDecision{
 			Enabled:   !p.selfHealingDisabled,
 			Threshold: p.rollbackThreshold,
@@ -268,6 +270,76 @@ func TestController_NonBlockingPolicyStaysLearning(t *testing.T) {
 	if enf.enforced[7] {
 		t.Fatal("monitor-only (non-blocking) policy must never enforce")
 	}
+}
+
+// TestController_HeldForReview covers learningConfig.requireReview: a window
+// that has fully elapsed must not enforce while review is held, and the
+// container must stay in PhaseLearning rather than being silently dropped.
+func TestController_HeldForReview(t *testing.T) {
+	enf := &fakeEnforcer{}
+	c := NewController(logr.Discard(), enf, nil,
+		fakePolicies{window: time.Minute, blocking: true, ok: true, reviewHeld: true})
+	base := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return base }
+	_ = c.HandleSyscallEvent(&ebpf.SyscallEvent{CgroupID: 42, SyscallNr: 257})
+
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
+	c.Reconcile()
+	if enf.enforced[42] {
+		t.Fatal("a reviewHeld policy must not enforce even after its window has elapsed")
+	}
+	if got := phaseOf(t, c, 42); got != PhaseLearning {
+		t.Fatalf("phase = %v, want %v while review is held", got, PhaseLearning)
+	}
+
+	// Reconciling again while still held must not re-log or otherwise change
+	// anything observable.
+	c.Reconcile()
+	if enf.enforced[42] {
+		t.Fatal("a reviewHeld policy must stay held across repeated reconciles")
+	}
+}
+
+// TestController_ReviewApprovedProceeds covers the other half: once the
+// resolver stops reporting ReviewHeld (the operator set reviewedAt), a
+// container whose window already elapsed enforces on the very next reconcile,
+// with no extra wait.
+func TestController_ReviewApprovedProceeds(t *testing.T) {
+	enf := &fakeEnforcer{}
+	resolver := &toggleableReview{held: true, inner: fakePolicies{window: time.Minute, blocking: true, ok: true}}
+	c := NewController(logr.Discard(), enf, nil, resolver)
+	base := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return base }
+	_ = c.HandleSyscallEvent(&ebpf.SyscallEvent{CgroupID: 42, SyscallNr: 257})
+
+	c.now = func() time.Time { return base.Add(2 * time.Minute) }
+	c.Reconcile()
+	if enf.enforced[42] {
+		t.Fatal("setup: expected enforcement to be held for review")
+	}
+
+	resolver.held = false
+	c.Reconcile()
+	if !enf.enforced[42] {
+		t.Fatal("expected enforcement once review is no longer held")
+	}
+}
+
+// toggleableReview wraps fakePolicies behind a pointer so a test can flip
+// ReviewHeld mid-run, which a value-receiver fakePolicies cannot do.
+type toggleableReview struct {
+	held  bool
+	inner fakePolicies
+}
+
+func (r *toggleableReview) Resolve(id uint64, ref attribution.ContainerRef) (Decision, bool) {
+	d, ok := r.inner.Resolve(id, ref)
+	d.ReviewHeld = r.held
+	return d, ok
+}
+
+func (r *toggleableReview) PodMeta(podUID string) (string, string, bool) {
+	return r.inner.PodMeta(podUID)
 }
 
 func TestController_WritesSeccompProfileOnEnforce(t *testing.T) {

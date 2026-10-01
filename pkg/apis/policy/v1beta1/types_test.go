@@ -34,6 +34,8 @@ func dur(d time.Duration) *metav1.Duration { return &metav1.Duration{Duration: d
 
 func boolp(b bool) *bool { return &b }
 
+func ts(t time.Time) *metav1.Time { return &metav1.Time{Time: t} }
+
 // fullPahlevanPolicy builds a PahlevanPolicy with every optional field
 // populated, so DeepCopy exercises all of its pointer, slice and map branches.
 // TestFixturesPopulateEveryField keeps it honest as fields are added.
@@ -74,6 +76,8 @@ func fullPahlevanPolicy() *PahlevanPolicy {
 				MinSamples:     i32(100),
 				AutoTransition: true,
 				LifecycleAware: true,
+				RequireReview:  true,
+				ReviewedAt:     ts(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)),
 				ExpectedBehavior: &ExpectedBehavior{
 					Files: []ExpectedFile{{Path: "/var/lib/app/nightly.db", Write: true}},
 					NetworkDestinations: []ExpectedDestination{{

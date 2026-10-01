@@ -126,6 +126,11 @@ type Decision struct {
 	// state gets observed in both before anything is denied.
 	GracePeriod time.Duration
 
+	// ReviewHeld reports whether learningConfig.requireReview is set and
+	// learningConfig.reviewedAt is not: the container stays in learning once its
+	// window and grace period elapse, until an operator reviews the baseline.
+	ReviewHeld bool
+
 	// Overrides are the operator's corrections to the learned baseline.
 	Overrides Overrides
 

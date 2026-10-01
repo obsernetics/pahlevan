@@ -18,17 +18,13 @@ package cli
 
 import (
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	policyv1alpha1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1alpha1"
 	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 )
 
-var (
-	scheme = runtime.NewScheme()
-	codecs = serializer.NewCodecFactory(scheme)
-)
+var scheme = runtime.NewScheme()
 
 func init() {
 	// Add client-go schemes
@@ -43,9 +39,4 @@ func init() {
 // GetScheme returns the runtime scheme with all necessary types registered
 func GetScheme() *runtime.Scheme {
 	return scheme
-}
-
-// GetCodecs returns the codec factory
-func GetCodecs() serializer.CodecFactory {
-	return codecs
 }

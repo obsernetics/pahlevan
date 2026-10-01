@@ -118,6 +118,14 @@ Shipped through `v3.0.0`. See [CHANGELOG.md](CHANGELOG.md) for the full entries.
   every file a kernel decides about, so the job cannot go on reporting success
   by never running.
 - A commit-msg hook that rejects assistant attribution trailers.
+- A check that fails loudly when a merged release is never tagged: the
+  scheduled maintenance agent runs as a GitHub App that cannot create tag
+  refs, so a release PR could merge with no tag, no release and no image ever
+  following, while `CHANGELOG.md` and the website kept announcing the version
+  as current. `scripts/check-release-tagged.sh` and
+  `.github/workflows/release-tagged.yml` compare the `VERSION` in `main`'s
+  Makefile against the pushed tags and fail once a release has been merged
+  without one, because it does not depend on anyone remembering.
 
 ## Version 4
 
@@ -250,16 +258,6 @@ polish item.
   no inline script and no external origin, because a security tool whose
   dashboard loads a chart library from a CDN has made every viewer's browser
   trust a third party. See [Version 4](#version-4).
-- **Planned: fail loudly when a merged release is never tagged.** The scheduled
-  maintenance agent runs as the GitHub App, which cannot create tag refs, so it
-  merges a release PR and the tag never appears: no tag, no release, no image,
-  while `CHANGELOG.md` and the website both announce the version as current.
-  This has now happened three times - `v3.1.0` sat untagged for five days, and
-  `v3.3.1` and `v3.3.3` were each announced as released while nothing could
-  install them. Rewriting the agent's prompt did not stop it, twice. A check
-  that compares the `VERSION` in `main`'s Makefile against the pushed tags and
-  fails once a release has been merged without one would, because it does not
-  depend on anyone remembering.
 - **Planned: Kubernetes audit-log ingestion.** Pahlevan sees what happens on a
   node and nothing of what happens at the API server, so a `kubectl exec`, a
   role binding granted, or a secret read through the API is invisible to it.
@@ -316,10 +314,18 @@ polish item.
   weekly cycle is to learn across at least one full cycle, or to stay in
   `Audit` until one has passed.
 
-- **Planned: a review step before a learned profile enforces.** Learning is
-  trust on first use. A workload already compromised when learning starts has
-  its malicious behaviour baselined. Deny lists and exceptions let an operator
-  correct the edges, but nothing requires anyone to look first.
+- **Done in the tree: a review step before a learned profile enforces.**
+  Learning is trust on first use. A workload already compromised when learning
+  starts has its malicious behaviour baselined, and deny lists and exceptions
+  let an operator correct the edges but never required anyone to look first.
+  `learningConfig.requireReview` holds a container in learning once its window
+  and grace period elapse, until `learningConfig.reviewedAt` is set; checked
+  once, at the moment the container would otherwise transition, so a baseline
+  that changes after review is not re-reviewed. Off by default. The gate lives
+  where enforcement actually happens, in the node agent's adaptive controller;
+  the separate, v1alpha1-only policy-status controller does not read it, which
+  is the same gap `v1beta1.AddToScheme is not called yet` above already
+  covers.
 - **Planned: load the arm64 objects on an arm64 kernel.** Both objects are
   built, and a test asserts they expose the same programs and maps. What none
   of that proves is that an arm64 verifier accepts them: the VM harness is
@@ -360,7 +366,9 @@ polish item.
   cannot be short. No conversion webhook: `v1beta1` was shaped so every shared
   field keeps its JSON name, type and nesting, and a test enforces that claim
   and says to ship a webhook if it ever breaks. Still to do: the controllers
-  reconcile `v1alpha1` and `v1beta1.AddToScheme` is not called yet.
+  reconcile `v1alpha1` only. `v1beta1.AddToScheme` is already called from the
+  operator, the agent, the CLI and `pkg/clusterdata`, but nothing watches or
+  reconciles a `v1beta1` object directly yet.
 
 ## Later
 
@@ -371,10 +379,10 @@ Worth doing, not next.
   and written to the node and nothing applies them. Applying one means setting
   `securityContext.seccompProfile.localhostProfile` at admission, distributing
   the profile to the right node before the pod schedules, and deciding what
-  happens when the profile is wrong. Worth comparing against the
-  [Security Profiles Operator](https://github.com/kubernetes-sigs/security-profiles-operator)
-  before building it, since that project already solves the distribution half
-  and integrating may beat reimplementing.
+  happens when the profile is wrong. Worth surveying the existing ecosystem
+  for node-local profile distribution before building this from scratch, since
+  integrating with an established distribution mechanism may beat
+  reimplementing one.
 - **Planned: profile portability.** Learn on one node or in staging, apply
   elsewhere. This needs a stable, node-independent profile representation,
   since the current allow-sets are keyed by cgroup id.

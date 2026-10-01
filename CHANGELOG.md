@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-10-01
+
+### Added
+
+- `learningConfig.requireReview` and `learningConfig.reviewedAt`. Learning is
+  trust on first use: a workload already compromised when learning starts has
+  its malicious behaviour baselined, and until now nothing required anyone to
+  look at that baseline before it became the thing enforced. A policy that
+  sets `requireReview: true` holds every matching container in learning once
+  its window and grace period elapse, until an operator sets `reviewedAt` on
+  the policy. Checked once, at the moment a container would otherwise
+  transition: a baseline that changes after review is not re-reviewed.
+  Off by default, so every existing policy keeps transitioning exactly as
+  before.
+
+### Removed
+
+- `pkg/cli.GetCodecs` and `pkg/grpcapi.EventTypeFromProto`/`EventTypeToProto`:
+  exported but called from nowhere in the tree, in a test, or in the docs.
+  Each package already does its own type/event conversion inline where it is
+  actually used.
+
 ## [3.5.1] - 2026-09-28
 
 ### Fixed
@@ -673,7 +695,8 @@ observe and deny in the kernel.
   with the `PahlevanPolicy` CRD, a learning phase, enforcement modes, self-healing,
   observability, and Helm plus manifest based installation.
 
-[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.6.0...HEAD
+[3.6.0]: https://github.com/obsernetics/pahlevan/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/obsernetics/pahlevan/compare/v3.4.1...v3.5.0
 [3.0.0]: https://github.com/obsernetics/pahlevan/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/obsernetics/pahlevan/compare/v1.0.0...v2.0.0

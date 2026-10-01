@@ -270,6 +270,8 @@ func toBetaLearningConfig(in LearningConfig) v1beta1.LearningConfig {
 		MinSamples:     copyInt32(in.MinSamples),
 		AutoTransition: in.AutoTransition,
 		LifecycleAware: in.LifecycleAware,
+		RequireReview:  in.RequireReview,
+		ReviewedAt:     copyTime(in.ReviewedAt),
 	}
 }
 
@@ -285,6 +287,8 @@ func fromBetaLearningConfig(in v1beta1.LearningConfig) LearningConfig {
 		MinSamples:     copyInt32(in.MinSamples),
 		AutoTransition: in.AutoTransition,
 		LifecycleAware: in.LifecycleAware,
+		RequireReview:  in.RequireReview,
+		ReviewedAt:     copyTime(in.ReviewedAt),
 	}
 }
 
