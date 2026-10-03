@@ -315,15 +315,48 @@ ifndef ignore-not-found
   ignore-not-found = false
 endif
 
+# Every deploy target renders deploy/base, and nothing renders config/default.
+#
+# There used to be two sets of manifests. deploy/base is the one that ships:
+# scripts/gen-install.sh builds install.yaml from it, the Helm chart mirrors
+# it, and hack/install guards it. config/default was leftover kubebuilder
+# scaffolding that `make deploy` and `make install-all` pointed at, and it had
+# drifted into something else entirely - a `controller-manager` Deployment with
+# no startupProbe and a 64Mi memory request, behind a kube-rbac-proxy sidecar
+# from a 2022 image that upstream kubebuilder has since removed from its
+# scaffolding, with no PodDisruptionBudget, no priorityClassName and - the part
+# that mattered most - no agent DaemonSet at all. `make deploy` installed a
+# control plane with nothing on the nodes to enforce anything.
+#
+# It could not even do that: config/default listed ../crd and ../rbac as
+# kustomize resources, neither of which has a kustomization.yaml, so
+# `kustomize build config/default` failed outright. The same was true of
+# `kustomize build config/crd` behind `make install`. Both are now gone, and
+# config/ keeps only what is generated and consumed elsewhere: config/crd
+# (read by deploy/base/kustomization.yaml and by gen-install.sh) and
+# config/rbac/role.yaml (written by controller-gen).
+#
+# --load-restrictor=LoadRestrictionsNone is required because
+# deploy/base/kustomization.yaml lists the CRDs from ../../config/crd, which is
+# outside the base. Keeping one copy of the CRDs is worth the flag; two copies
+# is how the chart's CRDs went stale once already.
+#
+# The image is substituted in the rendered output rather than with
+# `kustomize edit set image`, which rewrites deploy/base/kustomization.yaml in
+# place and leaves a dirty tree - and a committed tag in a base that
+# hack/install/ci_test.go requires to stay unpinned.
+KUSTOMIZE_BASE_FLAGS = --load-restrictor=LoadRestrictionsNone
+RENDER_DEPLOY = $(KUSTOMIZE) build $(KUSTOMIZE_BASE_FLAGS) deploy/base | \
+	sed 's|image: ghcr.io/obsernetics/pahlevan:latest|image: $(IMG)|'
+
 .PHONY: install
-install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | kubectl apply -f -
+install: manifests ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+	kubectl apply -f config/crd/
 
 .PHONY: install-all
-install-all: manifests kustomize ## Install complete Pahlevan operator (CRDs, RBAC, Operator)
+install-all: manifests kustomize ## Install complete Pahlevan (CRDs, RBAC, agent DaemonSet, operator)
 	@echo "Installing Pahlevan eBPF Security Operator..."
-	kubectl create namespace pahlevan-system --dry-run=client -o yaml | kubectl apply -f -
-	$(KUSTOMIZE) build config/default | kubectl apply -f -
+	$(RENDER_DEPLOY) | kubectl apply -f -
 	@echo "Waiting for operator to be ready..."
 	kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=pahlevan -n pahlevan-system --timeout=300s
 	@echo "✅ Pahlevan operator installed successfully!"
@@ -340,17 +373,16 @@ quick-start: install-all ## Complete quick start installation with example
 	@echo "📖 View the getting started guide: docs/quick-start.md"
 
 .PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/crd | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+uninstall: manifests ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	kubectl delete --ignore-not-found=$(ignore-not-found) -f config/crd/
 
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | kubectl apply -f -
+deploy: manifests kustomize ## Deploy the agent and the operator to the K8s cluster specified in ~/.kube/config.
+	$(RENDER_DEPLOY) | kubectl apply -f -
 
 .PHONY: undeploy
-undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+undeploy: kustomize ## Undeploy from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
+	$(RENDER_DEPLOY) | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Supply Chain
 
@@ -420,7 +452,10 @@ ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 
 ## Tool Versions
-KUSTOMIZE_VERSION ?= v5.0.4
+# v5.0.4 was never released - the tags go v5.0.3, v5.1.0 - so the install
+# script behind the `kustomize` target below 404ed and every deploy target that
+# depended on it failed before it reached a cluster.
+KUSTOMIZE_VERSION ?= v5.8.2
 CONTROLLER_TOOLS_VERSION ?= v0.17.2
 GOLANGCI_LINT_VERSION ?= v1.54.2
 

@@ -61,7 +61,15 @@ RUN mkdir -p /out && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
 # Plain distroless base (not :nonroot): the agent DaemonSet must run privileged
 # for eBPF, while the operator Deployment sets runAsNonRoot itself - the effective
 # user is chosen per-workload via securityContext.
-FROM gcr.io/distroless/base-debian12 AS runtime
+#
+# Pinned by digest, not by tag. distroless publishes no semantic version: the
+# only moving tags are :latest and :nonroot, so `FROM ...base-debian12` was an
+# unpinned floating reference, and a rebuild of an old release produced an
+# image nobody had scanned. Dependabot's docker ecosystem (see
+# .github/dependabot.yml, directory "/") raises a PR when the digest moves,
+# which is the review step a floating tag skips. The digest is the multi-arch
+# index, so it still resolves for every platform in PLATFORMS.
+FROM gcr.io/distroless/base-debian12:latest@sha256:fabbf1c0c357a3d42550111351daed089b20a2c954df13ee2fcff60602515e84 AS runtime
 
 COPY --from=go-builder /out/pahlevan-agent /usr/local/bin/pahlevan-agent
 COPY --from=go-builder /out/pahlevan-operator /usr/local/bin/pahlevan-operator
@@ -77,5 +85,21 @@ LABEL org.opencontainers.image.title="Pahlevan" \
       org.opencontainers.image.documentation="https://github.com/obsernetics/pahlevan/blob/main/README.md"
 
 EXPOSE 8080
+
+# The image default is non-root, and every workload overrides it anyway.
+#
+# 65532 is distroless' own `nonroot` user, present in /etc/passwd in this base
+# even though the tag is not :nonroot. Nothing in the image relies on it: the
+# three binaries are static, world-executable and read nothing they own, and
+# the eBPF objects under /opt/pahlevan/ebpf are world-readable.
+#
+# It changes no shipped workload, because all of them already pin a uid in
+# their securityContext - the operator and the dashboard to 65532, the agent
+# explicitly to 0, which is what lets the agent keep the root it needs for
+# bpf(2) while the image itself no longer hands root to anything that forgets
+# to ask. That ordering is the point: the privilege is granted by the one pod
+# spec that documents why it needs it, not by the image default.
+USER 65532:65532
+
 # Default to the operator; the agent DaemonSet overrides command to pahlevan-agent.
 ENTRYPOINT ["/usr/local/bin/pahlevan-operator"]

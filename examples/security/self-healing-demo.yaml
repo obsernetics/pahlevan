@@ -25,11 +25,28 @@
 #     and the right response is to read the profile rather than to raise the
 #     threshold.
 ---
+# A namespace of its own rather than `default`.
+#
+# A demo that lands in `default` is a demo that cannot be deleted in one
+# command, and on a shared cluster `default` is where everybody else's
+# throwaway work already is. It also means the policy below selects only pods
+# somebody deliberately created for this, instead of every pod in the cluster's
+# busiest namespace that happens to carry the label.
+#
+# Clean up with: kubectl delete namespace pahlevan-demo
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pahlevan-demo
+  labels:
+    app.kubernetes.io/name: self-healing-demo
+    app.kubernetes.io/part-of: pahlevan
+---
 apiVersion: policy.pahlevan.io/v1alpha1
 kind: PahlevanPolicy
 metadata:
   name: self-healing-demo
-  namespace: default
+  namespace: pahlevan-demo
   labels:
     app.kubernetes.io/name: self-healing-demo
     app.kubernetes.io/component: security-policy
@@ -80,12 +97,12 @@ spec:
 #
 # Watch it happen:
 #   kubectl logs -n pahlevan-system -l app.kubernetes.io/name=pahlevan-agent -f | grep -i rollback
-#   kubectl get containerprofiles -w
+#   kubectl get containerprofiles -n pahlevan-demo -w
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: self-healing-demo
-  namespace: default
+  namespace: pahlevan-demo
   labels:
     app: self-healing-demo
 spec:
@@ -101,14 +118,23 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
+        # Set explicitly: an unset gid puts the container in group 0, so a pod
+        # that otherwise runs unprivileged still reads anything
+        # root-group-readable. Examples get copied, so the copy should be the
+        # tight version.
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
       - name: app
-        image: busybox:1.36
+        image: docker.io/busybox:1.36
         securityContext:
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false
+          # The workload below only reads: cat, ls, date, sleep. Nothing needs
+          # a writable root, so it does not get one - the denials this demo is
+          # built to produce come from unlearned reads and execs, not writes.
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
         command: ["/bin/sh", "-c"]
@@ -130,4 +156,5 @@ spec:
             cpu: 10m
             memory: 16Mi
           limits:
+            cpu: 100m
             memory: 32Mi

@@ -1,0 +1,28 @@
+# Input data for Trivy's KSV-0125 check, "Restrict container images to trusted
+# registries".
+#
+# The check ships a default allow-list of Azure, ECR and GCR hostnames and
+# nothing else, so every workload in this repo failed it: the project's own
+# images are on ghcr.io and the observability example pulls the OpenTelemetry
+# collector from Docker Hub. Eight findings, all of them about registries this
+# project chose on purpose, which is noise and not a finding.
+#
+# The check reads data.ksv0125.trusted_registries and uses it in place of its
+# defaults whenever it is non-empty, so naming the registries this repo really
+# pulls from turns KSV-0125 back into what it is for: catching an image that
+# arrives from somewhere nobody decided on.
+#
+# Add a registry here only when a manifest in this repo is meant to pull from
+# it. Matching is a suffix match on the registry host, so "ghcr.io" covers any
+# path under it, and "docker.io" requires a manifest to spell the Docker Hub
+# host out rather than relying on the implicit default - which is why the
+# examples now write docker.io/... explicitly.
+ksv0125:
+  trusted_registries:
+    # The project's own images: agent, operator, CLI, dashboard.
+    - ghcr.io
+    # Docker Hub, spelled out. The examples pull the OpenTelemetry collector
+    # and busybox from here.
+    - docker.io
+    # Distroless, for the runtime stage of the image.
+    - gcr.io
