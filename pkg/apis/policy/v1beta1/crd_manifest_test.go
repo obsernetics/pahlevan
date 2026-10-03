@@ -276,12 +276,17 @@ func TestDeclaredBehaviorValidationReachesTheSchema(t *testing.T) {
 	})
 }
 
-// The field exists in one version only, and that has to be visible in the
+// A declaration is written on v1beta1 only, and that has to be visible in the
 // manifest rather than only in the Go types. A v1alpha1 policy carrying an
 // expectedBehavior block is not rejected by the API server - unknown fields in
 // a custom resource are pruned, not refused - so it applies cleanly, reports no
 // error, and declares nothing.
-func TestDeclaredBehaviorIsNotServedOnV1Alpha1(t *testing.T) {
+//
+// What a declaration produces is a different question. The declared* lists on a
+// ContainerProfile are served on both versions, because the node agent writes
+// v1alpha1 profiles: a status field the agent cannot write is a field no
+// cluster ever sees, whatever the stored version says about it.
+func TestADeclarationIsWrittenOnV1Beta1AndReportedOnBoth(t *testing.T) {
 	c := policyCRD(t)
 	learning := schemaAt(t, c, "v1alpha1", "spec.learningConfig")
 	props, ok := learning["properties"].(map[string]interface{})
@@ -296,7 +301,7 @@ func TestDeclaredBehaviorIsNotServedOnV1Alpha1(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, profile.path)
-	for version, wantDeclared := range map[string]bool{"v1alpha1": false, "v1beta1": true} {
+	for _, version := range []string{"v1alpha1", "v1beta1"} {
 		status := schemaAt(t, profile, version, "status")
 		statusProps, ok := status["properties"].(map[string]interface{})
 		require.True(t, ok)
@@ -304,12 +309,9 @@ func TestDeclaredBehaviorIsNotServedOnV1Alpha1(t *testing.T) {
 			"declaredFiles", "declaredNetworkDestinations",
 			"declaredExecutables", "declaredCapabilities",
 		} {
-			if wantDeclared {
-				assert.Contains(t, statusProps, field, "%s must report %s", version, field)
-				continue
-			}
-			assert.NotContains(t, statusProps, field,
-				"%s must not advertise %s: it has nowhere to carry it", version, field)
+			assert.Contains(t, statusProps, field,
+				"%s must report %s: the agent writes v1alpha1, so a field missing "+
+					"there is a field nothing ever populates", version, field)
 		}
 	}
 }

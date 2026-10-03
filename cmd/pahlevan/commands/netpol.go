@@ -39,6 +39,7 @@ import (
 	"github.com/obsernetics/pahlevan/pkg/cli"
 	"github.com/obsernetics/pahlevan/pkg/cycle"
 	"github.com/obsernetics/pahlevan/pkg/netpol"
+	"github.com/obsernetics/pahlevan/pkg/netpol/identity"
 )
 
 // `pahlevan netpol` hands an operator the NetworkPolicy their learned baseline
@@ -110,19 +111,20 @@ applies nothing.`,
 				namespace = defaultNS
 			}
 
-			obs, roster, err := collectBaseline(cmd.Context(), c, namespace, allNamespaces)
+			obs, roster, peers, err := collectBaseline(cmd.Context(), c, namespace, allNamespaces)
 			if err != nil {
 				return err
 			}
 			res := netpol.Generate(obs, netpol.Options{
 				Roster: roster,
-				// Until pkg/netidentity is wired in this knows only what the
-				// pod listing already said, so a Service ClusterIP, a node
-				// address and an internet address all resolve to nothing and
-				// become ipBlocks with a finding attached. That is the honest
-				// answer from this input, and it is the single line that
-				// changes when the identity index lands.
-				Resolver:   netpol.NewRosterResolver(roster),
+				// pkg/netidentity, through the adapter in
+				// pkg/netpol/identity. A Service ClusterIP becomes the
+				// Service's own selector, a node address becomes a literal
+				// address the report names as a node, and a public address
+				// becomes an ipBlock the report can say is outside the
+				// cluster. An address nothing accounts for is still an
+				// ipBlock, and still says so.
+				Resolver:   peers,
 				Egress:     egress,
 				Ingress:    ingress,
 				NamePrefix: namePrefix,
@@ -312,7 +314,7 @@ func renderForDiff(p *networkingv1.NetworkPolicy) (string, error) {
 // collectBaseline reads what the agents learned, and the pods that evidence
 // has to be checked against.
 func collectBaseline(ctx context.Context, c client.Client, namespace string, allNamespaces bool) (
-	[]netpol.Observation, netpol.Roster, error,
+	[]netpol.Observation, netpol.Roster, *identity.Resolver, error,
 ) {
 	var opts []client.ListOption
 	if !allNamespaces && namespace != "" {
@@ -321,16 +323,16 @@ func collectBaseline(ctx context.Context, c client.Client, namespace string, all
 
 	var profiles policyv1alpha1.ContainerProfileList
 	if err := c.List(ctx, &profiles, opts...); err != nil {
-		return nil, nil, fmt.Errorf("listing container profiles: %w", err)
+		return nil, nil, nil, fmt.Errorf("listing container profiles: %w", err)
 	}
 
-	roster, err := buildRoster(ctx, c, opts)
+	roster, peers, err := buildRoster(ctx, c, opts)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	obs := foldProfiles(ctx, c, profiles.Items)
-	return obs, roster, nil
+	return obs, roster, peers, nil
 }
 
 // foldProfiles collapses one ContainerProfile per container into one
@@ -496,11 +498,26 @@ func (w *windowLookup) for_(ctx context.Context, p *policyv1alpha1.ContainerProf
 }
 
 // buildRoster lists the pods a selector has to be checked against, with the
-// owning workload resolved exactly rather than guessed from the pod's name.
-func buildRoster(ctx context.Context, c client.Client, opts []client.ListOption) (netpol.Roster, error) {
+// owning workload resolved exactly rather than guessed from the pod's name,
+// and the identity index those pods' addresses are resolved through.
+//
+// One pod listing feeds both, deliberately. The roster is what a generated
+// selector is checked against, and a peer resolved to a pod the roster does
+// not hold produces no rule at all - so an index built from a wider listing
+// than the roster would turn rules that were literal addresses into nothing,
+// which is narrower than the evidence and is how this command would take a
+// workload down.
+//
+// Services are listed at the same scope for the same reason. Nodes are not
+// namespaced, so they are listed whole. Both are best effort: a user who
+// cannot list them gets a resolver that resolves fewer peers and a report that
+// says so, rather than a failed review.
+func buildRoster(ctx context.Context, c client.Client, opts []client.ListOption) (
+	netpol.Roster, *identity.Resolver, error,
+) {
 	var pods corev1.PodList
 	if err := c.List(ctx, &pods, opts...); err != nil {
-		return nil, fmt.Errorf("listing pods: %w", err)
+		return nil, nil, fmt.Errorf("listing pods: %w", err)
 	}
 
 	// A ReplicaSet's name carries its Deployment's name plus a hash, and
@@ -537,12 +554,19 @@ func buildRoster(ctx context.Context, c client.Client, opts []client.ListOption)
 		roster = append(roster, netpol.Pod{
 			Namespace: p.Namespace,
 			Name:      p.Name,
-			IP:        p.Status.PodIP,
 			Workload:  workloadOfPod(p, owners),
 			Labels:    p.Labels,
 		})
 	}
-	return roster, nil
+	var services corev1.ServiceList
+	if err := c.List(ctx, &services, opts...); err != nil {
+		services.Items = nil
+	}
+	var nodes corev1.NodeList
+	if err := c.List(ctx, &nodes); err != nil {
+		nodes.Items = nil
+	}
+	return roster, identity.New(identity.Snapshot(pods.Items, services.Items, nodes.Items), roster), nil
 }
 
 // workloadOfPod walks one hop past the pod's controller, which is where the
