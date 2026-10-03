@@ -114,9 +114,11 @@ type ContainerProfileStatus struct {
 	// declaration folded into learnedFiles would be indistinguishable from
 	// evidence, which is the one thing a learned baseline is for.
 	//
-	// internal/policy.Declaration.ReportInto writes all four, so the entries
-	// the agent reports and the entries it seeds into the kernel come from one
-	// place and cannot disagree.
+	// internal/policy.Declaration.Report renders all four, so the entries the
+	// agent reports and the entries it seeds into the kernel come from one
+	// place and cannot disagree. The agent writes v1alpha1 ContainerProfiles,
+	// which carry the same four fields; the conversion brings them here, which
+	// is the stored version.
 
 	// DeclaredFiles are the paths permitted because the policy declared them
 	// rather than because this container was observed opening them. A declared

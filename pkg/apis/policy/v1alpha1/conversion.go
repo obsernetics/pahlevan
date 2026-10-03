@@ -87,25 +87,6 @@ var IntentionallyAdded = map[string]string{
 		"v1alpha1 had no way to state the difference in advance, and the " +
 		"mitigations were guessing a longer duration or letting self-healing " +
 		"roll enforcement back after the job had already been denied.",
-
-	"status.declaredFiles": "" +
-		"the file paths permitted because a policy declared them rather than " +
-		"because this container was observed opening them. Folding them into " +
-		"learnedFiles would make an assertion indistinguishable from evidence, " +
-		"which is the one thing a learned baseline is for.",
-	"status.declaredNetworkDestinations": "" +
-		"the egress destinations permitted by declaration rather than by " +
-		"observation. Kept out of learnedNetworkDestinations so an incident " +
-		"responder asking how a destination came to be permitted gets an answer.",
-	"status.declaredExecutables": "" +
-		"the binaries permitted by declaration rather than by observation. " +
-		"Kept out of learnedExecutables for the same reason: a declared exec is " +
-		"the highest-value entry in a profile to be able to audit.",
-	"status.declaredCapabilities": "" +
-		"the capabilities permitted by declaration rather than by observation. " +
-		"Kept out of learnedCapabilities so admission comparing a pod's " +
-		"requested privilege against what the workload has actually needed is " +
-		"not comparing it against what somebody asserted it would need.",
 }
 
 // ---------------------------------------------------------------------------
@@ -941,30 +922,34 @@ func (src *ContainerProfile) ConvertTo(dstRaw conversion.Hub) error {
 		// straight cast because the only values the agent has ever written are
 		// the two the enum permits; anything else was already a profile no
 		// reader could interpret.
-		Phase:                      v1beta1.ProfilePhase(s.Phase),
-		LearnedSyscalls:            copyInt64s(s.LearnedSyscalls),
-		LearnedFiles:               copyStrings(s.LearnedFiles),
-		LearnedNetworkDestinations: copyStrings(s.LearnedNetworkDestinations),
-		LearnedNetworkPeers:        copyStrings(s.LearnedNetworkPeers),
-		NetworkPeerCount:           s.NetworkPeerCount,
-		LearnedExecutables:         copyStrings(s.LearnedExecutables),
-		LearnedCapabilities:        copyStrings(s.LearnedCapabilities),
-		SyscallCount:               s.SyscallCount,
-		FileCount:                  s.FileCount,
-		NetworkCount:               s.NetworkCount,
-		FirstSeen:                  copyTime(s.FirstSeen),
-		EnforcingSince:             copyTime(s.EnforcingSince),
-		LastUpdated:                copyTime(s.LastUpdated),
-		EnforcementAttempts:        s.EnforcementAttempts,
-		RollbackCount:              s.RollbackCount,
-		LastRollbackTime:           copyTime(s.LastRollbackTime),
-		LastRollbackReason:         s.LastRollbackReason,
-		DenialCount:                s.DenialCount,
-		Seccomp:                    toBetaSeccomp(s.Seccomp),
-		DeniedFiles:                s.DeniedFiles,
-		DeniedNetwork:              s.DeniedNetwork,
-		DeniedExecs:                s.DeniedExecs,
-		DeniedCapabilities:         s.DeniedCapabilities,
+		Phase:                       v1beta1.ProfilePhase(s.Phase),
+		LearnedSyscalls:             copyInt64s(s.LearnedSyscalls),
+		LearnedFiles:                copyStrings(s.LearnedFiles),
+		LearnedNetworkDestinations:  copyStrings(s.LearnedNetworkDestinations),
+		LearnedNetworkPeers:         copyStrings(s.LearnedNetworkPeers),
+		NetworkPeerCount:            s.NetworkPeerCount,
+		LearnedExecutables:          copyStrings(s.LearnedExecutables),
+		LearnedCapabilities:         copyStrings(s.LearnedCapabilities),
+		DeclaredFiles:               copyStrings(s.DeclaredFiles),
+		DeclaredNetworkDestinations: copyStrings(s.DeclaredNetworkDestinations),
+		DeclaredExecutables:         copyStrings(s.DeclaredExecutables),
+		DeclaredCapabilities:        copyStrings(s.DeclaredCapabilities),
+		SyscallCount:                s.SyscallCount,
+		FileCount:                   s.FileCount,
+		NetworkCount:                s.NetworkCount,
+		FirstSeen:                   copyTime(s.FirstSeen),
+		EnforcingSince:              copyTime(s.EnforcingSince),
+		LastUpdated:                 copyTime(s.LastUpdated),
+		EnforcementAttempts:         s.EnforcementAttempts,
+		RollbackCount:               s.RollbackCount,
+		LastRollbackTime:            copyTime(s.LastRollbackTime),
+		LastRollbackReason:          s.LastRollbackReason,
+		DenialCount:                 s.DenialCount,
+		Seccomp:                     toBetaSeccomp(s.Seccomp),
+		DeniedFiles:                 s.DeniedFiles,
+		DeniedNetwork:               s.DeniedNetwork,
+		DeniedExecs:                 s.DeniedExecs,
+		DeniedCapabilities:          s.DeniedCapabilities,
 	}
 	return nil
 }
@@ -983,35 +968,35 @@ func (dst *ContainerProfile) ConvertFrom(srcRaw conversion.Hub) error {
 		Node:        src.Spec.Node,
 	}
 	s := src.Status
-	// The declared* lists are not carried: v1alpha1 has nowhere to put them,
-	// and inventing somewhere would mean folding declarations into the learned
-	// lists, which is exactly the confusion they exist to prevent. See
-	// IntentionallyAdded.
 	dst.Status = ContainerProfileStatus{
-		Phase:                      string(s.Phase),
-		LearnedSyscalls:            copyInt64s(s.LearnedSyscalls),
-		LearnedFiles:               copyStrings(s.LearnedFiles),
-		LearnedNetworkDestinations: copyStrings(s.LearnedNetworkDestinations),
-		LearnedNetworkPeers:        copyStrings(s.LearnedNetworkPeers),
-		NetworkPeerCount:           s.NetworkPeerCount,
-		LearnedExecutables:         copyStrings(s.LearnedExecutables),
-		LearnedCapabilities:        copyStrings(s.LearnedCapabilities),
-		SyscallCount:               s.SyscallCount,
-		FileCount:                  s.FileCount,
-		NetworkCount:               s.NetworkCount,
-		FirstSeen:                  copyTime(s.FirstSeen),
-		EnforcingSince:             copyTime(s.EnforcingSince),
-		LastUpdated:                copyTime(s.LastUpdated),
-		EnforcementAttempts:        s.EnforcementAttempts,
-		RollbackCount:              s.RollbackCount,
-		LastRollbackTime:           copyTime(s.LastRollbackTime),
-		LastRollbackReason:         s.LastRollbackReason,
-		DenialCount:                s.DenialCount,
-		Seccomp:                    fromBetaSeccomp(s.Seccomp),
-		DeniedFiles:                s.DeniedFiles,
-		DeniedNetwork:              s.DeniedNetwork,
-		DeniedExecs:                s.DeniedExecs,
-		DeniedCapabilities:         s.DeniedCapabilities,
+		Phase:                       string(s.Phase),
+		LearnedSyscalls:             copyInt64s(s.LearnedSyscalls),
+		LearnedFiles:                copyStrings(s.LearnedFiles),
+		LearnedNetworkDestinations:  copyStrings(s.LearnedNetworkDestinations),
+		LearnedNetworkPeers:         copyStrings(s.LearnedNetworkPeers),
+		NetworkPeerCount:            s.NetworkPeerCount,
+		LearnedExecutables:          copyStrings(s.LearnedExecutables),
+		LearnedCapabilities:         copyStrings(s.LearnedCapabilities),
+		DeclaredFiles:               copyStrings(s.DeclaredFiles),
+		DeclaredNetworkDestinations: copyStrings(s.DeclaredNetworkDestinations),
+		DeclaredExecutables:         copyStrings(s.DeclaredExecutables),
+		DeclaredCapabilities:        copyStrings(s.DeclaredCapabilities),
+		SyscallCount:                s.SyscallCount,
+		FileCount:                   s.FileCount,
+		NetworkCount:                s.NetworkCount,
+		FirstSeen:                   copyTime(s.FirstSeen),
+		EnforcingSince:              copyTime(s.EnforcingSince),
+		LastUpdated:                 copyTime(s.LastUpdated),
+		EnforcementAttempts:         s.EnforcementAttempts,
+		RollbackCount:               s.RollbackCount,
+		LastRollbackTime:            copyTime(s.LastRollbackTime),
+		LastRollbackReason:          s.LastRollbackReason,
+		DenialCount:                 s.DenialCount,
+		Seccomp:                     fromBetaSeccomp(s.Seccomp),
+		DeniedFiles:                 s.DeniedFiles,
+		DeniedNetwork:               s.DeniedNetwork,
+		DeniedExecs:                 s.DeniedExecs,
+		DeniedCapabilities:          s.DeniedCapabilities,
 	}
 	return nil
 }

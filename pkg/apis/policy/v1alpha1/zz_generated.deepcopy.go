@@ -260,6 +260,26 @@ func (in *ContainerProfileStatus) DeepCopyInto(out *ContainerProfileStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.DeclaredFiles != nil {
+		in, out := &in.DeclaredFiles, &out.DeclaredFiles
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.DeclaredNetworkDestinations != nil {
+		in, out := &in.DeclaredNetworkDestinations, &out.DeclaredNetworkDestinations
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.DeclaredExecutables != nil {
+		in, out := &in.DeclaredExecutables, &out.DeclaredExecutables
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.DeclaredCapabilities != nil {
+		in, out := &in.DeclaredCapabilities, &out.DeclaredCapabilities
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.FirstSeen != nil {
 		in, out := &in.FirstSeen, &out.FirstSeen
 		*out = (*in).DeepCopy()

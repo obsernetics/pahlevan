@@ -686,23 +686,6 @@ func TestEveryAddedFieldIsActuallyOnlyInV1Beta1(t *testing.T) {
 		require.NoError(t, spoke.ConvertTo(&back))
 		return &back
 	}
-	roundTripProfileThroughSpoke := func(t *testing.T, src *v1beta1.ContainerProfile) *v1beta1.ContainerProfile {
-		t.Helper()
-		var spoke ContainerProfile
-		require.NoError(t, spoke.ConvertFrom(src))
-		var back v1beta1.ContainerProfile
-		require.NoError(t, spoke.ConvertTo(&back))
-		return &back
-	}
-
-	profileWith := func(set func(*v1beta1.ContainerProfileStatus)) func(t *testing.T) {
-		return func(t *testing.T) {
-			src := &v1beta1.ContainerProfile{}
-			set(&src.Status)
-			require.NotEqual(t, &v1beta1.ContainerProfile{}, src, "the case sets nothing")
-			assert.Equal(t, &v1beta1.ContainerProfile{}, roundTripProfileThroughSpoke(t, src))
-		}
-	}
 
 	cases := []struct {
 		path string
@@ -723,30 +706,6 @@ func TestEveryAddedFieldIsActuallyOnlyInV1Beta1(t *testing.T) {
 					"v1alpha1 has nowhere to carry a declaration, so this cannot survive")
 			},
 		},
-		{
-			path: "status.declaredFiles",
-			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
-				s.DeclaredFiles = []string{"/var/lib/app/nightly.db (write)"}
-			}),
-		},
-		{
-			path: "status.declaredNetworkDestinations",
-			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
-				s.DeclaredNetworkDestinations = []string{"10.43.12.7:5432"}
-			}),
-		},
-		{
-			path: "status.declaredExecutables",
-			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
-				s.DeclaredExecutables = []string{"/usr/bin/pg_dump"}
-			}),
-		},
-		{
-			path: "status.declaredCapabilities",
-			run: profileWith(func(s *v1beta1.ContainerProfileStatus) {
-				s.DeclaredCapabilities = []string{"DAC_OVERRIDE"}
-			}),
-		},
 	}
 
 	for _, tc := range cases {
@@ -761,6 +720,31 @@ func TestEveryAddedFieldIsActuallyOnlyInV1Beta1(t *testing.T) {
 
 	require.Len(t, IntentionallyAdded, len(cases),
 		"every entry in IntentionallyAdded needs a case here proving it is real")
+}
+
+// The declared* lists are carried, not added. They are the one thing a
+// declaration produces that a cluster ever sees, and the node agent writes
+// v1alpha1 ContainerProfiles - so a field only v1beta1 had was a field nothing
+// populated. A round trip through the spoke has to bring all four back.
+func TestTheDeclaredListsSurviveARoundTripThroughV1Alpha1(t *testing.T) {
+	src := &v1beta1.ContainerProfile{Status: v1beta1.ContainerProfileStatus{
+		DeclaredFiles:               []string{"/etc/ssl/renewed.pem", "/var/lib/app/nightly.db (write)"},
+		DeclaredNetworkDestinations: []string{"10.43.12.7:5432"},
+		DeclaredExecutables:         []string{"/usr/bin/pg_dump"},
+		DeclaredCapabilities:        []string{"DAC_OVERRIDE"},
+	}}
+
+	var spoke ContainerProfile
+	require.NoError(t, spoke.ConvertFrom(src))
+	assert.Equal(t, src.Status.DeclaredFiles, spoke.Status.DeclaredFiles,
+		"the version the agent writes has to be able to hold what it reports")
+	assert.Equal(t, src.Status.DeclaredNetworkDestinations, spoke.Status.DeclaredNetworkDestinations)
+	assert.Equal(t, src.Status.DeclaredExecutables, spoke.Status.DeclaredExecutables)
+	assert.Equal(t, src.Status.DeclaredCapabilities, spoke.Status.DeclaredCapabilities)
+
+	var back v1beta1.ContainerProfile
+	require.NoError(t, spoke.ConvertTo(&back))
+	assert.Equal(t, src, &back, "a client that reads v1alpha1 and writes it back must not erase them")
 }
 
 // A declaration must not be approximated into something v1alpha1 can hold. An

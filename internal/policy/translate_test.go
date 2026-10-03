@@ -1200,16 +1200,17 @@ func TestDeclaredEntriesAreDistinguishableFromLearnedOnes(t *testing.T) {
 	}), now)
 	require.Empty(t, warnings)
 
-	// A profile as the agent would report it: learned entries already present,
-	// including one path that was both learned and declared.
-	status := &policyv1beta1.ContainerProfileStatus{
+	// A profile as the agent would report it: v1alpha1, which is the version
+	// the agent persists, with learned entries already present, including one
+	// path that was both learned and declared.
+	status := &policyv1alpha1.ContainerProfileStatus{
 		LearnedFiles:               []string{"/etc/nginx/nginx.conf", "/etc/ssl/renewed.pem"},
 		LearnedExecutables:         []string{"/usr/sbin/nginx"},
 		LearnedCapabilities:        []string{"NET_BIND_SERVICE"},
 		LearnedNetworkDestinations: []string{"10.0.0.1:443"},
 	}
 	learnedBefore := append([]string(nil), status.LearnedFiles...)
-	decl.ReportInto(status)
+	decl.Report().ReportInto(status)
 
 	// The learned lists are untouched, so what the container actually did is
 	// still readable as exactly that.
@@ -1242,23 +1243,23 @@ func TestReportIntoIsIdempotentAndClearsWhatItOwns(t *testing.T) {
 		Executables: []string{"/usr/bin/pg_dump", "/usr/bin/aws"},
 	}), now)
 
-	first := &policyv1beta1.ContainerProfileStatus{}
-	decl.ReportInto(first)
-	second := &policyv1beta1.ContainerProfileStatus{}
-	decl.ReportInto(second)
+	first := &policyv1alpha1.ContainerProfileStatus{}
+	decl.Report().ReportInto(first)
+	second := &policyv1alpha1.ContainerProfileStatus{}
+	decl.Report().ReportInto(second)
 	assert.Equal(t, first, second)
 
 	// An emptied declaration clears the lists rather than leaving the last
 	// declaration standing: a profile must not report entries the policy no
 	// longer declares and the kernel no longer has seeded.
-	stale := &policyv1beta1.ContainerProfileStatus{
+	stale := &policyv1alpha1.ContainerProfileStatus{
 		DeclaredFiles:               []string{"/gone"},
 		DeclaredNetworkDestinations: []string{"10.0.0.1:1"},
 		DeclaredExecutables:         []string{"/gone"},
 		DeclaredCapabilities:        []string{"CHOWN"},
 		LearnedFiles:                []string{"/etc/nginx/nginx.conf"},
 	}
-	Declaration{}.ReportInto(stale)
+	Declaration{}.Report().ReportInto(stale)
 	assert.Nil(t, stale.DeclaredFiles)
 	assert.Nil(t, stale.DeclaredNetworkDestinations)
 	assert.Nil(t, stale.DeclaredExecutables)
@@ -1268,7 +1269,7 @@ func TestReportIntoIsIdempotentAndClearsWhatItOwns(t *testing.T) {
 }
 
 func TestReportIntoToleratesANilStatus(t *testing.T) {
-	assert.NotPanics(t, func() { Declaration{}.ReportInto(nil) })
+	assert.NotPanics(t, func() { Declaration{}.Report().ReportInto(nil) })
 }
 
 // A declaration only reaches the kernel when the container is enforcing, which
@@ -1389,10 +1390,33 @@ func BenchmarkDeclarationReportInto(b *testing.B) {
 			{CIDR: "10.43.12.7/32", Port: 5432},
 		},
 	}), now)
-	status := &policyv1beta1.ContainerProfileStatus{}
+	status := &policyv1alpha1.ContainerProfileStatus{}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		decl.ReportInto(status)
+		decl.Report().ReportInto(status)
+	}
+}
+
+// Rendering alone, which is the half that sorts and formats. Separated from the
+// write because the write is a slice copy and the rendering is not.
+func BenchmarkDeclarationReport(b *testing.B) {
+	_, decl, _ := TranslateSpec("bench", betaSpec(&policyv1beta1.ExpectedBehavior{
+		Files: []policyv1beta1.ExpectedFile{
+			{Path: "/var/lib/app/nightly.db", Write: true},
+			{Path: "/etc/ssl/renewed.pem"},
+		},
+		Executables:  []string{"/usr/bin/pg_dump"},
+		Capabilities: []string{"CAP_DAC_OVERRIDE"},
+		NetworkDestinations: []policyv1beta1.ExpectedDestination{
+			{CIDR: "10.43.12.7/32", Port: 5432},
+		},
+	}), now)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if decl.Report().Empty() {
+			b.Fatal("the fixture declares nothing, so this benchmark measures the empty path")
+		}
 	}
 }
