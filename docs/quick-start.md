@@ -124,9 +124,10 @@ EOF
 
 A policy is not enforced literally. It becomes a set of decisions the agent
 acts on, and anything the data plane cannot represent - a CIDR wider than a
-host, a glob, a DNS name, an ingress rule - is dropped with a warning. Those
-warnings normally land on the policy's status, which means you see them only
-after applying to a cluster and knowing to look.
+host, a glob, a DNS name - is dropped with a warning. Those warnings land in the
+log of whichever node the workload is running on, which means you see them only
+after applying to a cluster and knowing where to look. An ingress rule is the
+exception: the CRD refuses it, so `kubectl apply` fails and says why.
 
 `pahlevan policy explain` shows them against a file, before anything is
 applied, and needs no cluster:

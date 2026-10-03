@@ -262,9 +262,10 @@ pahlevan profile get <container-profile> -n <namespace> -o yaml
 
 **3. Check what the policy translates to.** `pahlevan policy explain` reads a
 file offline and names every part of it the data plane cannot represent - a CIDR
-wider than a single host, a glob, a DNS name, an ingress rule. Those parts are
-dropped silently at runtime and reported on the policy's status, which is a
-place people look after the fact rather than before.
+wider than a single host, a glob, a DNS name, an ingress rule. An ingress rule
+is refused outright by the API server. The rest are dropped at runtime and said
+once, in the log of whichever node the workload landed on, which is not a place
+anyone looks to find out whether a policy means what it says.
 
 ```bash
 pahlevan policy explain -f policy.yaml

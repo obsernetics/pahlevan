@@ -511,8 +511,12 @@ syscall numbers had no name and were skipped.</p>
 surprises follow from that. <code>pahlevan policy explain -f policy.yaml</code> names every
 one of these against your file before you apply it.</p>
 <ul>
-<li><strong><code>ingressRules</code> are ignored.</strong> The <code>lsm/socket_connect</code> hook governs egress
-only. The warning reads <code>networkPolicy.ingressRules are ignored: the socket_connect LSM hook governs egress only</code>.</li>
+<li><strong><code>ingressRules</code> is refused by the API server.</strong> The <code>lsm/socket_connect</code> hook
+governs egress only, so the CRD rejects the field instead of accepting it and
+enforcing nothing. <code>kubectl apply</code> fails with <code>networkPolicy.ingressRules is not enforced and is refused rather than silently ignored</code>. Use a Kubernetes
+NetworkPolicy for ingress; <code>pahlevan netpol generate</code> writes one. A policy
+stored before this validation shipped keeps its rules and carries an
+<code>IngressEnforced</code> condition with status <code>False</code> saying they enforce nothing.</li>
 <li><strong>A CIDR wider than a single host seeds nothing.</strong> Only <code>/32</code> and <code>/128</code> are
 representable. <code>egressRules[0].ipBlock.cidr &quot;10.0.0.0/8&quot; covers 16777216 addresses; the kernel allow-set is a hash of the exact destination and cannot express a prefix</code>.</li>
 <li><strong><code>podSelector</code> and <code>namespaceSelector</code> peers cannot be resolved</strong> to a fixed

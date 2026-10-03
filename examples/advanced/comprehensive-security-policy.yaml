@@ -168,10 +168,10 @@ spec:
 
   # --- egress ----------------------------------------------------------------
   networkPolicy:
-    # Egress is enforced by the socket_connect LSM hook. Ingress rules are
-    # accepted by the API and reported as unenforced: inbound connections are
-    # the CNI's business, and claiming otherwise would be a policy that looks
-    # applied and is not.
+    # Egress is enforced by the socket_connect LSM hook. There is no
+    # ingressRules here because the CRD refuses the field: inbound connections
+    # are the CNI's business, and accepting a rule that enforces nothing would
+    # be a policy that looks applied and is not.
     egressRules:
     - protocols: ["TCP"]
       peers:

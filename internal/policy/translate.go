@@ -379,10 +379,11 @@ func applyNetworkPolicy(o *adaptive.Overrides, np *policyv1alpha1.NetworkPolicy,
 		return nil
 	}
 	var warnings []string
+	// An ingress rule reaching this far means the CRD's CEL validation did not
+	// refuse it, so say the same thing the API server would have. See
+	// IngressNotEnforced for why there is nothing here that could carry it.
 	if len(np.IngressRules) > 0 {
-		warnings = append(warnings,
-			"networkPolicy.ingressRules are ignored: the socket_connect LSM hook governs "+
-				"egress only")
+		warnings = append(warnings, IngressNotEnforced)
 	}
 	// Blanket permissions. These name a class of destination rather than an
 	// address, so they are a per-cgroup flag checked in socket_connect ahead of
