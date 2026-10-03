@@ -89,6 +89,22 @@ func TestAPodResolvesToItsWorkload(t *testing.T) {
 		"the workload is what a policy can name, spelled the way the roster spells it")
 }
 
+func TestAPodWithNoControllerHasNoWorkload(t *testing.T) {
+	// A bare pod is its own unit, and it is also one that never comes back
+	// under that name. pkg/netpol groups it by name and says so in the report;
+	// claiming a workload for it would attach a policy to something that does
+	// not exist.
+	snap := Snapshot([]corev1.Pod{
+		pod("prod", "loose", "10.244.0.9", "", map[string]string{"app": "loose"}),
+	}, nil, nil)
+
+	p, ok := New(snap, roster(snap)).Lookup("10.244.0.9")
+	require.True(t, ok)
+	assert.Equal(t, netpol.PeerPod, p.Kind)
+	assert.Equal(t, "loose", p.Name)
+	assert.Empty(t, p.Workload)
+}
+
 func TestAServiceResolvesToItsSelectorAndNotToItsOwnLabels(t *testing.T) {
 	// The trap this adapter exists for. pkg/netidentity carries a Service's
 	// metadata labels, because that is what identifies the Service.
