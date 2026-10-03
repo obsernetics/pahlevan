@@ -70,8 +70,13 @@ func TestExplainReportsWhatCannotBeEnforced(t *testing.T) {
 
 	got := out.String()
 	assert.Contains(t, got, "will NOT be enforced")
-	assert.Contains(t, got, "egress only")
+	assert.Contains(t, got, "outbound connections only")
 	assert.Contains(t, got, "doing less than it says")
+	// The output must not repeat the old claim that every warning reaches the
+	// policy's status. Only the ingress one does; the rest reach a log line on
+	// whichever node the workload landed on, which is the reason an operator
+	// runs this command at all.
+	assert.Contains(t, got, "node agent's log")
 }
 
 // --strict is for CI, where a policy that quietly does less than it says should

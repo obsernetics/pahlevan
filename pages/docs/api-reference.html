@@ -531,7 +531,7 @@ every one in a given policy.</p>
 </tbody>
 </table>
 <h2 id="networkpolicy">NetworkPolicy</h2>
-<p>defines network enforcement policies</p>
+<p>defines network enforcement policies. Enforcement is one LSM hook, socket_connect, which runs on the outbound connect() of the workload being governed. The kernel has no inbound counterpart this data plane could use, so ingressRules is refused by the API server rather than accepted and dropped. A field that applies cleanly and protects nothing is worse than a field that does not exist, because the operator has no way to tell the two apart. Inbound traffic is the CNI's business: <code>pahlevan netpol generate</code> writes a Kubernetes NetworkPolicy whose ingress rules are derived from observed traffic, and the CNI enforces those.</p>
 <table>
 <thead>
 <tr>
@@ -552,7 +552,7 @@ every one in a given policy.</p>
 <td><code>ingressRules</code></td>
 <td><code>[]NetworkRule</code></td>
 <td style="text-align:center"></td>
-<td>IngressRules defines allowed ingress traffic</td>
+<td>IngressRules is refused by the API server rather than accepted and ignored: enforcement is the socket_connect LSM hook, which governs outbound connections only. Use a Kubernetes NetworkPolicy for ingress.</td>
 </tr>
 <tr>
 <td><code>defaultAction</code></td>
@@ -1298,9 +1298,10 @@ error logged once per batch while notifications silently never arrive:</p>
 <pre><code>pahlevan policy explain -f policy.yaml [--strict]
 </code></pre>
 <p>Translates the policy offline, prints what will be written into the kernel
-allow-sets, and names every part that will not be enforced - an ingress rule, a
-CIDR too wide to enumerate, a glob, an inert field. <code>--strict</code> exits non-zero,
-so a policy that quietly does less than it says can fail a CI gate.</p>
+allow-sets, and names every part that will not be enforced - a CIDR too wide to
+enumerate, a glob, an inert field, and an ingress rule the API server will
+refuse. <code>--strict</code> exits non-zero, so a policy that quietly does less than it
+says can fail a CI gate.</p>
 <p>It also rejects a field the CRD does not have, which the API server would
 otherwise prune without an error.</p>
             </article>

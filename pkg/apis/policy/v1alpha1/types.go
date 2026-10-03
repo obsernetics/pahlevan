@@ -203,12 +203,25 @@ type SyscallPolicy struct {
 	ProcessFilter *ProcessFilter `json:"processFilter,omitempty"`
 }
 
-// NetworkPolicy defines network enforcement policies
+// NetworkPolicy defines network enforcement policies.
+//
+// Enforcement is one LSM hook, socket_connect, which runs on the outbound
+// connect() of the workload being governed. The kernel has no inbound
+// counterpart this data plane could use, so ingressRules is refused by the API
+// server rather than accepted and dropped. A field that applies cleanly and
+// protects nothing is worse than a field that does not exist, because the
+// operator has no way to tell the two apart. Inbound traffic is the CNI's
+// business: `pahlevan netpol generate` writes a Kubernetes NetworkPolicy whose
+// ingress rules are derived from observed traffic, and the CNI enforces those.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.ingressRules) || size(self.ingressRules) == 0",message="networkPolicy.ingressRules is not enforced and is refused rather than silently ignored: Pahlevan enforces network policy at the socket_connect LSM hook, which governs outbound connections only. Use a Kubernetes NetworkPolicy for ingress; pahlevan netpol generate writes one from observed traffic."
 type NetworkPolicy struct {
 	// EgressRules defines allowed egress traffic
 	EgressRules []NetworkRule `json:"egressRules,omitempty"`
 
-	// IngressRules defines allowed ingress traffic
+	// IngressRules is refused by the API server rather than accepted and
+	// ignored: enforcement is the socket_connect LSM hook, which governs
+	// outbound connections only. Use a Kubernetes NetworkPolicy for ingress.
 	IngressRules []NetworkRule `json:"ingressRules,omitempty"`
 
 	// DefaultAction specifies default action for unknown connections
@@ -532,6 +545,15 @@ const (
 	PolicyConditionEnforcing PolicyConditionType = "Enforcing"
 	PolicyConditionHealthy   PolicyConditionType = "Healthy"
 	PolicyConditionError     PolicyConditionType = "Error"
+
+	// PolicyConditionIngressEnforced is set to False, and only ever to False,
+	// on a policy that carries networkPolicy.ingressRules. The CRD refuses the
+	// field, so a policy can only hold one if it was stored before the
+	// validation shipped or by a cluster whose API server does not evaluate
+	// CEL. The condition is the operator's second chance to find out, and it is
+	// removed again when the rules are removed so it never reports a refusal
+	// that no longer applies.
+	PolicyConditionIngressEnforced PolicyConditionType = "IngressEnforced"
 )
 
 // ConditionStatus defines condition status
