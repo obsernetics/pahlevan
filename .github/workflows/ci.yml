@@ -404,7 +404,6 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
             # {{branch}} is only non-empty on a push to a branch. On a tag push
             # and on a pull_request it expands to nothing, producing the invalid
             # tag ":-<sha>" and failing the whole build. Gating on ref_type alone
@@ -425,9 +424,20 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          # A pull request builds the image but does not publish it.
+          #
+          # This job had no condition at all, so every pull request pushed an
+          # image to the registry from code nobody had reviewed yet; ten pr-N
+          # tags were published that way. Building still happens, because a
+          # broken Dockerfile should fail the pull request rather than main.
+          push: ${{ github.event_name != 'pull_request' }}
           # arm64 is a supported target: the agent ships per-arch BPF objects.
-          platforms: linux/amd64,linux/arm64
+          # arm64 is built under QEMU emulation and is the bulk of this job's
+          # five minutes, which the `ci` gate waits for on every pull request.
+          # A pull request builds the host architecture only; the release path
+          # still builds both, and `Cross-compile arm64` already proves the Go
+          # side compiles for arm64 on every pull request.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Layer cache in the Actions cache service. mode=max stores the
