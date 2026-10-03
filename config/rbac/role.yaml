@@ -7,22 +7,20 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - configmaps
-  - pods
-  - secrets
-  - services
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - events
   verbs:
   - create
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - services
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - apps
   resources:

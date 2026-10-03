@@ -51,7 +51,7 @@ type AttackSurfaceAnalyzerReconciler struct {
 	LastFullAnalysis      time.Time
 }
 
-//+kubebuilder:rbac:groups="",resources=pods;services;configmaps;secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=pods;services,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apps,resources=deployments;replicasets;daemonsets;statefulsets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies;ingresses,verbs=get;list;watch
 //+kubebuilder:rbac:groups=policy.pahlevan.io,resources=pahlevanpolicies,verbs=get;list;watch
