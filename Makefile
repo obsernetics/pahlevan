@@ -138,6 +138,13 @@ demo-gif: ## Re-render docs/assets/demo.gif from the vhs tape (needs vhs + ffmpe
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook $(GEN_PATHS) output:crd:artifacts:config=config/crd output:rbac:artifacts:config=config/rbac
+	# Helm never templates crds/, so the chart has to ship its own copy, and
+	# that copy is generated here rather than kept by hand. A hand-maintained
+	# one goes stale silently: the API server prunes any field the shipped
+	# schema does not describe, so a policy applies cleanly and does nothing.
+	# The chart shipped one of three CRDs, from an older controller-gen, for
+	# long enough that two controllers never synced on a Helm install.
+	cp config/crd/*.yaml charts/pahlevan-operator/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
