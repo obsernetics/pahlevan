@@ -194,10 +194,10 @@ It points `core.hooksPath` at [`.githooks/`](.githooks). Git does not share
 hooks through the repository itself, so this is one deliberate command per
 clone.
 
-The only hook today is `commit-msg`, and it rejects any message carrying AI or
-assistant attribution: `Co-Authored-By: Claude`, `Generated with ...`, and the
-robot emoji those trailers travel with. Commits here are authored by the person
-who made them.
+The only hook today is `commit-msg`, and it rejects any message carrying
+assistant attribution: a co-authorship trailer of any kind, a `Generated with`
+line, and the robot emoji those trailers travel with. Commits here are authored
+by the person who made them, so there is no co-author to credit.
 
 It is a hook rather than a review habit because those trailers are added by
 tooling, automatically, at the moment of commit - which is exactly the point at

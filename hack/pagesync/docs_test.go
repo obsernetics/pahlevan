@@ -242,7 +242,12 @@ func TestNoDocumentationUsesAnEmDash(t *testing.T) {
 // for the tooling a commit happened to be written with, which says nothing
 // about the software and everything about a workflow nobody reading the docs
 // cares about.
-var banned = []string{"Claude", "Anthropic", "Generated with", "\U0001F916"}
+//
+// These are the structural markers, not vendor names. Naming a vendor in order
+// to detect it would put the name in the tree, which is the thing being
+// prevented, and a name list stops working the moment a new tool appears.
+// Attribution arrives in this shape whoever generated it.
+var banned = []string{"Generated with", "Co-Authored-By", "Co-Authored By", "\U0001F916"}
 
 func TestNoDocumentationCarriesToolAttribution(t *testing.T) {
 	// These arrive by paste, in a block appended to a message or a file, and
