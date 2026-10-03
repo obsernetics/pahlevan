@@ -31,6 +31,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	releasepkg "github.com/obsernetics/pahlevan/hack/release"
 )
 
 func main() {
@@ -125,7 +127,11 @@ func Build(root string) (*Site, error) {
 		site.Files[docsOut+strings.TrimPrefix(a, docsDir)] = data
 	}
 
-	releases, err := ParseChangelog(root)
+	published, err := releasepkg.Load(releasepkg.GitTags(root))
+	if err != nil {
+		return nil, err
+	}
+	releases, err := ParseChangelog(root, published)
 	if err != nil {
 		return nil, err
 	}

@@ -80,14 +80,14 @@ func BenchmarkParseChangelog(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := ParseChangelog(repoRoot); err != nil {
+		if _, err := ParseChangelog(repoRoot, benchPublished(b)); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
 func BenchmarkRenderReleases(b *testing.B) {
-	releases, err := ParseChangelog(repoRoot)
+	releases, err := ParseChangelog(repoRoot, benchPublished(b))
 	if err != nil {
 		b.Fatal(err)
 	}

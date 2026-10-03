@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	releases "github.com/obsernetics/pahlevan/hack/release"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,14 +38,22 @@ func auditReleases(releases []release, page string) []string {
 		pageOrder = append(pageOrder, m[1])
 	}
 
+	// Every version section with content gets an article, whether or not it is
+	// tagged: an untagged one is published as "In progress", because a release
+	// merged without a tag is real work that nobody can install yet. Only a
+	// tagged version is a candidate for the Current badge, which is the one
+	// that tells a reader what to install.
 	documented := map[string]bool{}
 	newest := ""
 	for _, r := range releases {
-		if !r.Released() {
+		if r.Version == unreleased {
 			continue
 		}
+		if len(r.Summaries) == 0 && len(r.Groups) == 0 {
+			continue // an empty section publishes no article
+		}
 		documented[r.Version] = true
-		if newest == "" {
+		if r.Released() && newest == "" {
 			newest = r.Version
 		}
 		if !onPage[r.Version] {
@@ -85,11 +94,15 @@ func auditReleases(releases []release, page string) []string {
 
 func realReleases(t *testing.T) []release {
 	t.Helper()
-	releases, err := ParseChangelog(repoRoot)
+	published, err := releases.Load(releases.GitTags(repoRoot))
+	if err != nil {
+		t.Skipf("this checkout has no tags, so which sections count as published cannot be decided: %v", err)
+	}
+	parsed, err := ParseChangelog(repoRoot, published)
 	if err != nil {
 		t.Fatalf("parsing CHANGELOG.md: %v", err)
 	}
-	return releases
+	return parsed
 }
 
 func realChangelogPage(t *testing.T) string {
@@ -285,7 +298,7 @@ func TestAnEmptyUnreleasedSectionIsNotPublished(t *testing.T) {
 	t.Parallel()
 	articles := RenderReleases([]release{
 		{Version: unreleased},
-		{Version: "1.0.0", Date: "2026-01-01", Groups: []changeGroup{{Kind: "Added", Items: []string{"A thing."}}}},
+		{Version: "1.0.0", Date: "2026-01-01", Tagged: true, Groups: []changeGroup{{Kind: "Added", Items: []string{"A thing."}}}},
 	})
 	if strings.Contains(articles, unreleased) {
 		t.Error("an empty [Unreleased] section was published as an article, promising work in progress and showing none")
@@ -305,7 +318,7 @@ func TestUnreleasedWorkIsShownAsInProgress(t *testing.T) {
 	t.Parallel()
 	got := RenderReleases([]release{
 		{Version: unreleased, Groups: []changeGroup{{Kind: "Added", Items: []string{"a thing"}}}},
-		{Version: "1.0.0", Date: "2026-01-01", Groups: []changeGroup{{Kind: "Fixed", Items: []string{"a bug"}}}},
+		{Version: "1.0.0", Date: "2026-01-01", Tagged: true, Groups: []changeGroup{{Kind: "Fixed", Items: []string{"a bug"}}}},
 	})
 	if !strings.Contains(got, `<span class="release-pill">In progress</span>`) {
 		t.Error("unreleased work is not badged In progress")
@@ -322,12 +335,86 @@ func TestAnEmptyUnreleasedSectionPublishesNoArticle(t *testing.T) {
 	t.Parallel()
 	got := RenderReleases([]release{
 		{Version: unreleased},
-		{Version: "1.0.0", Date: "2026-01-01", Groups: []changeGroup{{Kind: "Fixed", Items: []string{"a bug"}}}},
+		{Version: "1.0.0", Date: "2026-01-01", Tagged: true, Groups: []changeGroup{{Kind: "Fixed", Items: []string{"a bug"}}}},
 	})
 	if strings.Contains(got, "In progress") {
 		t.Error("an empty [Unreleased] section was published as an In progress article with nothing in it")
 	}
 	if !strings.Contains(got, `<span class="release-pill">Current</span>`) {
 		t.Error("the release below an empty [Unreleased] lost its Current badge")
+	}
+}
+
+// publishedIn reads the tags of the tree under test.
+//
+// It deliberately does not invent a set. These tests build a scratch repository
+// whose releases are tagged, and the generator decides what is shipped by
+// asking about tags, so a fixed set here would let the audit compare a page
+// rendered against one reality with a parse against another.
+func publishedIn(t *testing.T, root string) releases.Published {
+	t.Helper()
+	p, err := releases.Load(releases.GitTags(root))
+	if err != nil {
+		t.Fatalf("reading the tags of %s: %v", root, err)
+	}
+	return p
+}
+
+func benchPublished(b *testing.B) releases.Published {
+	b.Helper()
+	p, err := releases.Load(releases.GitTags(repoRoot))
+	if err != nil {
+		p, err = releases.Load(releases.Fixed("v1.0.0"))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	return p
+}
+
+// TestAVersionWithNoTagIsNotAdvertisedAsReleased is the guard for the failure
+// this whole mechanism exists to stop: a release PR writes the heading, and
+// until the tag exists the page must not present it as shipped.
+func TestAVersionWithNoTagIsNotAdvertisedAsReleased(t *testing.T) {
+	t.Parallel()
+	got := RenderReleases([]release{
+		{Version: "9.9.9", Date: "2026-01-02", Groups: []changeGroup{{Kind: "Added", Items: []string{"a thing"}}}},
+		{Version: "1.0.0", Date: "2026-01-01", Tagged: true, Groups: []changeGroup{{Kind: "Fixed", Items: []string{"a bug"}}}},
+	})
+	if !strings.Contains(got, `<span class="release-pill">In progress</span>`) {
+		t.Error("an untagged version was not marked In progress; the page is telling readers a release exists when there is no tag, " +
+			"no GitHub release and no image")
+	}
+	// And the badge that says "install this one" must stay on the newest
+	// version that really is installable.
+	currentIdx := strings.Index(got, `<span class="release-pill">Current</span>`)
+	if currentIdx < 0 {
+		t.Fatal("no version carries the Current badge, so the page recommends nothing")
+	}
+	if v := strings.Index(got, "9.9.9"); v >= 0 && v > currentIdx {
+		t.Error("the Current badge landed above the untagged version rather than on the newest tagged one")
+	}
+}
+
+// TestParseChangelogMarksOnlyTaggedVersionsAsReleased checks the wiring, so the
+// rendering guard above cannot be satisfied by a parser that marks everything.
+func TestParseChangelogMarksOnlyTaggedVersionsAsReleased(t *testing.T) {
+	t.Parallel()
+	published, err := releases.Load(releases.GitTags(repoRoot))
+	if err != nil {
+		t.Skipf("this checkout has no tags: %v", err)
+	}
+	parsed, err := ParseChangelog(repoRoot, published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range parsed {
+		if r.Version == unreleased {
+			continue
+		}
+		if got, want := r.Released(), published.Has(r.Version); got != want {
+			t.Errorf("version %s: Released() = %v, but a tag %s", r.Version, got,
+				map[bool]string{true: "exists", false: "does not exist"}[want])
+		}
 	}
 }

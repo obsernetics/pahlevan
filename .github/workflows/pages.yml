@@ -80,6 +80,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-tags: true
 
       # The same composite the CI pipeline uses, so this workflow restores the
       # cache CI already warmed instead of building its own.
@@ -145,6 +147,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-tags: true
 
       - name: Setup Go
         uses: ./.github/actions/go-setup

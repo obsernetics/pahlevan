@@ -3,9 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/obsernetics/pahlevan/hack/release/releasetest"
 )
 
 // repoRoot is the repository, from this package's directory.
@@ -243,6 +246,16 @@ func scratchRepo(t *testing.T) string {
 	copyFile(t, filepath.Join(repoRoot, docsDir, "assets", "architecture.svg"),
 		filepath.Join(root, docsDir, "assets", "architecture.svg"))
 
+	// Tag the scratch tree's releases.
+	//
+	// The changelog copied in above is the real one, and the generator decides
+	// whether a version is shipped by asking whether a tag exists. A scratch
+	// tree with no tags is a tree where nothing has been released, so every
+	// article would render "In progress" and none of these tests would be
+	// exercising the real rendering path. Tagging here makes the fixture what
+	// it is supposed to represent: an ordinary checkout of a released project.
+	tagScratchReleases(t, root)
+
 	// Publish once, so the scratch repository starts in the state a checkout
 	// is in: generated and up to date.
 	site, err := Build(root)
@@ -267,4 +280,20 @@ func copyFile(t *testing.T, src, dst string) {
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// tagScratchReleases tags every version the scratch tree's CHANGELOG.md
+// declares, so the fixture represents an ordinary checkout of a released
+// project rather than one where nothing has ever shipped.
+func tagScratchReleases(t *testing.T, root string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, changelogSrc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versions []string
+	for _, m := range regexp.MustCompile(`(?m)^## \[([0-9][^\]]*)\]`).FindAllSubmatch(data, -1) {
+		versions = append(versions, string(m[1]))
+	}
+	releasetest.InitRepo(t, root, versions...)
 }

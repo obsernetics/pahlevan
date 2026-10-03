@@ -46,7 +46,7 @@ func TestAChangelogWithNoReleasesIsAnError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, changelogSrc), []byte("# Changelog\n\nNothing here.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParseChangelog(root); err == nil || !strings.Contains(err.Error(), "no release headings") {
+	if _, err := ParseChangelog(root, publishedIn(t, root)); err == nil || !strings.Contains(err.Error(), "no release headings") {
 		t.Fatalf("a changelog with no releases should stop the build rather than publish an empty list, got %v", err)
 	}
 }

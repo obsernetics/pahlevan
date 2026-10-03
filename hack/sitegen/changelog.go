@@ -10,6 +10,10 @@ import (
 
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
+
+	// Aliased because this package already has a `release` type for one
+	// changelog section, which is a different thing from the published set.
+	releases "github.com/obsernetics/pahlevan/hack/release"
 )
 
 // The release articles on the changelog page were typed by hand, and that is
@@ -49,10 +53,20 @@ type release struct {
 	Date      string // "2026-09-14", empty for Unreleased
 	Summaries []string
 	Groups    []changeGroup
+	// Tagged records whether a tag for this version actually exists.
+	//
+	// A heading is an intention. A release PR writes "## [3.6.0]" and from
+	// that moment this page announced 3.6.0 as shipped, while the tag, the
+	// GitHub release and the image might not exist at all. That happened six
+	// times. Reading the tag makes the page say "In progress" for a version
+	// nobody can install yet, and keeps the Current badge on the newest
+	// version that really is installable.
+	Tagged bool
 }
 
-// Released reports whether this section describes a shipped version.
-func (r release) Released() bool { return r.Version != unreleased }
+// Released reports whether this section describes a version that is actually
+// published, which is a question about tags and not about headings.
+func (r release) Released() bool { return r.Version != unreleased && r.Tagged }
 
 const unreleased = "Unreleased"
 
@@ -76,7 +90,10 @@ var groupClass = map[string]string{
 }
 
 // ParseChangelog reads CHANGELOG.md into release sections, newest first.
-func ParseChangelog(root string) ([]release, error) {
+//
+// published decides which sections count as shipped. It is a parameter rather
+// than something read in here so the fixtures-based tests stay hermetic.
+func ParseChangelog(root string, published releases.Published) ([]release, error) {
 	data, err := os.ReadFile(filepath.Join(root, changelogSrc)) // #nosec G304 -- a fixed in-tree path
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", changelogSrc, err)
@@ -95,6 +112,7 @@ func ParseChangelog(root string) ([]release, error) {
 			end = idx[i+1][0]
 		}
 		r := release{Version: string(src[m[2]:m[3]])}
+		r.Tagged = published.Has(r.Version)
 		if m[4] >= 0 {
 			r.Date = string(src[m[4]:m[5]])
 		}
