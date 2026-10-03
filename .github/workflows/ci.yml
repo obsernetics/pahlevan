@@ -6,6 +6,14 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+  # Dispatchable on a tag ref so a release can be driven by automation.
+  #
+  # A tag pushed with GITHUB_TOKEN does not trigger a workflow run: GitHub
+  # suppresses that so a workflow cannot set itself off forever. The tagging
+  # workflow therefore creates the tag and then dispatches this one on it, and
+  # the run sees github.ref_type == 'tag' exactly as a human tag push would,
+  # which is what the signing steps and the release job gate on.
+  workflow_dispatch:
 
 # A second push to the same branch used to leave the first one running: two
 # 13-minute pipelines competing for the same runners, and the older one's
@@ -647,3 +655,29 @@ jobs:
             sbom.spdx.json
             SHA256SUMS
             SHA256SUMS.cosign.bundle
+
+      # Verify the release we just published, with the exact command the docs
+      # hand to a reader.
+      #
+      # The certificate identity cosign checks is the workflow ref, and this
+      # job can now be reached two ways: a tag push, and a dispatch on a tag.
+      # If those produce different identities, every documented `cosign verify`
+      # would fail against an automated release while the pipeline stayed
+      # green. Checking it here turns that into a failed release rather than an
+      # unverifiable one, and it guards the signing path generally: the only
+      # proof a signature is usable is verifying it.
+      - name: Verify the published release signature
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ github.ref }}"
+          echo "verifying against: ${identity}"
+          cosign verify \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}" > /dev/null
+          cosign verify-blob \
+            --bundle SHA256SUMS.cosign.bundle \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            SHA256SUMS
+          echo "the published release verifies with the identity docs/packages.md documents"

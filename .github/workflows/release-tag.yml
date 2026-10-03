@@ -1,0 +1,125 @@
+name: Tag the release
+
+# Create the tag for the version main declares, and start the release.
+#
+# The version lived in the Makefile and the tag was a separate manual step, so
+# a release could be merged, announced by CHANGELOG.md and the website, and
+# have no tag: no GitHub release, no image, nothing installable. That happened
+# six times, most recently v3.5.1 and v3.6.0, which sat untagged for two days.
+#
+# Two things make this work that are not obvious:
+#
+# A tag pushed with GITHUB_TOKEN does not trigger a workflow run. GitHub
+# suppresses that so a workflow cannot set itself off forever. So creating the
+# tag is not enough; this workflow then dispatches CI on the new tag, which is
+# why ci.yml carries workflow_dispatch. Without the dispatch the tag would
+# exist with no release behind it, which satisfies the tagged check while still
+# shipping nothing: a quieter version of the same bug.
+#
+# And the tag is placed on the commit that introduced the version, not on
+# whatever main happens to point at now, so a release does not silently
+# acquire commits that landed after it.
+#
+# scripts/check-release-tagged.sh remains the backstop. If this workflow is
+# skipped, fails, or the dispatch does not take, that check opens an issue
+# within six hours.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      # Only a change to the version can create the need for a new tag.
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the tag ref
+  actions: write  # dispatch the release run
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the version main declares
+    runs-on: ubuntu-latest
+    if: github.repository == 'obsernetics/pahlevan'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # The whole history, because the commit that introduced the version
+          # has to be findable, and every tag, because the question is whether
+          # one already exists.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Decide whether a tag is needed
+        id: decide
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^VERSION?=\(v[0-9][^ \t]*\).*/\1/p' Makefile | head -1)"
+          if [ -z "${version}" ]; then
+            echo "no VERSION?= line in the Makefile" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse -q --verify "refs/tags/${version}" >/dev/null; then
+            echo "${version} is already tagged; nothing to do"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The commit that introduced this version string, so the tag lands on
+          # the release rather than on a later unrelated commit.
+          target="$(git log -1 --format=%H -S "VERSION?=${version}" -- Makefile || true)"
+          if [ -z "${target}" ]; then
+            echo "could not find the commit that set ${version}; falling back to the pushed commit" >&2
+            target="${GITHUB_SHA}"
+          fi
+          echo "target=${target}" >> "$GITHUB_OUTPUT"
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          echo "will tag ${version} at ${target}"
+
+      - name: Create the tag
+        if: steps.decide.outputs.needed == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+          TARGET: ${{ steps.decide.outputs.target }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${VERSION}" "${TARGET}" -m "${VERSION}"
+          git push origin "${VERSION}"
+          echo "pushed ${VERSION}"
+
+      - name: Start the release
+        if: steps.decide.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The tag push above cannot trigger CI by itself, so ask for the run
+          # explicitly on the tag ref. ci.yml must carry workflow_dispatch at
+          # that ref for this to be accepted, which is why a release cut from a
+          # commit older than that change has to be started by hand.
+          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${VERSION}"
+          echo "dispatched ci.yml on ${VERSION}"
+
+      - name: Report
+        if: steps.decide.outputs.needed == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          {
+            echo "### Tagged \`${VERSION}\`"
+            echo
+            echo "The release run was dispatched on the tag. It publishes the image, the SBOM,"
+            echo "the provenance and the signed checksums, and verifies its own signature before"
+            echo "finishing. If that run fails, the tag exists with no release behind it and"
+            echo "\`scripts/check-release-tagged.sh\` will open an issue within six hours."
+          } >> "$GITHUB_STEP_SUMMARY"
