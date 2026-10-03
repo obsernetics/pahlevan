@@ -192,11 +192,20 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
+        # Set alongside runAsUser rather than left to the image. An unset gid
+        # means the container joins group 0, so a workload that otherwise runs
+        # as an unprivileged user still reads anything root-group-readable.
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
       - name: collector
-        image: otel/opentelemetry-collector-contrib:0.116.1
+        # Docker Hub spelled out rather than left implicit. "otel/..." resolves
+        # to Docker Hub only because that is the daemon's default registry, and
+        # a cluster configured with a mirror or a different default pulls
+        # something else from the same string.
+        image: docker.io/otel/opentelemetry-collector-contrib:0.116.1
         args: ["--config=/conf/config.yaml"]
         securityContext:
           allowPrivilegeEscalation: false
@@ -213,6 +222,11 @@ spec:
             cpu: 100m
             memory: 256Mi
           limits:
+            # A CPU limit as well as the memory one. Without it the collector
+            # is Burstable on CPU and a burst of denials on a busy node lets it
+            # take whatever is idle, which on a small cluster is the capacity
+            # the agent needs to drain its ring buffers.
+            cpu: 500m
             memory: 512Mi
         volumeMounts:
         - name: config

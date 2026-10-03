@@ -1,0 +1,15 @@
+# Trivy configuration for the Kubernetes misconfiguration scan in
+# .github/workflows/security.yml.
+#
+# This file exists only to hand Trivy the Rego input data under
+# hack/trivy/data. Everything else about the scan - what is scanned, what is
+# skipped, the output format - stays in the workflow, where it is visible to
+# anyone reading the job rather than hidden one indirection away.
+#
+# It is deliberately not named trivy.yaml at the repo root: a file by that name
+# is picked up automatically by every Trivy invocation, which would include the
+# filesystem vulnerability scan in the same workflow. The config-scan job
+# passes this path explicitly instead.
+rego:
+  data:
+    - hack/trivy/data
