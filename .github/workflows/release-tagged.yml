@@ -67,6 +67,10 @@ jobs:
             echo
             echo "The usual cause is a release merged by an automation that cannot create tag refs."
             echo
+            echo "This check also fails when the tag exists but GitHub serves an older release as"
+            echo "\"Latest\", which happens because GitHub picks Latest by publish time rather than by"
+            echo "version. Read the step log: it names which of the two it found."
+            echo
             echo '```'
             echo "git checkout main && git pull"
             echo "git tag -a ${version} -m ${version}"
