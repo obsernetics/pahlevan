@@ -11,7 +11,7 @@ on:
 permissions:
   contents: read
 
-# Three scanners, each of which takes minutes. Pushing twice to a pull request
+# Four scanners, each of which takes minutes. Pushing twice to a pull request
 # used to leave the first set running to completion on a commit nobody will
 # look at again, while the second set queued behind it for a runner.
 concurrency:
@@ -21,9 +21,9 @@ concurrency:
 env:
   GO_VERSION: "1.26.7"
 
-# Trivy, govulncheck and CodeQL share no state and produce three independent
-# reports, so they are three jobs rather than three steps: the wall clock is
-# the slowest of them instead of their sum.
+# The two Trivy scans, govulncheck and CodeQL share no state and produce four
+# independent reports, so they are four jobs rather than four steps: the wall
+# clock is the slowest of them instead of their sum.
 jobs:
   trivy:
     name: Trivy Security Scan
@@ -70,6 +70,72 @@ jobs:
       if: always()
       with:
         sarif_file: 'trivy-results.sarif'
+
+  # Kubernetes misconfiguration scanning, which this repo did not have at all.
+  #
+  # The `trivy` job above runs scan-type fs, which finds vulnerable
+  # dependencies and says nothing about manifests. So nothing checked the
+  # DaemonSet, the Deployment, the Helm chart, the released install.yaml or the
+  # examples users copy - the files where this project's actual defects have
+  # tended to live.
+  #
+  # Three directories are skipped, and the skip list is the reason this job is
+  # worth running:
+  #
+  #   pages/charts/ holds a published .tgz of the Helm chart for every
+  #   historical release. Trivy unpacks each one and reports the same findings
+  #   again per archive - 208 findings about immutable artifacts from versions
+  #   nobody can change.
+  #
+  #   every manifest in the tree is reported once more per worktree.
+  #
+  #   test/ holds fixtures that are deliberately misconfigured.
+  #
+  # Unscoped that is a few hundred findings of which the overwhelming majority
+  # are unactionable; scoped it is a handful. That difference is the whole
+  # point: a scanner whose output is mostly noise gets ignored, and a gate
+  # everybody ignores is worse than no gate, because it looks like coverage.
+  # hack/install/configscan_test.go fails if this job or its skip list is
+  # removed.
+  trivy-config:
+    name: Trivy Config Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    # Misconfiguration scanning uses the checks bundle, not the vulnerability
+    # database, so this job shares no cache with the `trivy` job above and does
+    # not need the several hundred megabytes that one restores.
+    - name: Run Trivy config scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        scan-ref: '.'
+        skip-dirs: 'pages,test'
+        # Waivers live here, one entry per rule, each with a written
+        # justification and a path list. See the header of that file.
+        trivyignores: '.trivyignore.yaml'
+        # Supplies the Rego input data under hack/trivy/data, which tells
+        # KSV-0125 which registries this project pulls from.
+        trivy-config: 'hack/trivy/config.yaml'
+        format: 'sarif'
+        output: 'trivy-config-results.sarif'
+
+    # A category of its own. Without one, two SARIF uploads from the same
+    # workflow and the same commit are treated as two runs of one analysis, and
+    # the second replaces the first - so the config findings would silently
+    # delete the filesystem findings, or the other way round, depending on
+    # which job finished last.
+    - name: Upload results
+      uses: github/codeql-action/upload-sarif@v4
+      if: always()
+      with:
+        sarif_file: 'trivy-config-results.sarif'
+        category: 'trivy-config'
 
   govulncheck:
     name: Go Vulnerability Check

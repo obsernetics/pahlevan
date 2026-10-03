@@ -1,0 +1,230 @@
+# Trivy misconfiguration waivers.
+#
+# This file is where security debt hides, so two rules apply to every entry and
+# hack/install/configscan_test.go enforces both:
+#
+#   1. Every entry carries a `statement` saying why the finding is not a
+#      defect. "The scanner is annoying" is not a reason; "the kernel will not
+#      load a BPF program without this capability" is.
+#
+#   2. Every entry carries `paths`, and the paths are as narrow as Trivy
+#      allows. Nothing here is waived repo-wide. In particular the waivers for
+#      the agent's privilege cannot name the operator or the dashboard: those
+#      two run unprivileged, and a waiver that covered them would hide a real
+#      regression in the components that have no excuse for one.
+#
+# The agent's entries are the bulk of the file. They are not oversights. The
+# agent loads and attaches eBPF programs and enforces with LSM and seccomp,
+# which the kernel does not permit from an unprivileged, namespaced,
+# seccomp-confined container. Weakening the DaemonSet to satisfy a scanner
+# would produce a passing scan and an agent that cannot do its job, so the
+# DaemonSet keeps its privilege and the reason is written down here instead.
+#
+# deploy/base/daemonset-agent.yaml, charts/pahlevan-operator/templates/daemonset.yaml
+# and install.yaml are the same DaemonSet reaching users three ways (kustomize
+# base, Helm chart, released all-in-one manifest), which is why each agent
+# entry lists all three. Every rule below fires only on a container that asks
+# for the privilege in question, and the operator and the dashboard never do -
+# hack/install/ops_test.go asserts that separately.
+
+misconfigurations:
+  # --- The agent's privilege: inherent to loading eBPF ---------------------
+
+  - id: KSV-0001
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      allowPrivilegeEscalation must stay true on the agent. The container
+      starts as root and the added capabilities (BPF, PERFMON, SYS_ADMIN,
+      SYS_RESOURCE, NET_ADMIN) have to survive into the bounding set for
+      bpf(2) and perf_event_open(2); setting no_new_privs strips them on exec
+      and program load fails with EPERM. The operator and the dashboard set it
+      to false and are not covered here.
+
+  - id: KSV-0005
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      CAP_SYS_ADMIN is required for BPF map and program operations on kernels
+      older than 5.8, which have no CAP_BPF, and for attaching to tracepoints
+      and LSM hooks on several distribution kernels that backported the hooks
+      without the capability split. The DaemonSet asks for CAP_BPF and
+      CAP_PERFMON first and keeps SYS_ADMIN as the fallback; dropping it would
+      make the agent silently unable to load on those kernels.
+
+  - id: KSV-0010
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      hostPID is how the agent resolves the host PIDs that arrive in kernel
+      events back to processes and containers. Inside its own PID namespace
+      those numbers name nothing, so every event would be unattributable and
+      no policy could be applied to the container that caused it.
+
+  - id: KSV-0012
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      The agent runs as uid 0 in the init user namespace. bpf(2) program load,
+      LSM attachment and writing generated seccomp profiles under the
+      kubelet's seccomp root all require real root there; a user-namespaced
+      root does not satisfy any of them. The operator is the component that
+      runs unprivileged with hostUsers false, and it is not covered here.
+
+  - id: KSV-0020
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      Same reason as KSV-0012: the agent's uid is 0, which is necessarily at
+      or below 10000. This rule is a restatement of "do not run as root" in
+      terms of the uid number, and the root requirement is the one justified
+      above.
+
+  - id: KSV-0021
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      The agent's gid follows its uid: gid 0 is what the kubelet's seccomp
+      directory and the BPF filesystem are owned by, and a high supplementary
+      gid buys nothing while the process already holds CAP_SYS_ADMIN.
+
+  - id: KSV-0022
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      The agent adds exactly five capabilities and drops ALL others: BPF and
+      PERFMON to load and observe programs, SYS_ADMIN and SYS_RESOURCE for map
+      operations and the memlock accounting on older kernels, NET_ADMIN to
+      attach the network programs. Each is load-bearing; the enumerated add
+      list is the least-privilege form of this, not a shortcut past it.
+
+  - id: KSV-0023
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      The hostPath mounts are the kernel interfaces the agent works through:
+      /sys/kernel/debug and /sys/fs/bpf for tracing and pinned maps, /proc for
+      process attribution, and the kubelet seccomp root for the profiles it
+      generates. None of these has a projected or CSI equivalent - they are
+      kernel filesystems, not data.
+
+  - id: KSV-0030
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      The agent pins seccompProfile Unconfined on purpose, and the manifest
+      explains it at the field: the container runtimes' RuntimeDefault profile
+      gates bpf(2) and perf_event_open(2) on the caller's capability set, and
+      on a node started with --seccomp-default an unset profile silently
+      becomes RuntimeDefault and program load fails with EPERM on that cluster
+      only. Every other component in this repo runs RuntimeDefault.
+
+  - id: KSV-0104
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      The same Unconfined seccomp profile as KSV-0030, reported by the second
+      of Trivy's two overlapping seccomp checks.
+
+  - id: KSV-0105
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      runAsUser 0 is set explicitly rather than inherited, so that the image's
+      own non-root USER does not apply to this one container. Stating it is
+      what makes the agent's privilege visible in the manifest; the
+      requirement itself is justified under KSV-0012.
+
+  - id: KSV-0106
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      This rule permits only NET_BIND_SERVICE. The agent binds no privileged
+      port and does not ask for it; it needs the five eBPF capabilities listed
+      under KSV-0022 instead, so the rule can never be satisfied by any
+      capability set that lets the agent run.
+
+  - id: KSV-0118
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      Trivy reports a "default security context" for the agent because the pod
+      template does not set runAsNonRoot, which it cannot: the one container in
+      it runs as root by necessity. The container's own securityContext is
+      explicit about every field that matters, including readOnlyRootFilesystem
+      true and capabilities drop ALL.
+
+  - id: KSV-0121
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "charts/pahlevan-operator/templates/daemonset.yaml"
+      - "install.yaml"
+    statement: >-
+      The disallowed volume is the /proc hostPath, which is the same mount
+      justified under KSV-0023 and the one that makes host PIDs resolvable.
+
+  # --- Not the agent: narrow, specific, and not about privilege -----------
+
+  - id: KSV-0013
+    paths:
+      - "deploy/base/daemonset-agent.yaml"
+      - "deploy/base/deployment-operator.yaml"
+      - "deploy/dashboard/deployment.yaml"
+    statement: >-
+      These three files are kustomize bases, where the image tag is supplied by
+      whatever consumes the base - scripts/gen-install.sh for the released
+      install.yaml, the overlay's images.newTag for the dashboard, the chart's
+      values for Helm. hack/install/ci_test.go asserts both halves of that on
+      every run: TestTheKustomizeBaseIsNotPinned requires the bases to stay at
+      :latest so a version bump never has to touch them, and
+      TestInstallYAMLPinsTheRelease requires the artifact users actually apply
+      to carry the release tag. KSV-0013 still applies, unwaived, to
+      install.yaml and to the rendered chart, which are the files that reach a
+      cluster.
+
+  - id: DS-0026
+    paths:
+      - "Dockerfile"
+    statement: >-
+      HEALTHCHECK is a Docker-runtime instruction that Kubernetes ignores
+      entirely; liveness, readiness and startup probes are what the kubelet
+      acts on, and all three workloads declare them. The runtime stage is
+      distroless with no shell and no curl, so a HEALTHCHECK would also need a
+      second binary shipped solely to satisfy this check.
+
+  - id: KSV-01010
+    paths:
+      - "examples/observability/lgtm-stack.yaml"
+    statement: >-
+      A false positive on an embedded document. The ConfigMap holds a Grafana
+      datasource provisioning file, and Trivy's sensitive-content check matches
+      the literal YAML key "- key" inside the tracesToLogsV2 tag list, which is
+      Grafana's own schema for naming a resource attribute. The ConfigMap holds
+      no credential; the datasources it defines are unauthenticated in-cluster
+      HTTP endpoints.
