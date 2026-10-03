@@ -36,6 +36,35 @@ fi
 
 if printf '%s\n' "${tags}" | grep -qx -- "${version}"; then
   echo "check-release-tagged: ${version} is tagged"
+
+  # A tag is not the whole story. GitHub picks the "Latest" release by publish
+  # time, not by version, so two tags pushed close together can finish their
+  # builds out of order and leave an older release wearing the badge. That
+  # happened: v3.5.1 and v3.6.0 were tagged a minute apart, v3.5.1 published 32
+  # seconds later, and /releases/latest served v3.5.1 for hours. Anyone who
+  # clicked Latest, or pulled install.yaml from the latest URL, got the older
+  # version while every other surface said v3.6.0.
+  if [ "${use_remote}" = "1" ] && command -v gh >/dev/null 2>&1; then
+    latest="$(gh api repos/obsernetics/pahlevan/releases/latest --jq .tag_name 2>/dev/null || true)"
+    if [ -z "${latest}" ]; then
+      echo "check-release-tagged: could not read the latest release; skipping that check" >&2
+    elif [ "${latest}" != "${version}" ]; then
+      cat >&2 <<EOF
+check-release-tagged: ${version} is tagged, but GitHub serves ${latest} as the latest release.
+
+GitHub chooses "Latest" by publish time rather than by version, so a release
+whose build finished later wins even when its version is older. Everyone who
+clicks Latest, and everything that resolves /releases/latest, is being handed
+${latest} instead of ${version}.
+
+Fix it by marking the right release latest:
+
+    gh api -X PATCH "repos/obsernetics/pahlevan/releases/\$(gh api repos/obsernetics/pahlevan/releases --jq '.[]|select(.tag_name=="${version}")|.id')" -f make_latest=true
+EOF
+      exit 1
+    fi
+    echo "check-release-tagged: ${latest} is the latest release"
+  fi
   exit 0
 fi
 
