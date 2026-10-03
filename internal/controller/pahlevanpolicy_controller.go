@@ -130,6 +130,14 @@ func (r *PahlevanPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	span.SetAttributes(observability.AttrPhase.String(string(policy.Status.Phase)))
 
+	// Record, before any phase handler runs, that this policy asks for
+	// something Pahlevan does not enforce. It is deliberately not fatal: the
+	// rest of the policy is enforced and refusing to reconcile would make the
+	// file policy stop working too. The point is only that the status says so.
+	if err := r.reconcileIngressCondition(ctx, &policy); err != nil {
+		logger.Error(err, "Failed to record the ingress enforcement condition on the policy status")
+	}
+
 	// Main reconciliation logic
 	result, err = r.reconcilePolicy(ctx, &policy)
 	if err != nil {

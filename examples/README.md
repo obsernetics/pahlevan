@@ -78,7 +78,11 @@ kubectl get containerprofiles -w
 kubectl describe pahlevanpolicy simple-app-policy
 ```
 
-That last command is worth the habit. Anything in a policy that the data plane
-cannot enforce — an ingress rule, a CIDR too wide to enumerate, a capability
-name that does not exist — is reported on the status as a warning rather than
-being silently dropped. A policy with warnings is doing less than it says.
+That last command is worth the habit. An `ingressRules` entry is refused by the
+API server outright, because Pahlevan enforces network policy at the
+`socket_connect` LSM hook and has no inbound counterpart to it. The rest of what
+the data plane cannot enforce, such as a CIDR too wide to enumerate or a
+capability name that does not exist, is dropped at runtime and reported once in
+the log of whichever node the workload landed on. `pahlevan policy explain -f`
+names all of it against a file before anything is applied. A policy with
+warnings is doing less than it says.

@@ -30,11 +30,15 @@ const (
 	EventPhaseEnforcing      uint8 = 2
 )
 
-// Network directions
-const (
-	NetworkDirectionInbound  uint8 = 0
-	NetworkDirectionOutbound uint8 = 1
-)
+// There is no inbound network direction constant here on purpose.
+//
+// NetworkDirectionInbound = 0 and NetworkDirectionOutbound = 1 used to live at
+// this spot. Both were wrong and neither was referenced: the kernel writes
+// NetworkEvent.Direction as 0 for egress, which is the only direction
+// lsm/socket_connect can report, and reserves the high bits for the outcome
+// (DeniedDirection and its neighbours in manager.go). An exported constant
+// naming 0 "inbound" is an invitation to label every flow this system observes
+// as something it cannot see, which is exactly what internal/learner did.
 
 // File operations (based on common syscalls)
 const (

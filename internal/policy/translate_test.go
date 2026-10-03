@@ -421,7 +421,7 @@ func TestUnrepresentableNetworkInputs(t *testing.T) {
 	}{
 		{"ingress is out of scope",
 			policyv1alpha1.NetworkPolicy{IngressRules: []policyv1alpha1.NetworkRule{{}}},
-			"egress only"},
+			"outbound connections only"},
 		{"label-selected peers need an index this translation has no access to",
 			policyv1alpha1.NetworkPolicy{EgressRules: []policyv1alpha1.NetworkRule{{
 				Ports: []policyv1alpha1.NetworkPort{{Port: i32(80)}},

@@ -574,8 +574,20 @@ name is accepted with a warning saying so.</li>
         cidr: 10.43.12.7/32
     action: Allow
 </code></pre>
-<p>Enforcement happens at <code>lsm/socket_connect</code>, which governs egress only.
-<code>ingressRules</code> are accepted by the API and ignored, with a warning that says why.</p>
+<p>Enforcement happens at <code>lsm/socket_connect</code>, which governs egress only.</p>
+<p><code>ingressRules</code> is refused rather than accepted and ignored. The CRD carries a
+CEL rule that rejects the field, so a policy asking Pahlevan to enforce ingress
+fails on <code>kubectl apply</code> with the reason, at the one moment the author is
+certainly watching. There is no inbound counterpart to <code>socket_connect</code> this
+data plane could use: the hook sees a destination the workload chose, never a
+peer that chose the workload. Inbound traffic is the CNI's business, and
+<code>pahlevan netpol generate</code> writes a Kubernetes NetworkPolicy whose ingress rules
+are derived from observed traffic for the CNI to enforce.</p>
+<p>Two cases escape the refusal: a policy stored before the validation shipped, and
+a cluster whose API server does not evaluate CEL (the rule needs 1.25 or later;
+the supported floor is 1.24). Such a policy carries an <code>IngressEnforced</code>
+condition with status <code>False</code> and reason <code>IngressRulesRefused</code>, so
+<code>kubectl describe pahlevanpolicy</code> says the rules enforce nothing.</p>
 <p>The egress allow-set is a hash of the exact <code>(address, port)</code> pair, and
 everything that follows is a consequence of that:</p>
 <ul>
@@ -685,10 +697,11 @@ profile. <code>pahlevan profile list</code> and <code>pahlevan profile get</code
 pahlevan policy explain -f policy.yaml --strict
 </code></pre>
 <p>This translates the policy offline, with no cluster, prints what will be written
-into the kernel allow-sets, and names every part that will not be enforced: an
-ingress rule, a CIDR wider than a host, a glob, a DNS name, an over-wide port
-range, an expired exception, an inert field. It also rejects a field the CRD does
-not have, which the API server would otherwise prune without a word. <code>--strict</code>
+into the kernel allow-sets, and names every part that will not be enforced: a
+CIDR wider than a host, a glob, a DNS name, an over-wide port range, an expired
+exception, an inert field, and an ingress rule the API server will refuse. It
+also rejects a field the CRD does not have, which the API server would otherwise
+prune without a word. <code>--strict</code>
 exits non-zero, so a policy that quietly does less than it says can fail a CI
 gate rather than a production incident.</p>
 <p>In a running cluster the same warnings are logged once per policy generation by

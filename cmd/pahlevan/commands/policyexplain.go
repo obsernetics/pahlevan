@@ -186,8 +186,13 @@ func explainOne(out io.Writer, p *policyv1alpha1.PahlevanPolicy) int {
 	for _, w := range warnings {
 		fmt.Fprintf(out, "    - %s\n", w)
 	}
-	fmt.Fprintf(out, "\n  These are dropped silently at runtime and reported on the policy's\n"+
-		"  status. A policy with warnings is doing less than it says.\n\n")
+	// This used to claim every warning is reported on the policy's status.
+	// Only one is. The rest reach a log line on whichever node the workload
+	// landed on, which is why this command exists.
+	fmt.Fprintf(out, "\n  An ingress rule is refused by the API server and recorded on the\n"+
+		"  policy's status. Everything else above is dropped at runtime and said\n"+
+		"  once, in the node agent's log.\n"+
+		"  A policy with warnings is doing less than it says.\n\n")
 	return len(warnings)
 }
 

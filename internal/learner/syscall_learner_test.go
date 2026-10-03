@@ -149,7 +149,10 @@ func TestProcessNetworkEvent(t *testing.T) {
 		SrcPort:     12345,
 		DstPort:     53,
 		Protocol:    17, // udp
-		Direction:   1,  // egress
+		// 0 is what the kernel writes: lsm/socket_connect reports the governed
+		// process's own outbound connect(), and the high bits of this byte are
+		// the outcome, not the direction.
+		Direction: 0,
 	}
 	for i := 0; i < 60; i++ {
 		if err := sl.ProcessNetworkEvent(ev); err != nil {
@@ -412,10 +415,22 @@ func TestUtilityConversions(t *testing.T) {
 	if got := sl.protocolToString(99); got != "proto-99" {
 		t.Errorf("protocol unknown=%s", got)
 	}
-	if got := sl.directionToString(0); got != "ingress" {
+	// 0 is the only direction the kernel writes, and it is egress. Calling it
+	// "ingress" here was a flow record asserting an inbound connection that no
+	// hook in this system can see.
+	if got := sl.directionToString(0); got != "egress" {
 		t.Errorf("dir 0=%s", got)
 	}
-	if got := sl.directionToString(1); got != "egress" {
+	// The outcome bits are not part of the direction: a denied egress connect
+	// is still egress.
+	for _, outcome := range []uint8{ebpf.DeniedDirection, ebpf.WouldDenyDirection, ebpf.KilledDirection} {
+		if got := sl.directionToString(outcome); got != "egress" {
+			t.Errorf("dir %#x=%s, want egress", outcome, got)
+		}
+	}
+	// Anything in the low bits is a value this kernel never writes, and
+	// guessing a name for it is how "ingress" got here.
+	if got := sl.directionToString(1); got != "unknown" {
 		t.Errorf("dir 1=%s", got)
 	}
 	if got := sl.directionToString(9); got != "unknown" {

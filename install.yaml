@@ -442,7 +442,10 @@ spec:
                       type: object
                     type: array
                   ingressRules:
-                    description: IngressRules defines allowed ingress traffic
+                    description: |-
+                      IngressRules is refused by the API server rather than accepted and
+                      ignored: enforcement is the socket_connect LSM hook, which governs
+                      outbound connections only. Use a Kubernetes NetworkPolicy for ingress.
                     items:
                       description: NetworkRule defines a network access rule
                       properties:
@@ -639,6 +642,13 @@ spec:
                       type: object
                     type: array
                 type: object
+                x-kubernetes-validations:
+                - message: 'networkPolicy.ingressRules is not enforced and is refused
+                    rather than silently ignored: Pahlevan enforces network policy
+                    at the socket_connect LSM hook, which governs outbound connections
+                    only. Use a Kubernetes NetworkPolicy for ingress; pahlevan netpol
+                    generate writes one from observed traffic.'
+                  rule: '!has(self.ingressRules) || size(self.ingressRules) == 0'
               observabilityConfig:
                 description: ObservabilityConfig controls observability exports
                 properties:
@@ -1614,7 +1624,10 @@ spec:
                       type: object
                     type: array
                   ingressRules:
-                    description: IngressRules defines allowed ingress traffic
+                    description: |-
+                      IngressRules is refused by the API server rather than accepted and
+                      ignored: enforcement is the socket_connect LSM hook, which governs
+                      outbound connections only. Use a Kubernetes NetworkPolicy for ingress.
                     items:
                       description: NetworkRule defines a network access rule
                       properties:
@@ -1765,6 +1778,13 @@ spec:
                       type: object
                     type: array
                 type: object
+                x-kubernetes-validations:
+                - message: 'networkPolicy.ingressRules is not enforced and is refused
+                    rather than silently ignored: Pahlevan enforces network policy
+                    at the socket_connect LSM hook, which governs outbound connections
+                    only. Use a Kubernetes NetworkPolicy for ingress; pahlevan netpol
+                    generate writes one from observed traffic.'
+                  rule: '!has(self.ingressRules) || size(self.ingressRules) == 0'
               observabilityConfig:
                 description: ObservabilityConfig controls observability exports
                 properties:

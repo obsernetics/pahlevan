@@ -138,12 +138,12 @@ defines process-based filtering
 
 ## NetworkPolicy
 
-defines network enforcement policies
+defines network enforcement policies. Enforcement is one LSM hook, socket_connect, which runs on the outbound connect() of the workload being governed. The kernel has no inbound counterpart this data plane could use, so ingressRules is refused by the API server rather than accepted and dropped. A field that applies cleanly and protects nothing is worse than a field that does not exist, because the operator has no way to tell the two apart. Inbound traffic is the CNI's business: `pahlevan netpol generate` writes a Kubernetes NetworkPolicy whose ingress rules are derived from observed traffic, and the CNI enforces those.
 
 | Field | Type | Required | Description |
 |---|---|:---:|---|
 | `egressRules` | `[]NetworkRule` |  | EgressRules defines allowed egress traffic |
-| `ingressRules` | `[]NetworkRule` |  | IngressRules defines allowed ingress traffic |
+| `ingressRules` | `[]NetworkRule` |  | IngressRules is refused by the API server rather than accepted and ignored: enforcement is the socket_connect LSM hook, which governs outbound connections only. Use a Kubernetes NetworkPolicy for ingress. |
 | `defaultAction` | `PolicyAction` |  | **Inert** - redundant: default-deny is what enforcement is. DefaultAction specifies default action for unknown connections One of: `Allow`, `Deny`, `Alert`, `Audit`. |
 | `allowLoopback` | `bool` |  | AllowLoopback allows loopback traffic |
 | `allowDNS` | `bool` |  | AllowDNS allows DNS traffic |
@@ -412,9 +412,10 @@ The envelope is defined in `pkg/export/event.go` and mirrored on the wire by
     pahlevan policy explain -f policy.yaml [--strict]
 
 Translates the policy offline, prints what will be written into the kernel
-allow-sets, and names every part that will not be enforced - an ingress rule, a
-CIDR too wide to enumerate, a glob, an inert field. `--strict` exits non-zero,
-so a policy that quietly does less than it says can fail a CI gate.
+allow-sets, and names every part that will not be enforced - a CIDR too wide to
+enumerate, a glob, an inert field, and an ingress rule the API server will
+refuse. `--strict` exits non-zero, so a policy that quietly does less than it
+says can fail a CI gate.
 
 It also rejects a field the CRD does not have, which the API server would
 otherwise prune without an error.

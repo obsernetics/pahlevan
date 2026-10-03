@@ -177,6 +177,14 @@ ingress from A on 8080.</p>
 client of B that Pahlevan did not observe, including clients outside the
 cluster, is not in the rule and would be denied. The review says this once per
 derived rule. <code>--direction egress</code> leaves ingress out entirely.</p>
+<p>A derived ingress rule is still worth having, because the thing that enforces it
+is your CNI, not Pahlevan. Pahlevan enforces network policy at one LSM hook,
+<code>socket_connect</code>, which the kernel calls on the governed process's own outbound
+<code>connect()</code>. It never sees a connection arriving, so it cannot decide one. That
+is also why a <code>PahlevanPolicy</code> refuses <code>networkPolicy.ingressRules</code>: the field
+would have applied cleanly and protected nothing. The generated object here is a
+<code>networking.k8s.io/v1</code> NetworkPolicy, and its ingress rules mean exactly what
+they mean to whichever CNI is enforcing them.</p>
 <h2 id="other-things-the-review-tells-you">Other things the review tells you</h2>
 <ul>
 <li><strong>DNS.</strong> Name resolution happens before the connection the baseline

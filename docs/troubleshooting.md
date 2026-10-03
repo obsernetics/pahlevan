@@ -518,9 +518,13 @@ The egress allow-set is a hash of the exact `(address, port)` pair, and most
 surprises follow from that. `pahlevan policy explain -f policy.yaml` names every
 one of these against your file before you apply it.
 
-- **`ingressRules` are ignored.** The `lsm/socket_connect` hook governs egress
-  only. The warning reads `networkPolicy.ingressRules are ignored: the
-  socket_connect LSM hook governs egress only`.
+- **`ingressRules` is refused by the API server.** The `lsm/socket_connect` hook
+  governs egress only, so the CRD rejects the field instead of accepting it and
+  enforcing nothing. `kubectl apply` fails with `networkPolicy.ingressRules is
+  not enforced and is refused rather than silently ignored`. Use a Kubernetes
+  NetworkPolicy for ingress; `pahlevan netpol generate` writes one. A policy
+  stored before this validation shipped keeps its rules and carries an
+  `IngressEnforced` condition with status `False` saying they enforce nothing.
 - **A CIDR wider than a single host seeds nothing.** Only `/32` and `/128` are
   representable. `egressRules[0].ipBlock.cidr "10.0.0.0/8" covers 16777216
   addresses; the kernel allow-set is a hash of the exact destination and cannot

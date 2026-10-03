@@ -972,15 +972,24 @@ func (sl *SyscallLearner) protocolToString(proto uint8) string {
 	}
 }
 
+// directionOutcomeBits are the high bits of NetworkEvent.Direction that carry
+// the outcome rather than the direction: denied, would-deny and killed. See
+// ebpf.DeniedDirection and its neighbours.
+const directionOutcomeBits uint8 = 0xE0
+
+// directionToString names the direction of an observed flow.
+//
+// There is one direction. The only hook that produces these events is
+// lsm/socket_connect, which the kernel calls on the governed process's own
+// outbound connect(), and the kernel writes the direction byte as 0 with the
+// outcome in its high bits. This used to return "ingress" for 0, which labelled
+// every flow Pahlevan has ever observed as inbound - a flow record asserting an
+// inbound connection that no hook in this system can see.
 func (sl *SyscallLearner) directionToString(dir uint8) string {
-	switch dir {
-	case 0:
-		return "ingress"
-	case 1:
+	if dir&^directionOutcomeBits == 0 {
 		return "egress"
-	default:
-		return "unknown"
 	}
+	return "unknown"
 }
 
 func (sl *SyscallLearner) detectFileType(path string) string {

@@ -528,7 +528,21 @@ networkPolicy:
 ```
 
 Enforcement happens at `lsm/socket_connect`, which governs egress only.
-`ingressRules` are accepted by the API and ignored, with a warning that says why.
+
+`ingressRules` is refused rather than accepted and ignored. The CRD carries a
+CEL rule that rejects the field, so a policy asking Pahlevan to enforce ingress
+fails on `kubectl apply` with the reason, at the one moment the author is
+certainly watching. There is no inbound counterpart to `socket_connect` this
+data plane could use: the hook sees a destination the workload chose, never a
+peer that chose the workload. Inbound traffic is the CNI's business, and
+`pahlevan netpol generate` writes a Kubernetes NetworkPolicy whose ingress rules
+are derived from observed traffic for the CNI to enforce.
+
+Two cases escape the refusal: a policy stored before the validation shipped, and
+a cluster whose API server does not evaluate CEL (the rule needs 1.25 or later;
+the supported floor is 1.24). Such a policy carries an `IngressEnforced`
+condition with status `False` and reason `IngressRulesRefused`, so
+`kubectl describe pahlevanpolicy` says the rules enforce nothing.
 
 The egress allow-set is a hash of the exact `(address, port)` pair, and
 everything that follows is a consequence of that:
@@ -661,10 +675,11 @@ pahlevan policy explain -f policy.yaml --strict
 ```
 
 This translates the policy offline, with no cluster, prints what will be written
-into the kernel allow-sets, and names every part that will not be enforced: an
-ingress rule, a CIDR wider than a host, a glob, a DNS name, an over-wide port
-range, an expired exception, an inert field. It also rejects a field the CRD does
-not have, which the API server would otherwise prune without a word. `--strict`
+into the kernel allow-sets, and names every part that will not be enforced: a
+CIDR wider than a host, a glob, a DNS name, an over-wide port range, an expired
+exception, an inert field, and an ingress rule the API server will refuse. It
+also rejects a field the CRD does not have, which the API server would otherwise
+prune without a word. `--strict`
 exits non-zero, so a policy that quietly does less than it says can fail a CI
 gate rather than a production incident.
 
