@@ -64,9 +64,9 @@ type Peer struct {
 // Resolver maps a destination IP to a Kubernetes identity.
 //
 // This is the whole of what this package needs from an identity index, stated
-// as an interface so the generator can be driven from a fake and so
-// pkg/netidentity can satisfy it with a small adapter rather than this package
-// taking a dependency on informers.
+// as an interface so the generator can be driven from a table rather than this
+// package taking a dependency on informers. pkg/netpol/identity satisfies it
+// over pkg/netidentity, which is the index the command runs on.
 type Resolver interface {
 	// Lookup reports the identity of an address. The boolean is false when
 	// the address resolved to nothing at all, which is a different answer
@@ -77,11 +77,14 @@ type Resolver interface {
 }
 
 // Pod is one pod of the cluster, as the roster sees it.
+//
+// There is no address here. A roster answers "which pods would this label set
+// select", and an address answers "who is at 10.244.3.17" - a question
+// pkg/netidentity exists for and gets right across pod rescheduling, which a
+// pod listing cannot. See pkg/netpol/identity.
 type Pod struct {
 	Namespace string
 	Name      string
-	// IP is the pod address, used only by RosterResolver.
-	IP string
 	// Workload is the owning controller, spelled "Deployment/web". Two pods
 	// of the same workload are interchangeable to a policy: traffic to one
 	// replica is traffic to the workload, and a selector naming a single
@@ -225,53 +228,4 @@ func (x *rosterIndex) workloadSelector(ns, workload string) ([]Pod, Selector) {
 	}
 	x.cache[key] = r
 	return r.pods, r.sel
-}
-
-// RosterResolver resolves pod addresses from a pod listing.
-//
-// It is deliberately the least capable Resolver that is still true: it knows
-// only what a pod listing already said, so it resolves pod addresses and
-// nothing else. A Service ClusterIP, a node address and an internet address
-// all come back unresolved, which is the honest answer from this input and
-// which the generator turns into an ipBlock plus a finding rather than into a
-// selector it cannot justify.
-//
-// pkg/netidentity is the real index. This exists so the command is useful
-// before that lands, and afterwards as the fallback when the index is cold.
-type RosterResolver struct {
-	byIP map[string]Peer
-}
-
-// NewRosterResolver indexes a roster by pod IP.
-func NewRosterResolver(r Roster) *RosterResolver {
-	byIP := make(map[string]Peer, len(r))
-	for _, p := range r {
-		if p.IP == "" {
-			continue
-		}
-		// First writer wins. Two pods reported with the same address means the
-		// listing is stale - a terminated pod's address already reassigned -
-		// and taking the later one would attribute traffic to whichever pod
-		// the API server happened to return second.
-		if _, seen := byIP[p.IP]; seen {
-			continue
-		}
-		byIP[p.IP] = Peer{
-			Kind:      PeerPod,
-			Namespace: p.Namespace,
-			Name:      p.Name,
-			Workload:  p.Workload,
-			Labels:    p.Labels,
-		}
-	}
-	return &RosterResolver{byIP: byIP}
-}
-
-// Lookup satisfies Resolver.
-func (r *RosterResolver) Lookup(ip string) (Peer, bool) {
-	if r == nil {
-		return Peer{}, false
-	}
-	p, ok := r.byIP[ip]
-	return p, ok
 }

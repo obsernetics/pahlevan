@@ -16,19 +16,17 @@ import (
 // every other workload, which is the worst realistic shape: a namespace where
 // every selector has to be checked against every pod in it.
 func benchCluster(workloads, replicas, peers int) (Roster, []Observation, Resolver) {
-	var roster Roster
+	var c cluster
 	for w := 0; w < workloads; w++ {
 		for r := 0; r < replicas; r++ {
-			roster = append(roster, Pod{
-				Namespace: "prod",
-				Name:      fmt.Sprintf("w%d-%d", w, r),
-				IP:        fmt.Sprintf("10.%d.%d.%d", w/250, w%250, r+1),
-				Workload:  fmt.Sprintf("Deployment/w%d", w),
-				Labels:    map[string]string{"app": fmt.Sprintf("w%d", w), "tier": "back"},
-			})
+			c = append(c, pod("prod",
+				fmt.Sprintf("w%d-%d", w, r),
+				fmt.Sprintf("10.%d.%d.%d", w/250, w%250, r+1),
+				fmt.Sprintf("Deployment/w%d", w),
+				map[string]string{"app": fmt.Sprintf("w%d", w), "tier": "back"}))
 		}
 	}
-	resolver := NewRosterResolver(roster)
+	roster, resolver := c.roster(), c.peers()
 
 	obs := make([]Observation, 0, workloads)
 	for w := 0; w < workloads; w++ {
@@ -79,18 +77,6 @@ func BenchmarkSelectorFor(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if !selectorFor(want, all).OK() {
 			b.Fatal("the fixture's selectors are unusable, so this benchmark measures the refusal path")
-		}
-	}
-}
-
-func BenchmarkRosterResolverLookup(b *testing.B) {
-	roster, _, resolver := benchCluster(64, 3, 0)
-	ip := roster[len(roster)-1].IP
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, ok := resolver.Lookup(ip); !ok {
-			b.Fatal("miss")
 		}
 	}
 }

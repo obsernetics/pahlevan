@@ -94,6 +94,28 @@ func netpolCluster() []crclient.Object {
 	}
 }
 
+// netpolService fronts pods by a selector, and carries labels of its own that
+// are nothing like it. The two must never be confused: the selector names the
+// pods behind the Service, the labels name the Service.
+func netpolService(ns, name, clusterIP string, selector map[string]string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns, Name: name,
+			Labels: map[string]string{"app": name + "-chart", "team": "platform"},
+		},
+		Spec: corev1.ServiceSpec{ClusterIP: clusterIP, Selector: selector},
+	}
+}
+
+func netpolNode(name, ip string) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{"app": "kubelet"}},
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: ip},
+		}},
+	}
+}
+
 func runNetpol(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := NewNetpolCommand()
@@ -299,7 +321,7 @@ func TestBuildRosterResolvesTheWorkloadExactly(t *testing.T) {
 		netpolPod("prod", "solo", "10.0.0.9", "", nil),
 	)
 
-	roster, err := buildRoster(context.Background(), fc, nil)
+	roster, _, err := buildRoster(context.Background(), fc, nil)
 	require.NoError(t, err)
 	require.Len(t, roster, 2)
 
@@ -331,7 +353,7 @@ func TestBuildRosterMapsAJobToItsCronJob(t *testing.T) {
 	}
 	fc, _ := installFakeClients(t, job, pod)
 
-	roster, err := buildRoster(context.Background(), fc, nil)
+	roster, _, err := buildRoster(context.Background(), fc, nil)
 	require.NoError(t, err)
 	require.Len(t, roster, 1)
 	assert.Equal(t, "CronJob/backup", roster[0].Workload)
@@ -578,10 +600,10 @@ func TestNetpolReportsAWriteFailureRatherThanExitingZero(t *testing.T) {
 	// `pahlevan netpol -o yaml | head -1` closes the pipe. Swallowing that
 	// would report success for output nobody received.
 	fc, _ := installFakeClients(t, netpolCluster()...)
-	obs, roster, err := collectBaseline(context.Background(), fc, "prod", false)
+	obs, roster, peers, err := collectBaseline(context.Background(), fc, "prod", false)
 	require.NoError(t, err)
 	res := netpol.Generate(obs, netpol.Options{
-		Roster: roster, Resolver: netpol.NewRosterResolver(roster), Egress: true,
+		Roster: roster, Resolver: peers, Egress: true,
 	})
 
 	for _, format := range []string{"yaml", "report"} {
@@ -632,7 +654,52 @@ func TestBuildRosterFailsWhenPodsCannotBeListed(t *testing.T) {
 			},
 		}).Build()
 
-	_, err := buildRoster(context.Background(), c, nil)
+	_, _, err := buildRoster(context.Background(), c, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing pods")
+}
+
+// TestNetpolCommandResolvesThroughTheIdentityIndex is the end of the wire for
+// pkg/netpol/identity: the command lists Services and nodes, hands them to the
+// index, and the report says what the destinations were rather than printing
+// the addresses back.
+func TestNetpolCommandResolvesThroughTheIdentityIndex(t *testing.T) {
+	objs := append(netpolCluster(),
+		netpolService("prod", "api", "10.96.0.5", map[string]string{"app": "api"}),
+		netpolNode("worker-1", "192.168.1.10"),
+		netpolProfile("prod", "web-abc-1-net", "web-abc-1", "Deployment", "web",
+			"10.96.0.5:8080", "192.168.1.10:10250", "93.184.216.34:443"),
+	)
+	installFakeClients(t, objs...)
+
+	out, err := runNetpol(t, "-n", "prod", "--direction", "egress")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "cannot name a Service",
+		"a ClusterIP must become the pods behind the Service, not a literal address")
+	assert.Contains(t, out, "no node selector",
+		"a node address must be named as a node and kept as a literal address")
+	assert.Contains(t, out, "outside the cluster",
+		"a public address must be reported as off-cluster rather than as unresolvable")
+	assert.NotContains(t, out, "could not be resolved to any identity",
+		"every destination in this fixture is something the index can account for")
+}
+
+// The Service's selector is what the rule is written from. Its own labels
+// select whatever happens to carry them, which is not the set behind it and
+// is bounded by nothing the traffic showed.
+func TestNetpolCommandWritesAServiceRuleFromItsSelector(t *testing.T) {
+	objs := append(netpolCluster(),
+		netpolService("prod", "api", "10.96.0.5", map[string]string{"app": "api"}),
+		netpolProfile("prod", "web-abc-1-net", "web-abc-1", "Deployment", "web", "10.96.0.5:8080"),
+	)
+	installFakeClients(t, objs...)
+
+	out, err := runNetpol(t, "-n", "prod", "--direction", "egress", "-o", "yaml")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "app: api")
+	assert.NotContains(t, out, "api-chart", "a Service's own labels are not a pod selector")
+	assert.NotContains(t, out, "team: platform")
+	assert.NotContains(t, out, "10.96.0.5/32", "the ClusterIP is not where the traffic ends up")
 }

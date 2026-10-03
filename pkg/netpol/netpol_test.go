@@ -24,14 +24,66 @@ func (f fakeResolver) Lookup(ip string) (Peer, bool) {
 	return p, ok
 }
 
-func pod(ns, name, ip, workload string, labels map[string]string) Pod {
-	return Pod{Namespace: ns, Name: name, IP: ip, Workload: workload, Labels: labels}
+// podAddr is a roster pod and the address the pod listing gave it.
+//
+// The pairing lives in the test file because the generator has no use for an
+// address: a roster answers which pods a label set would select, and resolving
+// an address to an identity is pkg/netidentity's job - see pkg/netpol/identity
+// for the adapter the command runs on. What the generator needs is a table,
+// and this is what builds one.
+type podAddr struct {
+	pod Pod
+	ip  string
+}
+
+func pod(ns, name, ip, workload string, labels map[string]string) podAddr {
+	return podAddr{
+		pod: Pod{Namespace: ns, Name: name, Workload: workload, Labels: labels},
+		ip:  ip,
+	}
+}
+
+// cluster is a roster plus the addresses its pods answer at.
+type cluster []podAddr
+
+// roster is the pods the generator is allowed to reason about.
+func (c cluster) roster() Roster {
+	out := make(Roster, 0, len(c))
+	for _, e := range c {
+		out = append(out, e.pod)
+	}
+	return out
+}
+
+// peers resolves every pod address to its workload and nothing else, which is
+// the pod half of what pkg/netpol/identity does and the whole of what these
+// tests need to drive the pod-peer paths. First writer wins at a repeated
+// address: two pods at one address means the listing is stale, and taking the
+// later one would attribute traffic to whichever pod came back second.
+func (c cluster) peers() fakeResolver {
+	out := make(fakeResolver, len(c))
+	for _, e := range c {
+		if e.ip == "" {
+			continue
+		}
+		if _, seen := out[e.ip]; seen {
+			continue
+		}
+		out[e.ip] = Peer{
+			Kind:      PeerPod,
+			Namespace: e.pod.Namespace,
+			Name:      e.pod.Name,
+			Workload:  e.pod.Workload,
+			Labels:    e.pod.Labels,
+		}
+	}
+	return out
 }
 
 // twoTierRoster is a namespace with two workloads whose labels differ, which
 // is the case a selector can be derived for.
-func twoTierRoster() Roster {
-	return Roster{
+func twoTierRoster() cluster {
+	return cluster{
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web", "tier": "front"}),
 		pod("prod", "web-2", "10.0.0.2", "Deployment/web", map[string]string{"app": "web", "tier": "front"}),
 		pod("prod", "api-1", "10.0.1.1", "Deployment/api", map[string]string{"app": "api", "tier": "back"}),
@@ -45,7 +97,7 @@ func dest(ip string, port int32) Destination {
 // ---------------------------------------------------------------- selectors
 
 func TestSelectorNamesExactlyTheWorkload(t *testing.T) {
-	r := twoTierRoster()
+	r := twoTierRoster().roster()
 	s := selectorFor(r.WorkloadPods("prod", "Deployment/web"), r.InNamespace("prod"))
 
 	require.True(t, s.OK(), "web's labels do not appear on any other pod, so they name it exactly")
@@ -58,10 +110,10 @@ func TestSelectorRefusesWhenItWouldSelectUnobservedPods(t *testing.T) {
 	// The failure this package exists for. A debug deployment carries the same
 	// app label as the workload that was watched, so any selector derived from
 	// the watched pods also permits the debug pods. Nobody observed those.
-	r := Roster{
+	r := cluster{
 		pod("prod", "api-1", "10.0.1.1", "Deployment/api", map[string]string{"app": "api"}),
 		pod("prod", "debug-1", "10.0.1.9", "Deployment/api-debug", map[string]string{"app": "api", "debug": "true"}),
-	}
+	}.roster()
 	s := selectorFor(r.WorkloadPods("prod", "Deployment/api"), r.InNamespace("prod"))
 
 	assert.False(t, s.OK(), "app=api also selects the debug pod, so it must not be written into a policy")
@@ -74,10 +126,10 @@ func TestSelectorDropsLabelsAControllerRewrites(t *testing.T) {
 	// pod-template-hash is unique per ReplicaSet. A policy naming it selects
 	// the pods it was generated from and nothing after the next rollout, which
 	// is a policy that silently stops enforcing.
-	r := Roster{
+	r := cluster{
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web",
 			map[string]string{"app": "web", "pod-template-hash": "7c9b4"}),
-	}
+	}.roster()
 	s := selectorFor(r.WorkloadPods("prod", "Deployment/web"), r.InNamespace("prod"))
 
 	require.True(t, s.OK())
@@ -88,10 +140,10 @@ func TestSelectorDropsLabelsAControllerRewrites(t *testing.T) {
 func TestSelectorNeedsALabelSharedByEveryPod(t *testing.T) {
 	// A key on one replica and not the other cannot be in a selector that has
 	// to select both.
-	r := Roster{
+	r := cluster{
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"}),
 		pod("prod", "web-2", "10.0.0.2", "Deployment/web", map[string]string{"role": "web"}),
-	}
+	}.roster()
 	s := selectorFor(r.WorkloadPods("prod", "Deployment/web"), r.InNamespace("prod"))
 
 	assert.False(t, s.OK())
@@ -110,7 +162,7 @@ func TestSelectorOfNothingIsUnusable(t *testing.T) {
 // ----------------------------------------------------------------- roster
 
 func TestRosterLookups(t *testing.T) {
-	r := twoTierRoster()
+	r := twoTierRoster().roster()
 	assert.Len(t, r.InNamespace("prod"), 3)
 	assert.Empty(t, r.InNamespace("staging"))
 	assert.Len(t, r.WorkloadPods("prod", "Deployment/web"), 2)
@@ -123,35 +175,6 @@ func TestRosterLookups(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestRosterResolverKnowsOnlyPodAddresses(t *testing.T) {
-	res := NewRosterResolver(twoTierRoster())
-
-	p, ok := res.Lookup("10.0.1.1")
-	require.True(t, ok)
-	assert.Equal(t, PeerPod, p.Kind)
-	assert.Equal(t, "Deployment/api", p.Workload)
-
-	_, ok = res.Lookup("10.96.0.10")
-	assert.False(t, ok, "a Service address is not in a pod listing, so it must resolve to nothing")
-
-	var nilResolver *RosterResolver
-	_, ok = nilResolver.Lookup("10.0.0.1")
-	assert.False(t, ok)
-}
-
-func TestRosterResolverKeepsTheFirstPodAtAnAddress(t *testing.T) {
-	// Two pods at one address means the listing is stale. Taking the second
-	// would attribute traffic to whichever the API server returned last.
-	res := NewRosterResolver(Roster{
-		pod("prod", "first", "10.0.0.1", "Deployment/web", nil),
-		pod("prod", "second", "10.0.0.1", "Deployment/api", nil),
-		pod("prod", "no-ip", "", "Deployment/api", nil),
-	})
-	p, ok := res.Lookup("10.0.0.1")
-	require.True(t, ok)
-	assert.Equal(t, "first", p.Name)
-}
-
 // ---------------------------------------------------------------- generate
 
 func TestGenerateWritesWhatWasObserved(t *testing.T) {
@@ -162,7 +185,7 @@ func TestGenerateWritesWhatWasObserved(t *testing.T) {
 		Pods:         []string{"web-1", "web-2"},
 		Window:       50 * time.Minute,
 		Destinations: []Destination{dest("10.0.1.1", 8080), dest("10.0.1.1", 9090), dest("10.0.1.1", 53)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	require.Len(t, res.Policies, 1)
 	p := res.Policies[0]
@@ -188,7 +211,7 @@ func TestGenerateWritesWhatWasObserved(t *testing.T) {
 }
 
 func TestGenerateRefusesASelectorWiderThanTheEvidence(t *testing.T) {
-	r := Roster{
+	r := cluster{
 		pod("prod", "api-1", "10.0.1.1", "Deployment/api", map[string]string{"app": "api"}),
 		pod("prod", "debug-1", "10.0.1.9", "Deployment/api-debug", map[string]string{"app": "api", "debug": "true"}),
 	}
@@ -197,7 +220,7 @@ func TestGenerateRefusesASelectorWiderThanTheEvidence(t *testing.T) {
 		Workload:     "Deployment/api",
 		Pods:         []string{"api-1"},
 		Destinations: []Destination{dest("1.1.1.1", 443)},
-	}}, Options{Roster: r, Egress: true})
+	}}, Options{Roster: r.roster(), Egress: true})
 
 	assert.Empty(t, res.Policies, "no policy at all is the right answer when the selector cannot be justified")
 	require.Len(t, res.Subjects, 1)
@@ -210,7 +233,7 @@ func TestGenerateDropsAPeerItCannotName(t *testing.T) {
 	// The peer end of the same problem: the destination resolves to a pod
 	// whose workload shares its labels with another workload, so permitting
 	// it would permit the other one too.
-	r := Roster{
+	r := cluster{
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"}),
 		pod("prod", "api-1", "10.0.1.1", "Deployment/api", map[string]string{"app": "shared"}),
 		pod("prod", "other-1", "10.0.1.2", "Deployment/other", map[string]string{"app": "shared"}),
@@ -220,7 +243,7 @@ func TestGenerateDropsAPeerItCannotName(t *testing.T) {
 		Workload:     "Deployment/web",
 		Pods:         []string{"web-1"},
 		Destinations: []Destination{dest("10.0.1.1", 8080)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	assert.Empty(t, res.Policies,
 		"the only observed flow was dropped, so any policy would deny traffic that was seen happening")
@@ -237,7 +260,7 @@ func TestGenerateWritesUnresolvedAddressesAsIPBlocks(t *testing.T) {
 		Workload:     "Deployment/web",
 		Pods:         []string{"web-1", "web-2"},
 		Destinations: []Destination{dest("203.0.113.7", 443), dest("2001:db8::1", 443)},
-	}}, Options{Roster: r, Resolver: fakeResolver{}, Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: fakeResolver{}, Egress: true})
 
 	require.Len(t, res.Policies, 1)
 	blocks := []string{}
@@ -259,7 +282,7 @@ func TestGenerateSeparatesExternalFromUnresolved(t *testing.T) {
 		Pods:         []string{"web-1", "web-2"},
 		Destinations: []Destination{dest("203.0.113.7", 443)},
 	}}, Options{
-		Roster:   r,
+		Roster:   r.roster(),
 		Resolver: fakeResolver{"203.0.113.7": {Kind: PeerExternal, Name: "api.example.com"}},
 		Egress:   true,
 	})
@@ -273,7 +296,7 @@ func TestGenerateSeparatesExternalFromUnresolved(t *testing.T) {
 }
 
 func TestGenerateTurnsAServiceIntoThePodsBehindIt(t *testing.T) {
-	r := Roster{
+	r := cluster{
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"}),
 		pod("db", "pg-0", "10.0.2.1", "StatefulSet/pg", map[string]string{"app": "postgres"}),
 		pod("db", "pg-1", "10.0.2.2", "StatefulSet/pg", map[string]string{"app": "postgres"}),
@@ -284,7 +307,7 @@ func TestGenerateTurnsAServiceIntoThePodsBehindIt(t *testing.T) {
 		Pods:         []string{"web-1"},
 		Destinations: []Destination{dest("10.96.0.5", 5432)},
 	}}, Options{
-		Roster: r,
+		Roster: r.roster(),
 		Resolver: fakeResolver{"10.96.0.5": {
 			Kind: PeerService, Namespace: "db", Name: "postgres",
 			Labels: map[string]string{"app": "postgres"},
@@ -309,7 +332,7 @@ func TestGenerateDropsAServiceWithNoSelector(t *testing.T) {
 		Pods:         []string{"web-1", "web-2"},
 		Destinations: []Destination{dest("10.96.0.5", 5432)},
 	}}, Options{
-		Roster:   r,
+		Roster:   r.roster(),
 		Resolver: fakeResolver{"10.96.0.5": {Kind: PeerService, Namespace: "db", Name: "external"}},
 		Egress:   true,
 	})
@@ -326,7 +349,7 @@ func TestGenerateWarnsThatANodeCanOnlyBeAnAddress(t *testing.T) {
 		Pods:         []string{"web-1", "web-2"},
 		Destinations: []Destination{dest("192.168.1.10", 10250)},
 	}}, Options{
-		Roster:   r,
+		Roster:   r.roster(),
 		Resolver: fakeResolver{"192.168.1.10": {Kind: PeerNode, Name: "node-1"}},
 		Egress:   true,
 	})
@@ -344,7 +367,7 @@ func TestGenerateDerivesIngressFromTheOtherEndsEgress(t *testing.T) {
 			Destinations: []Destination{dest("10.0.1.1", 8080)},
 		},
 		{Namespace: "prod", Workload: "Deployment/api", Pods: []string{"api-1"}},
-	}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true, Ingress: true})
+	}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true, Ingress: true})
 
 	require.Len(t, res.Policies, 2)
 	api := res.Policies[0]
@@ -376,7 +399,7 @@ func TestGenerateOmitsIngressWhenNotAsked(t *testing.T) {
 			Namespace: "prod", Workload: "Deployment/api", Pods: []string{"api-1"},
 			Destinations: []Destination{dest("10.0.0.1", 80)},
 		},
-	}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	for _, p := range res.Policies {
 		assert.Empty(t, p.Spec.Ingress)
@@ -388,7 +411,7 @@ func TestGenerateEmitsDenyAllEgressForAWorkloadThatMadeNoConnection(t *testing.T
 	r := twoTierRoster()
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/api", Pods: []string{"api-1"},
-	}}, Options{Roster: r, Egress: true})
+	}}, Options{Roster: r.roster(), Egress: true})
 
 	require.Len(t, res.Policies, 1)
 	assert.Empty(t, res.Policies[0].Spec.Egress)
@@ -398,7 +421,7 @@ func TestGenerateEmitsDenyAllEgressForAWorkloadThatMadeNoConnection(t *testing.T
 
 func TestGenerateWarnsWhenDNSIsNotInTheBaseline(t *testing.T) {
 	r := twoTierRoster()
-	opts := Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true}
+	opts := Options{Roster: r.roster(), Resolver: r.peers(), Egress: true}
 
 	without := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
@@ -421,7 +444,7 @@ func TestGenerateSurfacesTheLearningWindowVerdict(t *testing.T) {
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
 		Window: time.Hour, Schedule: "0 0 1 * *",
 		Destinations: []Destination{dest("10.0.1.1", 53)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	require.Len(t, capped.Subjects, 1)
 	assert.True(t, capped.Subjects[0].Window.Capped())
@@ -431,7 +454,7 @@ func TestGenerateSurfacesTheLearningWindowVerdict(t *testing.T) {
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
 		Window:       30 * time.Minute,
 		Destinations: []Destination{dest("10.0.1.1", 53)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 	assert.Contains(t, findingsText(plain.Subjects[0]), "30m0s window")
 }
 
@@ -441,7 +464,7 @@ func TestGenerateReportsAnUnreadableSchedule(t *testing.T) {
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
 		Window: time.Hour, Schedule: "not a cron expression",
 		Destinations: []Destination{dest("10.0.1.1", 53)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	assert.NotEmpty(t, res.Subjects[0].CycleErr)
 	assert.Contains(t, findingsText(res.Subjects[0]), "was not checked against it")
@@ -452,7 +475,7 @@ func TestGenerateWarnsWhenOnlySomeReplicasWereWatched(t *testing.T) {
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1"},
 		Destinations: []Destination{dest("10.0.1.1", 53)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	assert.Contains(t, findingsText(res.Subjects[0]), "learned from 1 of this workload's 2 pods")
 }
@@ -473,11 +496,11 @@ func TestGenerateNeedsARoster(t *testing.T) {
 func TestGenerateFallsBackToTheNamedPodsWhenTheWorkloadIsGone(t *testing.T) {
 	// A bare pod, or one whose owner the agent could not determine. It is
 	// still a pod in the roster, so a selector can still be checked.
-	r := Roster{pod("prod", "loose", "10.0.9.9", "", map[string]string{"app": "loose"})}
+	r := cluster{pod("prod", "loose", "10.0.9.9", "", map[string]string{"app": "loose"})}
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Pod/loose", Pods: []string{"loose"},
 		Destinations: []Destination{dest("1.1.1.1", 53)},
-	}}, Options{Roster: r, Egress: true})
+	}}, Options{Roster: r.roster(), Egress: true})
 
 	require.Len(t, res.Policies, 1)
 	assert.Equal(t, map[string]string{"app": "loose"}, res.Policies[0].Spec.PodSelector.MatchLabels)
@@ -489,7 +512,7 @@ func TestGenerateDefaultsToBothDirections(t *testing.T) {
 		{Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
 			Destinations: []Destination{dest("10.0.1.1", 8080)}},
 		{Namespace: "prod", Workload: "Deployment/api", Pods: []string{"api-1"}},
-	}, Options{Roster: r, Resolver: NewRosterResolver(r)})
+	}, Options{Roster: r.roster(), Resolver: r.peers()})
 
 	require.Len(t, res.Policies, 2)
 	assert.NotEmpty(t, res.Policies[0].Spec.Ingress)
@@ -506,7 +529,7 @@ func TestGenerateIsDeterministic(t *testing.T) {
 		{Namespace: "prod", Workload: "Deployment/api", Pods: []string{"api-1"},
 			Destinations: []Destination{dest("198.51.100.4", 443)}},
 	}
-	opts := Options{Roster: r, Resolver: NewRosterResolver(r)}
+	opts := Options{Roster: r.roster(), Resolver: r.peers()}
 
 	first, err := Generate(obs, opts).YAML()
 	require.NoError(t, err)
@@ -523,7 +546,7 @@ func TestGenerateDoesNotDependOnTheOrderTheBaselineArrivedIn(t *testing.T) {
 	// diff of reordered rules, and a diff nobody can read is a review nobody
 	// does.
 	r := twoTierRoster()
-	opts := Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true}
+	opts := Options{Roster: r.roster(), Resolver: r.peers(), Egress: true}
 	dests := []Destination{dest("10.0.1.1", 9090), dest("203.0.113.7", 443), dest("198.51.100.4", 53)}
 
 	forward := Generate([]Observation{{
@@ -571,7 +594,7 @@ func TestGenerateKeepsProtocolsApart(t *testing.T) {
 			{IP: "10.0.1.1", Port: 53, Protocol: corev1.ProtocolUDP},
 			{IP: "10.0.1.1", Port: 53, Protocol: corev1.ProtocolTCP},
 		},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	require.Len(t, res.Policies, 1)
 	ports := res.Policies[0].Spec.Egress[0].Ports
@@ -594,7 +617,7 @@ func TestReportStatesTheConsequenceBeforeAnythingElse(t *testing.T) {
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
 		Destinations: []Destination{dest("10.0.1.1", 8080)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	var b bytes.Buffer
 	require.NoError(t, res.Report(&b))
@@ -612,14 +635,14 @@ func TestReportStatesTheConsequenceBeforeAnythingElse(t *testing.T) {
 }
 
 func TestReportNamesAWorkloadThatProducedNothing(t *testing.T) {
-	r := Roster{
+	r := cluster{
 		pod("prod", "api-1", "10.0.1.1", "Deployment/api", map[string]string{"app": "api"}),
 		pod("prod", "debug-1", "10.0.1.9", "Deployment/api-debug", map[string]string{"app": "api", "x": "y"}),
 	}
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/api", Pods: []string{"api-1"},
 		Destinations: []Destination{dest("1.1.1.1", 443)},
-	}}, Options{Roster: r, Egress: true})
+	}}, Options{Roster: r.roster(), Egress: true})
 
 	var b bytes.Buffer
 	require.NoError(t, res.Report(&b))
@@ -638,7 +661,7 @@ func TestYAMLRoundTrips(t *testing.T) {
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
 		Destinations: []Destination{dest("10.0.1.1", 8080)},
-	}}, Options{Roster: r, Resolver: NewRosterResolver(r), Egress: true})
+	}}, Options{Roster: r.roster(), Resolver: r.peers(), Egress: true})
 
 	out, err := res.YAML()
 	require.NoError(t, err)
@@ -713,7 +736,7 @@ func TestRenderChanges(t *testing.T) {
 func TestGenerateNamesABarePodPeer(t *testing.T) {
 	// A destination that resolved to a pod with no owner. It is its own unit,
 	// and it is also a pod that never comes back under that name.
-	r := Roster{
+	r := cluster{
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"}),
 		pod("prod", "loose", "10.0.9.9", "", map[string]string{"app": "loose"}),
 	}
@@ -721,7 +744,7 @@ func TestGenerateNamesABarePodPeer(t *testing.T) {
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1"},
 		Destinations: []Destination{dest("10.0.9.9", 8080)},
 	}}, Options{
-		Roster:   r,
+		Roster:   r.roster(),
 		Resolver: fakeResolver{"10.0.9.9": {Kind: PeerPod, Namespace: "prod", Name: "loose"}},
 		Egress:   true,
 	})
@@ -734,12 +757,12 @@ func TestGenerateNamesABarePodPeer(t *testing.T) {
 func TestGenerateDropsAPeerPodTheRosterHasNeverHeardOf(t *testing.T) {
 	// The identity index and the pod listing were read at different moments.
 	// A peer the roster does not have cannot be checked, so it is not written.
-	r := Roster{pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"})}
+	r := cluster{pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"})}
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1"},
 		Destinations: []Destination{dest("10.0.5.5", 8080), dest("1.1.1.1", 53)},
 	}}, Options{
-		Roster:   r,
+		Roster:   r.roster(),
 		Resolver: fakeResolver{"10.0.5.5": {Kind: PeerPod, Namespace: "prod", Name: "gone", Workload: "Deployment/gone"}},
 		Egress:   true,
 	})
@@ -757,7 +780,7 @@ func TestGenerateNotesAnUnnamedExternalAddress(t *testing.T) {
 		Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1", "web-2"},
 		Destinations: []Destination{dest("203.0.113.7", 443)},
 	}}, Options{
-		Roster:   r,
+		Roster:   r.roster(),
 		Resolver: fakeResolver{"203.0.113.7": {Kind: PeerExternal}},
 		Egress:   true,
 	})
@@ -768,7 +791,7 @@ func TestGenerateExplainsAVolatileOnlySelector(t *testing.T) {
 	// The only label distinguishing these two workloads is one a controller
 	// rewrites, so dropping it is what made the selector unsafe. Saying so is
 	// the difference between a refusal somebody can act on and one they cannot.
-	r := Roster{
+	r := cluster{
 		pod("prod", "api-1", "10.0.1.1", "Deployment/api",
 			map[string]string{"app": "api", "pod-template-hash": "aaa"}),
 		pod("prod", "api-canary", "10.0.1.2", "Deployment/api-canary",
@@ -777,7 +800,7 @@ func TestGenerateExplainsAVolatileOnlySelector(t *testing.T) {
 	res := Generate([]Observation{{
 		Namespace: "prod", Workload: "Deployment/api", Pods: []string{"api-1"},
 		Destinations: []Destination{dest("1.1.1.1", 443)},
-	}}, Options{Roster: r, Egress: true})
+	}}, Options{Roster: r.roster(), Egress: true})
 
 	assert.Empty(t, res.Policies)
 	text := findingsText(res.Subjects[0])
@@ -789,7 +812,7 @@ func TestGenerateIngressOnlySkipsWhatItCannotName(t *testing.T) {
 	// Ingress only, and three subjects: one whose selector is unusable, one
 	// whose peer is not a subject at all, and one that ends up with nothing to
 	// say. None of them may produce a policy built on a guess.
-	r := Roster{
+	r := cluster{
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"}),
 		pod("prod", "amb-1", "10.0.0.5", "Deployment/amb", map[string]string{"app": "shared"}),
 		pod("prod", "amb-2", "10.0.0.6", "Deployment/amb-2", map[string]string{"app": "shared"}),
@@ -803,7 +826,7 @@ func TestGenerateIngressOnlySkipsWhatItCannotName(t *testing.T) {
 		// nothing to hang an ingress rule on.
 		{Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1"},
 			Destinations: []Destination{dest("10.0.0.9", 80)}},
-	}, Options{Roster: r, Resolver: NewRosterResolver(r), Ingress: true})
+	}, Options{Roster: r.roster(), Resolver: r.peers(), Ingress: true})
 
 	assert.Empty(t, res.Policies)
 	assert.Equal(t, 2, res.Blocked())
@@ -812,14 +835,14 @@ func TestGenerateIngressOnlySkipsWhatItCannotName(t *testing.T) {
 }
 
 func TestGeneratedPoliciesAreOrderedByNamespaceThenName(t *testing.T) {
-	r := Roster{
+	r := cluster{
 		pod("staging", "web-1", "10.1.0.1", "Deployment/web", map[string]string{"app": "web"}),
 		pod("prod", "web-1", "10.0.0.1", "Deployment/web", map[string]string{"app": "web"}),
 	}
 	res := Generate([]Observation{
 		{Namespace: "staging", Workload: "Deployment/web", Pods: []string{"web-1"}},
 		{Namespace: "prod", Workload: "Deployment/web", Pods: []string{"web-1"}},
-	}, Options{Roster: r, Egress: true})
+	}, Options{Roster: r.roster(), Egress: true})
 
 	require.Len(t, res.Policies, 2)
 	assert.Equal(t, "prod", res.Policies[0].Namespace)
