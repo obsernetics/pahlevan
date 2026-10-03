@@ -53,6 +53,16 @@ type policyResolver struct {
 	declarations sync.Map
 }
 
+// Both halves are asserted here. DeclarationReporter is optional to the
+// controller, which type-asserts for it, so losing the method would silently
+// stop the declared* fields reaching any ContainerProfile - exactly the way
+// they never reached one before: a path everything described and nothing
+// called.
+var (
+	_ adaptive.PolicyResolver      = (*policyResolver)(nil)
+	_ adaptive.DeclarationReporter = (*policyResolver)(nil)
+)
+
 func newPolicyResolver(c client.Client, nodeName string) *policyResolver {
 	return &policyResolver{
 		c:         c,
@@ -171,6 +181,21 @@ func (r *policyResolver) DeclarationFor(containerID string) (policy.Declaration,
 	}
 	d, ok := v.(policy.Declaration)
 	return d, ok
+}
+
+// DeclaredFor satisfies adaptive.DeclarationReporter, which is what puts the
+// declared entries on the ContainerProfile the agent writes.
+//
+// The rendering is internal/policy's, the same one that seeded these entries
+// into the kernel allow-set. Rendering them a second time here would let the
+// two disagree, and a profile claiming a path was declared when the allow-set
+// entry was refused is worse than a profile that says nothing.
+func (r *policyResolver) DeclaredFor(containerID string) (adaptive.Declared, bool) {
+	d, ok := r.DeclarationFor(containerID)
+	if !ok {
+		return adaptive.Declared{}, false
+	}
+	return d.Report(), true
 }
 
 // noteWarnings logs each translation warning once per policy generation. A

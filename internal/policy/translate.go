@@ -740,9 +740,8 @@ func (d Declaration) mergeInto(o *adaptive.Overrides) {
 	o.AllowedDestinations = append(o.AllowedDestinations, d.Destinations...)
 }
 
-// ReportInto writes the declaration into the profile status fields that report
-// it, replacing whatever was there so a re-sync of an unchanged policy writes
-// an unchanged status.
+// Report renders the declaration as the lists a ContainerProfile status reports
+// it with.
 //
 // This exists so the entries the agent seeds into the kernel and the entries it
 // reports as declared come from one place. Two renderings of the same
@@ -750,17 +749,16 @@ func (d Declaration) mergeInto(o *adaptive.Overrides) {
 // profile that says a path was declared when the allow-set entry was actually
 // refused, which is worse than reporting nothing.
 //
+// internal/adaptive.Declared.ReportInto is what writes the result onto a
+// profile. The split is an import boundary, not a design choice: the agent
+// writes v1alpha1 ContainerProfiles from internal/adaptive, which sits below
+// this package.
+//
 // Every list is sorted, matching how the learned lists are written, so a status
 // update is driven by the declaration changing rather than by map iteration
 // order.
-func (d Declaration) ReportInto(status *policyv1beta1.ContainerProfileStatus) {
-	if status == nil {
-		return
-	}
-	status.DeclaredFiles = nil
-	status.DeclaredNetworkDestinations = nil
-	status.DeclaredExecutables = nil
-	status.DeclaredCapabilities = nil
+func (d Declaration) Report() adaptive.Declared {
+	var out adaptive.Declared
 
 	if len(d.Files) > 0 {
 		files := make([]string, 0, len(d.Files))
@@ -775,7 +773,7 @@ func (d Declaration) ReportInto(status *policyv1beta1.ContainerProfileStatus) {
 			files = append(files, f.Path)
 		}
 		sort.Strings(files)
-		status.DeclaredFiles = files
+		out.Files = files
 	}
 	if len(d.Destinations) > 0 {
 		dests := make([]string, 0, len(d.Destinations))
@@ -786,12 +784,12 @@ func (d Declaration) ReportInto(status *policyv1beta1.ContainerProfileStatus) {
 			dests = append(dests, net.JoinHostPort(dest.IP.String(), strconv.Itoa(int(dest.Port))))
 		}
 		sort.Strings(dests)
-		status.DeclaredNetworkDestinations = dests
+		out.Destinations = dests
 	}
 	if len(d.Executables) > 0 {
 		execs := append([]string(nil), d.Executables...)
 		sort.Strings(execs)
-		status.DeclaredExecutables = execs
+		out.Executables = execs
 	}
 	if len(d.Capabilities) > 0 {
 		caps := make([]string, 0, len(d.Capabilities))
@@ -802,8 +800,9 @@ func (d Declaration) ReportInto(status *policyv1beta1.ContainerProfileStatus) {
 			caps = append(caps, strings.TrimPrefix(ebpf.CapabilityName(c), "CAP_"))
 		}
 		sort.Strings(caps)
-		status.DeclaredCapabilities = caps
+		out.Capabilities = caps
 	}
+	return out
 }
 
 // TranslateSpec translates a v1beta1 spec, which is the hub version and the one

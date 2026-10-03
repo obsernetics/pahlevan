@@ -1118,6 +1118,16 @@ func (c *Controller) persistProfile(st *cgState) {
 	}
 	sort.Strings(caps)
 
+	// What the governing policy declared, if the resolver can say. These are
+	// the allow-set entries that are there because somebody asserted the
+	// workload would need them, and a profile that reported them next to the
+	// learned lists - or not at all - would lose the distinction between
+	// evidence and assertion that the two sets of fields exist for.
+	var declared Declared
+	if reporter, ok := c.policies.(DeclarationReporter); ok {
+		declared, _ = reporter.DeclaredFor(st.ref.ContainerID)
+	}
+
 	now := metav1.Now()
 	cp := &policyv1alpha1.ContainerProfile{
 		TypeMeta: metav1.TypeMeta{
@@ -1165,6 +1175,7 @@ func (c *Controller) persistProfile(st *cgState) {
 			DeniedCapabilities:         int32(st.denialsByKind[DenialKindCapability]),
 		},
 	}
+	declared.ReportInto(&cp.Status)
 	if st.phase == PhaseEnforcing && !st.enforcingSince.IsZero() {
 		cp.Status.EnforcingSince = &metav1.Time{Time: st.enforcingSince}
 	}
