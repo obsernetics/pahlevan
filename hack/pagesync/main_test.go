@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/obsernetics/pahlevan/hack/release/releasetest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,20 @@ var sampleScenarios = map[string]string{
 	"02-reverse-shell.sh":       "#!/usr/bin/env sh\n# Technique: T1059.004 and T1071\nexit 0\n",
 }
 
+// fixtureVersion is the fixture's released version: both its Makefile's
+// VERSION and its newest tag, so the two agree unless a test separates them.
+const fixtureVersion = "v2.0.0"
+
 // fixture builds a throwaway repository with the shape pagesync expects.
 func fixture(t *testing.T, page string) string {
 	t.Helper()
 	root := t.TempDir()
+	// The fixture is a repository whose declared version is also tagged, which
+	// is the ordinary state of a released project. pagesync advertises the
+	// newest tag, so a tree with no tags has published nothing, and a tree
+	// whose tag disagrees with its Makefile is the phantom-release state that
+	// TestTheSiteAdvertisesTheNewestTagNotTheMakefile covers on purpose.
+	releasetest.InitRepo(t, root, fixtureVersion)
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs", "benchmarks"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs", "assets"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "pages", "assets"), 0o755))
@@ -36,7 +47,7 @@ func fixture(t *testing.T, page string) string {
 		filepath.Join(root, "test", "benchmark", "scenarios", "benign", "01-ok.sh"),
 		[]byte("#!/usr/bin/env sh\nexit 0\n"), 0o600))
 	require.NoError(t, os.WriteFile(
-		filepath.Join(root, "Makefile"), []byte("VERSION?=v2.0.0\nIMG ?= x\n"), 0o600))
+		filepath.Join(root, "Makefile"), []byte("VERSION?="+fixtureVersion+"\nIMG ?= x\n"), 0o600))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "pages", "index.html"), []byte(page), 0o600))
 	// Identical by default, so a test that does not care about the asset does
@@ -190,12 +201,41 @@ func TestAnEmptyScenarioDirectoryIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "scenario directory")
 }
 
-func TestMissingVersionIsAnError(t *testing.T) {
+// A missing Makefile VERSION is no longer fatal: the advertised version comes
+// from the newest tag, and the Makefile is read only to report the gap. What is
+// fatal is having nothing published to advertise.
+func TestNoTagsIsAnError(t *testing.T) {
 	root := fixture(t, "<html></html>")
-	require.NoError(t, os.WriteFile(filepath.Join(root, "Makefile"), []byte("IMG ?= x\n"), 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(root, ".git")))
 	_, err := Collect(root)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "VERSION")
+	assert.Contains(t, err.Error(), "fetch-tags",
+		"the error has to name the CI fix, because a tagless checkout is the normal state of a shallow clone")
+}
+
+func TestAMissingMakefileVersionIsNotFatal(t *testing.T) {
+	root := fixture(t, "<html></html>")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "Makefile"), []byte("IMG ?= x\n"), 0o600))
+	facts, err := Collect(root)
+	require.NoError(t, err, "the Makefile is no longer the source of the advertised version")
+	assert.Equal(t, fixtureVersion, facts["version"])
+}
+
+// TestTheSiteAdvertisesTheNewestTagNotTheMakefile is the guard for the failure
+// that produced six phantom releases: a release PR moves VERSION, every
+// published surface follows it, and the tag never appears, so the site tells
+// people to pull an image that was never built.
+func TestTheSiteAdvertisesTheNewestTagNotTheMakefile(t *testing.T) {
+	root := fixture(t, "<html></html>")
+	// The release-merged-but-not-tagged state.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "Makefile"), []byte("VERSION?=v9.9.9\nIMG ?= x\n"), 0o600))
+
+	facts, err := Collect(root)
+	require.NoError(t, err)
+	assert.Equal(t, fixtureVersion, facts["version"],
+		"the site advertised the Makefile's version instead of the newest tag, so it is telling readers to pull an image that does not exist")
+	assert.NotEqual(t, "v9.9.9", facts["version"])
 }
 
 // The real repository must be in sync. This is the test that actually keeps the

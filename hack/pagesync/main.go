@@ -32,6 +32,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/obsernetics/pahlevan/hack/release"
 )
 
 func main() {
@@ -165,18 +167,48 @@ func collectScenarios(root string, facts map[string]string) error {
 
 // releaseVersion is the version the site tells people to pull.
 //
-// It comes from the Makefile rather than from `git describe`, because the site
-// is built in CI from a checkout that may have no tags, and a version that
-// silently becomes "v0.0.0-unknown" on the published page is worse than one
-// that is a commit behind.
+// It is the newest published tag, not the Makefile's VERSION.
+//
+// The Makefile is an intention: a release PR moves it, and from that moment the
+// changelog and the website announce the version. The tag is the fact. Those
+// drifted apart six times, because the release automation runs as a GitHub App
+// that cannot create tag refs, and every time the site told readers to
+// `docker pull` an image that was never built.
+//
+// Reading the tag makes a missing one merely stale instead of false: the site
+// keeps advertising the previous release until the tag appears. The earlier
+// worry about this, that a tagless CI checkout would publish a
+// "v0.0.0-unknown", is handled by release.Load failing loudly and naming the
+// `fetch-tags` fix rather than falling back to a placeholder.
 func releaseVersion(root string) (string, error) {
+	published, err := release.Load(release.GitTags(root))
+	if err != nil {
+		return "", err
+	}
+	latest := published.Latest()
+
+	// An intention ahead of the fact is the normal state between a release
+	// merge and its tag, so it is reported rather than failed: the dedicated
+	// release-tagged workflow is what escalates it. Failing here would turn
+	// every release merge into a red docs build until somebody tagged.
+	if declared, err := declaredVersion(root); err == nil && declared != latest {
+		fmt.Fprintf(os.Stderr,
+			"pagesync: the Makefile declares %s but the newest tag is %s, so the site will keep advertising %s until %s is tagged\n",
+			declared, latest, latest, declared)
+	}
+	return latest, nil
+}
+
+// declaredVersion is the version main intends to release. It is read only to
+// report the gap, never to publish.
+func declaredVersion(root string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
 	if err != nil {
 		return "", fmt.Errorf("reading the Makefile: %w", err)
 	}
 	m := regexp.MustCompile(`(?m)^VERSION\?=\s*(v[0-9][^\s]*)`).FindSubmatch(data)
 	if m == nil {
-		return "", fmt.Errorf("the Makefile has no VERSION?= line for pagesync to read")
+		return "", fmt.Errorf("the Makefile has no VERSION?= line")
 	}
 	return string(m[1]), nil
 }

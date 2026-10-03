@@ -142,6 +142,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           fetch-depth: 1
 
       - name: Setup Go
@@ -179,6 +180,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           fetch-depth: 1
 
       - name: Setup Go
@@ -206,6 +208,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           fetch-depth: 1
 
       - name: Setup Go
@@ -227,6 +230,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           fetch-depth: 1
 
       - name: Setup Go
@@ -320,6 +324,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           fetch-depth: 1
 
       - name: Setup Go
@@ -374,6 +379,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           # The build context is the working tree; .dockerignore excludes .git
           # entirely, so history would be fetched only to be thrown away.
           fetch-depth: 1
@@ -543,6 +549,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           fetch-depth: 1
 
       - name: Require every job to have succeeded
@@ -569,6 +576,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          fetch-tags: true
           # Was fetch-depth: 0. Nothing here reads git history: the only file
           # published is the committed install.yaml, and generate_release_notes
           # is computed by the GitHub API from the tag, not from a local log.

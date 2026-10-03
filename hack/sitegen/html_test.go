@@ -358,7 +358,7 @@ func TestAddingAReleaseMakesCheckFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	releases, err := ParseChangelog(root)
+	releases, err := ParseChangelog(root, publishedIn(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}

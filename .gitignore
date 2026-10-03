@@ -92,4 +92,6 @@ docs/assets/diagrams/*.png
 /pahlevan-dashboard
 /sitegen
 /scenario
+/pagesync
+/apidocs
 /actionlint
