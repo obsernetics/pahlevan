@@ -23,6 +23,17 @@ name: Tag the release
 # scripts/check-release-tagged.sh remains the backstop. If this workflow is
 # skipped, fails, or the dispatch does not take, that check opens an issue
 # within six hours.
+#
+# A third thing this handles: pagesync and sitegen deliberately hold back the
+# version in docs/packages.md and the changelog page while the tag does not
+# exist yet, so the site never advertises a release nobody can install. That
+# is correct right up until this job creates the tag - and then it is stale,
+# because nothing re-ran the generators against the tag that now exists.
+# v3.6.1 shipped with exactly that gap: the site kept saying v3.6.0 for ten
+# minutes after the real release was live, and fixing it took a second,
+# hand-written PR. This job closes that gap itself, in the same run that
+# creates the tag, so there is never a window where a human or another agent
+# has to notice and fix it.
 
 on:
   push:
@@ -95,6 +106,51 @@ jobs:
           git tag -a "${VERSION}" "${TARGET}" -m "${VERSION}"
           git push origin "${VERSION}"
           echo "pushed ${VERSION}"
+
+      - name: Install Go
+        if: steps.decide.outputs.needed == 'true'
+        uses: ./.github/actions/go-setup
+        with:
+          go-version: '1.26.7'
+
+      # pagesync and sitegen read the published tag set, which is why they
+      # could not write the real version before this job ran. The tag above
+      # was created and pushed in this same checkout, so it is already
+      # visible locally - no re-fetch needed.
+      - name: Sync the published site to the tag just created
+        if: steps.decide.outputs.needed == 'true'
+        env:
+          VERSION: ${{ steps.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          go run ./hack/pagesync -write
+          go run ./hack/sitegen -write
+          if git diff --quiet; then
+            echo "the site already matched ${VERSION}; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # The DCO check requires a sign-off trailer on every commit, and the
+          # message is written to a file so its blank lines cannot terminate
+          # this block scalar.
+          cat > /tmp/msg.txt <<MSG
+          docs: sync the published site to ${VERSION}
+
+          pagesync and sitegen hold back the version in docs/packages.md and
+          the changelog page's Current badge until the tag exists, so the
+          site never advertises an uninstallable release. The tag above now
+          exists, so this re-runs both generators against it in the same job
+          that created it, rather than leaving the site stale until someone
+          notices.
+
+          Signed-off-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
+          MSG
+          sed -i 's/^          //' /tmp/msg.txt
+          git commit -F /tmp/msg.txt
+          git push origin HEAD:main
+          echo "pushed the site sync for ${VERSION}"
 
       - name: Start the release
         if: steps.decide.outputs.needed == 'true'
