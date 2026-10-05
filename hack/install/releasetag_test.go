@@ -131,6 +131,42 @@ func TestTheReleaseVerifiesItsOwnSignature(t *testing.T) {
 	}
 }
 
+// TestTheReleaseTagWorkflowSyncsTheSiteAfterTagging guards the gap that shipped
+// v3.6.1: pagesync and sitegen hold back the real version in docs/packages.md
+// and the changelog page until the tag exists, which is correct right up until
+// this job creates one - and then the site is stale until something re-runs
+// them. v3.6.1 needed a second, hand-written PR to fix it. This job has to do
+// that itself, in the same run, with a signed-off commit or the DCO check
+// would reject it.
+func TestTheReleaseTagWorkflowSyncsTheSiteAfterTagging(t *testing.T) {
+	s := workflowText(t, "release-tag.yml")
+
+	if !strings.Contains(s, "hack/pagesync -write") {
+		t.Error("release-tag.yml does not re-run pagesync after tagging, so docs/packages.md stays on the " +
+			"previous version until someone notices and fixes it by hand")
+	}
+	if !strings.Contains(s, "hack/sitegen -write") {
+		t.Error("release-tag.yml does not re-run sitegen after tagging, so the changelog page's Current badge " +
+			"stays on the previous version until someone notices and fixes it by hand")
+	}
+	if !strings.Contains(s, "Signed-off-by: github-actions[bot]") {
+		t.Error("the site-sync commit this job pushes carries no DCO sign-off, so the dco.yml check would reject " +
+			"it the one time there is actually a diff to push")
+	}
+	if !strings.Contains(s, "git push origin HEAD:main") {
+		t.Error("release-tag.yml generates the site sync but never pushes it to main")
+	}
+
+	// The sync has to happen before the dispatch, or the Go toolchain needed
+	// to run the generators would race the release build for the same runner
+	// minute without buying anything: the dispatched run checks out the
+	// immutable tag, which the sync commit landing on main afterward cannot
+	// change.
+	if i, j := strings.Index(s, "hack/sitegen -write"), strings.Index(s, "gh workflow run ci.yml"); i < 0 || j < 0 || i > j {
+		t.Error("the site sync must run before the release dispatch, not after")
+	}
+}
+
 // TestTheTaggedCheckRemainsTheBackstop keeps the scheduled guard in place.
 // Automation that fails silently is worse than none, so the thing that notices
 // has to outlive the thing that acts.
