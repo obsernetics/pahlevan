@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-10-05
+
+### Changed
+
+- `sigs.k8s.io/controller-runtime` 0.25.1 -> 0.25.2, `github.com/google/cel-go`
+  0.29.2 -> 0.31.0 (the newest release still published under the
+  `github.com/google/cel-go` import path; 0.32.0 renamed the module to
+  `cel.dev/cel-go`), and the `go.opentelemetry.io/otel` family (core, metric,
+  trace, sdk, sdk/metric, sdk/log, log, and every otlp/stdout exporter) to
+  1.47.0, including `otel/log` and `otel/sdk/log` graduating from 0.22.0 to
+  that same 1.47.0 release.
+  `google.golang.org/grpc` stays at 1.83.2: 1.84.0 was tried first, but
+  `govulncheck` caught GO-2026-6443 (a server panic on a request with
+  neither an `:authority` nor a `Host` header) in it. 1.83.2 already carries
+  that fix; 1.84.0 does not, and the only release that does is a `-dev`
+  pseudo-version with no stable tag yet.
+
+### Fixed
+
+- Nothing behavioral. Test coverage added for the allow-set map helpers
+  (`allowMap`, `setAllowEntry`) and the network relax mask
+  (`SetNetworkRelax`, `NetworkRelaxString`) in `pkg/ebpf`, which write the
+  policy-exception and blanket loopback/DNS permission state and had no
+  tests of their own.
+
 ## [3.6.0] - 2026-10-01
 
 ### Added
@@ -695,7 +720,8 @@ observe and deny in the kernel.
   with the `PahlevanPolicy` CRD, a learning phase, enforcement modes, self-healing,
   observability, and Helm plus manifest based installation.
 
-[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.6.1...HEAD
+[3.6.1]: https://github.com/obsernetics/pahlevan/compare/v3.6.0...v3.6.1
 [3.6.0]: https://github.com/obsernetics/pahlevan/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/obsernetics/pahlevan/compare/v3.4.1...v3.5.0
 [3.0.0]: https://github.com/obsernetics/pahlevan/compare/v2.0.0...v3.0.0

@@ -176,6 +176,26 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.6.1</h3>
+                        <span class="release-date">2026-10-05</span>
+                        <span class="release-pill">In progress</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li><code>sigs.k8s.io/controller-runtime</code> 0.25.1 -&gt; 0.25.2, <code>github.com/google/cel-go</code> 0.29.2 -&gt; 0.31.0 (the newest release still published under the <code>github.com/google/cel-go</code> import path; 0.32.0 renamed the module to <code>cel.dev/cel-go</code>), and the <code>go.opentelemetry.io/otel</code> family (core, metric, trace, sdk, sdk/metric, sdk/log, log, and every otlp/stdout exporter) to 1.47.0, including <code>otel/log</code> and <code>otel/sdk/log</code> graduating from 0.22.0 to that same 1.47.0 release. <code>google.golang.org/grpc</code> stays at 1.83.2: 1.84.0 was tried first, but <code>govulncheck</code> caught GO-2026-6443 (a server panic on a request with neither an <code>:authority</code> nor a <code>Host</code> header) in it. 1.83.2 already carries that fix; 1.84.0 does not, and the only release that does is a <code>-dev</code> pseudo-version with no stable tag yet.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li>Nothing behavioral. Test coverage added for the allow-set map helpers (<code>allowMap</code>, <code>setAllowEntry</code>) and the network relax mask (<code>SetNetworkRelax</code>, <code>NetworkRelaxString</code>) in <code>pkg/ebpf</code>, which write the policy-exception and blanket loopback/DNS permission state and had no tests of their own.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.6.0</h3>
                         <span class="release-date">2026-10-01</span>
                         <span class="release-pill">Current</span>
