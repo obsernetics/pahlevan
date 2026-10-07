@@ -5,12 +5,12 @@ go 1.26.0
 toolchain go1.26.7
 
 require (
+	cel.dev/cel-go v0.32.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/cilium/ebpf v0.22.0
 	github.com/go-logr/logr v1.4.4
-	github.com/google/cel-go v0.31.0
 	github.com/muesli/termenv v0.16.0
 	github.com/onsi/ginkgo/v2 v2.33.0
 	github.com/onsi/gomega v1.44.0
