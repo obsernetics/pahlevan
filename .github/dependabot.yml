@@ -33,6 +33,23 @@ updates:
       prefix: "deps"
       include: "scope"
 
+  # The VM smoke test is its own Go module, so the entry above does not reach
+  # it. It sat on a golang.org/x/sys with a known advisory while the root module
+  # was four minors ahead, and nothing reported it because no updater was
+  # looking at this directory.
+  - package-ecosystem: "gomod"
+    directory: "/hack/vm/smoke"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    reviewers:
+      - "obsernetics/maintainers"
+    assignees:
+      - "obsernetics/maintainers"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"

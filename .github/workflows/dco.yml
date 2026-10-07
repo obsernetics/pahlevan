@@ -71,6 +71,39 @@ jobs:
               continue
             fi
 
+            # A bot's sign-off is matched on name only.
+            #
+            # Dependabot authors its commits as
+            #   dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>
+            # and signs them off as
+            #   Signed-off-by: dependabot[bot] <support@github.com>
+            #
+            # Those two addresses are both GitHub's and neither is choosable, so
+            # an exact match can never pass. Twelve dependency pull requests were
+            # closed unmerged because of it and the updates were then redone by
+            # hand in batch branches. The DCO exists so a human certifies the
+            # origin of their contribution; an account that cannot type has
+            # nothing to certify, and the trailer GitHub attaches is a formality.
+            # So for a [bot] author the name must still match, which keeps one
+            # bot from signing off another's work, and the address is not
+            # compared. Human commits are unaffected.
+            expected_match="${expected}"
+            case "${author_name}" in
+              *'[bot]')
+                expected_match="Signed-off-by: ${author_name} <"
+                if printf '%s\n' "${signoffs}" | grep -qiF "${expected_match}"; then
+                  echo "ok  ${sha}  ${subject}  (bot sign-off, name matched)"
+                  continue
+                fi
+                echo "::error::${sha} (${subject}): no Signed-off-by naming the bot author."
+                echo "  Expected a trailer beginning: ${expected_match}"
+                echo "  Found:"
+                printf '%s\n' "${signoffs}" | sed 's/^/    /'
+                failed=1
+                continue
+                ;;
+            esac
+
             # The author's own sign-off must be present. Extra trailers from
             # co-authors or from a rebase are fine and are ignored.
             if printf '%s\n' "${signoffs}" \
