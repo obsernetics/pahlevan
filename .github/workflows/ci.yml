@@ -578,11 +578,29 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build, push-image]
+    needs: [build, push-image, test, test-race]
     # Only on version tags (e.g. v0.1.0). Previously this ran on every push to
     # main and used the commit SHA as the tag, which GitHub rejects (40/64-hex
     # names are forbidden) - failing CI on every merge.
-    if: startsWith(github.ref, 'refs/tags/v')
+    #
+    # The test jobs are in `needs` because v3.6.1 published a signed release,
+    # with an image and an SBOM, while `test` and `test-race` were both red.
+    # Nothing was wrong with the release machinery: `release` simply did not
+    # depend on the tests, so it never saw them fail.
+    #
+    # The condition is spelled out rather than relying on the default, because
+    # the default is wrong in both directions here. A plain `needs` would SKIP
+    # the release when the tests are skipped, which they are for a change that
+    # touches no code, and a skipped release is indistinguishable from a
+    # successful one in the gate. So: build and the image must have succeeded,
+    # the tests must not have FAILED, and a skipped test is tolerated.
+    if: |
+      !cancelled() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.build.result == 'success' &&
+      needs.push-image.result == 'success' &&
+      needs.test.result != 'failure' &&
+      needs.test-race.result != 'failure'
     permissions:
       contents: write
       # Same reasoning as push-image: the release assets are signed against a
