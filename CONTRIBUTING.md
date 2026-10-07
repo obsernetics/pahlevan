@@ -75,6 +75,15 @@ every pull request and fails if any commit in the branch is missing a
 `Signed-off-by` trailer matching its author. The check output names the offending
 commits.
 
+A commit authored by a `[bot]` account is matched on name alone. Dependabot
+authors its commits from one GitHub address and signs them off from another, and
+neither is choosable, so an exact comparison could never pass: twelve dependency
+pull requests were closed unmerged over it and the updates redone by hand. The
+name must still match, so one bot cannot sign off for another, and commits
+authored by people are compared exactly as before. The DCO is a person
+certifying the origin of their own work, and an account that cannot type has
+nothing to certify.
+
 ## Setting up
 
 You need:
