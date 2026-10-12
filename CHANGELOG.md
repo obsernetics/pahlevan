@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-10-12
+
+### Changed
+
+- Go toolchain 1.26.7 -> 1.26.9. `govulncheck` caught 11 reachable
+  standard-library vulnerabilities fixed in that release: GO-2026-6600 and
+  GO-2026-6599 in `html/template` (used by the dashboard's templates and by
+  `envtest` in the integration test harness), plus others in `net/http`,
+  `net/textproto`, `crypto/tls` and `net/http/httputil`. `golang.org/x/net`
+  0.59.0 -> 0.61.0, which carries its own fix in the same scan.
+  `github.com/onsi/ginkgo/v2` 2.33.0 -> 2.33.1, `github.com/prometheus/client_golang`
+  1.24.1 -> 1.25.0, `golang.org/x/mod` 0.41.0 -> 0.42.0 and `golang.org/x/term`
+  0.46.0 -> 0.47.0, the other direct dependencies with a newer release
+  available. `google.golang.org/grpc` stays at 1.83.2 for the reason already
+  recorded in the 3.6.1 entry below: no stable release newer than 1.84.0
+  exists yet, and 1.84.0 still lacks the GO-2026-6443 fix that 1.83.2 already
+  carries.
+
+### Fixed
+
+- Nothing else behavioral. Test coverage added in `pkg/ebpf` for the policy
+  conversion helpers (`convertToEBPFPolicy`, `convertToEBPFNetworkPolicy`,
+  `convertToEBPFFilePolicy`), including their silent truncation behaviour at
+  the fixed-size eBPF array boundaries (256 destinations, 64 ports, 1024
+  paths, 63-byte path names), and for the `FileEvent`/`CapabilityEvent` flag
+  accessors (`IsWrite`, `IsDenied`, `WouldDeny`, `WasKilled`), which had no
+  tests of their own outside `ProcessEvent`. Coverage for the package:
+  54.3% -> 57.8%.
+
 ## [3.6.1] - 2026-10-05
 
 ### Changed
@@ -720,7 +749,8 @@ observe and deny in the kernel.
   with the `PahlevanPolicy` CRD, a learning phase, enforcement modes, self-healing,
   observability, and Helm plus manifest based installation.
 
-[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.6.1...HEAD
+[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.6.2...HEAD
+[3.6.2]: https://github.com/obsernetics/pahlevan/compare/v3.6.1...v3.6.2
 [3.6.1]: https://github.com/obsernetics/pahlevan/compare/v3.6.0...v3.6.1
 [3.6.0]: https://github.com/obsernetics/pahlevan/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/obsernetics/pahlevan/compare/v3.4.1...v3.5.0
