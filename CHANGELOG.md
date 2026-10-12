@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.2] - 2026-10-12
+
+### Fixed
+
+- Nothing behavioral. Test coverage added in `pkg/ebpf` for the policy
+  conversion helpers (`convertToEBPFPolicy`, `convertToEBPFNetworkPolicy`,
+  `convertToEBPFFilePolicy`), including their silent truncation behaviour at
+  the fixed-size eBPF array boundaries (256 destinations, 64 ports, 1024
+  paths, 63-byte path names), and for the `FileEvent`/`CapabilityEvent` flag
+  accessors (`IsWrite`, `IsDenied`, `WouldDeny`, `WasKilled`), which had no
+  tests of their own outside `ProcessEvent`. Coverage for the package:
+  54.3% -> 57.8%.
+
 ## [3.6.1] - 2026-10-05
 
 ### Changed
@@ -720,7 +733,8 @@ observe and deny in the kernel.
   with the `PahlevanPolicy` CRD, a learning phase, enforcement modes, self-healing,
   observability, and Helm plus manifest based installation.
 
-[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.6.1...HEAD
+[Unreleased]: https://github.com/obsernetics/pahlevan/compare/v3.6.2...HEAD
+[3.6.2]: https://github.com/obsernetics/pahlevan/compare/v3.6.1...v3.6.2
 [3.6.1]: https://github.com/obsernetics/pahlevan/compare/v3.6.0...v3.6.1
 [3.6.0]: https://github.com/obsernetics/pahlevan/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/obsernetics/pahlevan/compare/v3.4.1...v3.5.0

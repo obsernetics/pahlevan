@@ -176,6 +176,20 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.6.2</h3>
+                        <span class="release-date">2026-10-12</span>
+                        <span class="release-pill">In progress</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li>Nothing behavioral. Test coverage added in <code>pkg/ebpf</code> for the policy conversion helpers (<code>convertToEBPFPolicy</code>, <code>convertToEBPFNetworkPolicy</code>, <code>convertToEBPFFilePolicy</code>), including their silent truncation behaviour at the fixed-size eBPF array boundaries (256 destinations, 64 ports, 1024 paths, 63-byte path names), and for the <code>FileEvent</code>/<code>CapabilityEvent</code> flag accessors (<code>IsWrite</code>, <code>IsDenied</code>, <code>WouldDeny</code>, <code>WasKilled</code>), which had no tests of their own outside <code>ProcessEvent</code>. Coverage for the package: 54.3% -&gt; 57.8%.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.6.1</h3>
                         <span class="release-date">2026-10-05</span>
                         <span class="release-pill">Current</span>
