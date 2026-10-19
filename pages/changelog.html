@@ -176,6 +176,21 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.6.3</h3>
+                        <span class="release-date">2026-10-19</span>
+                        <span class="release-pill">In progress</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li>Nothing behavioral. <code>GovernCredentials</code>, <code>UngovernCredentials</code>, <code>SetCredKillDuringExecve</code> and the unexported <code>setCredEnabled</code> in <code>pkg/ebpf</code> write the credential-escalation governance and config state the <code>commit_creds</code> kprobe reads on every privilege change, and had no tests of their own - the same gap already closed for the allow-set writers in 3.6.1. The equivalent generic-kprobe governance helpers (<code>GovernKernelProbes</code>, <code>UngovernKernelProbes</code>, <code>setKernelProbesEnabledLocked</code>) and <code>checkMapCompatible</code>, which refuses to adopt a pinned map whose size no longer matches this binary's <code>MapSizing</code>, were likewise untested. All eight now have unit tests covering the nil-collection and missing-named-map error paths, the idempotent-revoke case, and (for <code>checkMapCompatible</code>) every mismatched dimension: type, key size, value size and entry count. <code>BenchmarkGovernCredentials</code> and <code>BenchmarkCheckMapCompatible</code> cover the two that write or read a map on every governance call, alongside the existing <code>BenchmarkSetAllowEntry</code> for comparison. Coverage for the package: 57.8% -&gt; 61.6%.</li>
+                            <li>No dependency changes this week: <code>google.golang.org/grpc</code> was tried at 1.84.0 again and reverted, because the version pin recorded in 3.6.1 still holds - 1.84.0 does not carry the GO-2026-6443 / CVE-2026-84445 fix that 1.83.2 already has, confirmed against the advisory's affected range (1.84.0-dev through a pre-1.85.0 dev pseudo-version). Every other direct dependency is already at its newest release.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.6.2</h3>
                         <span class="release-date">2026-10-12</span>
                         <span class="release-pill">Current</span>
