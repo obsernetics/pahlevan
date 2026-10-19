@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.3] - 2026-10-19
+
+### Fixed
+
+- Nothing behavioral. `GovernCredentials`, `UngovernCredentials`,
+  `SetCredKillDuringExecve` and the unexported `setCredEnabled` in `pkg/ebpf`
+  write the credential-escalation governance and config state the
+  `commit_creds` kprobe reads on every privilege change, and had no tests of
+  their own - the same gap already closed for the allow-set writers in 3.6.1.
+  The equivalent generic-kprobe governance helpers (`GovernKernelProbes`,
+  `UngovernKernelProbes`, `setKernelProbesEnabledLocked`) and
+  `checkMapCompatible`, which refuses to adopt a pinned map whose size no
+  longer matches this binary's `MapSizing`, were likewise untested. All eight
+  now have unit tests covering the nil-collection and missing-named-map error
+  paths, the idempotent-revoke case, and (for `checkMapCompatible`) every
+  mismatched dimension: type, key size, value size and entry count.
+  `BenchmarkGovernCredentials` and `BenchmarkCheckMapCompatible` cover the two
+  that write or read a map on every governance call, alongside the existing
+  `BenchmarkSetAllowEntry` for comparison. Coverage for the package:
+  57.8% -> 61.6%.
+- No dependency changes this week: `google.golang.org/grpc` was tried at
+  1.84.0 again and reverted, because the version pin recorded in 3.6.1 still
+  holds - 1.84.0 does not carry the GO-2026-6443 / CVE-2026-84445 fix that
+  1.83.2 already has, confirmed against the advisory's affected range
+  (1.84.0-dev through a pre-1.85.0 dev pseudo-version). Every other direct
+  dependency is already at its newest release.
+
 ## [3.6.2] - 2026-10-12
 
 ### Changed
