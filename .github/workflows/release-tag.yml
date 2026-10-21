@@ -111,7 +111,7 @@ jobs:
         if: steps.decide.outputs.needed == 'true'
         uses: ./.github/actions/go-setup
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
 
       # pagesync and sitegen read the published tag set, which is why they
       # could not write the real version before this job ran. The tag above
