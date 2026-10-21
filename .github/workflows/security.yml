@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.26.9"
+  GO_VERSION: "1.26.10"
 
 # The two Trivy scans, govulncheck and CodeQL share no state and produce four
 # independent reports, so they are four jobs rather than four steps: the wall
