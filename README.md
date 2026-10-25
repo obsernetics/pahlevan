@@ -56,7 +56,7 @@ baseline, so they fire in a workload that has learned the same operation:
   ([CVE-2026-109618](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
   and
   [CVE-2026-109619](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)),
-  and of the Plex2Shell chain ([CVE-2026-96652, -96654, -96655, -96656](https://zmain.info/blog/plex2shell), all
+  and of the Plex2Shell chain ([CVE-2026-96652, -96654, -96655, -96656](https://nvd.nist.gov/vuln/detail/CVE-2026-96656), all
   in CISA KEV since 2026-10-20) running its first command.
 - **A server-side script written into a directory a web server serves**, which
   is how the PTC Windchill campaign
@@ -67,7 +67,7 @@ Both are observation. They are computed after the kernel has decided, so
 neither blocks anything. What blocks is the learned allow-set, and a deny there
 is a statement about this workload rather than about any CVE: a miner, a proxy
 binary, a token read or a module dropped where a server loads one
-([CVE-2026-96656](https://zmain.info/blog/plex2shell)) is refused because the
+([CVE-2026-96656](https://nvd.nist.gov/vuln/detail/CVE-2026-96656)) is refused because the
 workload was never seen to do it, and would not be refused in a workload that
 had been.
 
