@@ -5,8 +5,15 @@ package export
 type Filter struct {
 	// Types selects the event types to export. Empty means every type.
 	Types map[EventType]bool
-	// DenialsOnly keeps only in-kernel denials. Exporting every observation is
-	// noisy on a busy node; enforcement events are the interesting ones.
+	// DenialsOnly keeps in-kernel denials and events carrying a
+	// post-exploitation signal. Exporting every observation is noisy on a busy
+	// node; those two are the interesting ones.
+	//
+	// The signals are kept because the alternative is to publish nothing at
+	// all on the configurations where they matter most. Enforcement needs the
+	// BPF LSM, so on a kernel without it no event is ever a denial, and a
+	// DenialsOnly stream is empty however hostile the node gets. A php-fpm
+	// worker that just execed sh belongs in that stream.
 	DenialsOnly bool
 }
 
@@ -47,7 +54,7 @@ func (f Filter) Allow(e *Event) bool {
 	if !f.AllowType(e.Type) {
 		return false
 	}
-	if f.DenialsOnly && !e.Denied() {
+	if f.DenialsOnly && !e.Denied() && !e.Signalled() {
 		return false
 	}
 	return true

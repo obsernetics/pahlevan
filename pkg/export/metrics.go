@@ -23,6 +23,16 @@ var (
 		Name: "pahlevan_export_dropped_total",
 		Help: "Total number of events dropped instead of exported, by reason.",
 	}, []string{"reason"})
+
+	// signalsTotal counts post-exploitation signals recognised on the export
+	// path, by signal. Separate from eventsTotal because the question an
+	// operator asks of it is different: eventsTotal is volume, this is "did a
+	// server process spawn a shell on this node today", and the answer is
+	// wanted whether or not enforcement was on to deny it.
+	signalsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pahlevan_postex_signals_total",
+		Help: "Total number of post-exploitation signals recognised, by signal.",
+	}, []string{"signal"})
 )
 
 // Drop reasons used as the label value of pahlevan_export_dropped_total.
@@ -40,6 +50,7 @@ func RegisterMetrics() {
 	metricsOnce.Do(func() {
 		register(eventsTotal)
 		register(droppedTotal)
+		register(signalsTotal)
 	})
 }
 
@@ -56,6 +67,10 @@ func register(c prometheus.Collector) {
 
 func countExported(t EventType) {
 	eventsTotal.WithLabelValues(string(t)).Inc()
+}
+
+func countSignal(s Signal) {
+	signalsTotal.WithLabelValues(string(s)).Inc()
 }
 
 func countDropped(reason string, n int) {

@@ -53,9 +53,14 @@ type OTLPOptions struct {
 	Resource *resource.Resource
 	// Timeout bounds one export. Zero uses the OTel default.
 	Timeout time.Duration
-	// DenialsOnly emits only in-kernel denials. Observations are high volume
-	// and are usually better served by the metrics, so this defaults on at the
-	// flag layer rather than here.
+	// DenialsOnly emits in-kernel denials and events carrying a
+	// post-exploitation signal. Plain observations are high volume and are
+	// usually better served by the metrics, so this defaults on at the flag
+	// layer rather than here.
+	//
+	// The signals are not dropped by it for the reason given on Filter: with
+	// no BPF LSM there are no denials, and a collector that received nothing
+	// from such a node would be reporting silence as safety.
 	DenialsOnly bool
 }
 
@@ -134,7 +139,7 @@ func (e *OTLPExporter) Export(ctx context.Context, events []*Event) error {
 		if ev == nil {
 			continue
 		}
-		if e.opts.DenialsOnly && !ev.Denied() {
+		if e.opts.DenialsOnly && !ev.Denied() && !ev.Signalled() {
 			continue
 		}
 		e.logger.Emit(ctx, e.record(ev))
@@ -198,6 +203,16 @@ func (e *OTLPExporter) record(ev *Event) otellog.Record {
 	addStr("pahlevan.action", string(ev.Action))
 	add("pahlevan.denied", attribute.BoolValue(ev.Denied()))
 	addStr("pahlevan.cgroup.id", fmt.Sprint(ev.CgroupID))
+	// Emitted as a string slice rather than a joined string so a collector can
+	// filter on one signal without a substring match, which is the query
+	// somebody writes at the worst possible moment.
+	if ev.Signalled() {
+		names := make([]string, 0, len(ev.Signals))
+		for _, s := range ev.Signals {
+			names = append(names, string(s))
+		}
+		add("pahlevan.signals", attribute.StringSliceValue(names))
+	}
 
 	// Process, using the semantic-convention names so a Grafana panel written
 	// against any OTel-instrumented workload lines up with these.
@@ -284,6 +299,14 @@ func severityOf(ev *Event) otellog.Severity {
 		return otellog.SeverityError
 	}
 	if ev.Denied() {
+		return otellog.SeverityWarn
+	}
+	// A post-exploitation signal is graded with a denial rather than with an
+	// observation, on the same reasoning as the breakout above: the shape does
+	// not become less hostile because enforcement was not switched on, and at
+	// DEBUG it is one line inside a full behavioural trace, which is to say it
+	// is dropped by every sampling rule a collector has.
+	if ev.Signalled() {
 		return otellog.SeverityWarn
 	}
 	return otellog.SeverityDebug
