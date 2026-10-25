@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	releases "github.com/obsernetics/pahlevan/hack/release"
 )
 
 // The changelog page carries one article per release, written as prose. Unlike
@@ -116,10 +118,35 @@ func TestTheCurrentBadgeIsOnTheNewestRelease(t *testing.T) {
 	}
 	badged := all[len(all)-1][1]
 
-	newest := releasedVersions(t)[0]
+	// The badge belongs on the newest version a reader can actually install,
+	// which is the newest changelog entry that is also TAGGED.
+	//
+	// It is not simply the newest changelog entry. A release pull request adds
+	// its section before the tag exists, and sitegen deliberately renders an
+	// untagged version as "In progress" rather than badging it, so that the
+	// site never points at something with no release behind it. Comparing
+	// against the newest section regardless made every release pull request
+	// fail this test, which is part of why v3.6.2 and v3.6.3 were tagged and
+	// never published.
+	published, perr := releases.Load(releases.GitTags("../.."))
+	if perr != nil {
+		t.Skipf("this checkout has no tags, so which version is installable cannot be decided: %v", perr)
+	}
+
+	var newest string
+	for _, v := range releasedVersions(t) {
+		if published.Has(v) {
+			newest = v
+			break
+		}
+	}
+	if newest == "" {
+		t.Skip("no version in CHANGELOG.md is tagged yet, so nothing is installable to badge")
+	}
+
 	if badged != newest {
-		t.Errorf("the site badges %s as the current release, but the newest release in CHANGELOG.md is %s.\n"+
-			"Readers are being pointed at an older version than the one that shipped.", badged, newest)
+		t.Errorf("the site badges %s as the current release, but the newest installable release is %s.\n"+
+			"Readers are being pointed at a version other than the newest one that actually shipped.", badged, newest)
 	}
 }
 
