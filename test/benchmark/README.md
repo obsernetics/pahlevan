@@ -113,6 +113,15 @@ omitted rather than guessed.
 26. `26-host-path-read` - read host paths exposed via `/host` or `/rootfs`
     (T1611).
 
+### Post-exploitation of a server process (TA0003)
+27. `27-server-spawns-shell` - a process whose comm is a request-serving
+    runtime execs a shell (T1505.003 / T1059.004). The parent is the signal,
+    not the child; see `docs/cve-coverage.md`.
+28. `28-webshell-file-drop` - plant a server-side script in a directory the web
+    server serves (T1505.003).
+29. `29-server-module-drop` - write a shared object into a server's module
+    directory, where it is loaded on the next restart (T1574).
+
 Most of these are actions a normal nginx workload would **never** do, which is
 what makes an auto-learned allow-list able to block them without hand-written
 rules.
