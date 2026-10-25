@@ -39,6 +39,48 @@ A baseline narrow enough to stop an attacker is narrow enough to stop you:
 `Monitoring`, which reports without denying, and use self-healing and policy
 exceptions to widen the set deliberately.
 
+## What this covers of recent exploitation
+
+Pahlevan detects no vulnerability. It observes post-exploitation, so what
+follows is a claim about what an attacker does **after** they are already
+running code, and nothing about the flaw that got them there. Every sentence
+here is backed by a row in [the CVE coverage matrix](docs/cve-coverage.md),
+which also lists what is missed.
+
+Two detections key on the structure of the event rather than on the learned
+baseline, so they fire in a workload that has learned the same operation:
+
+- **A shell or interpreter execed under a request-serving process**, for
+  example `php-fpm -> sh`. This is the kernel-visible shape of a web shell, of
+  command execution following the PHP2Shell pair
+  ([CVE-2026-109618](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
+  and
+  [CVE-2026-109619](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)),
+  and of the Plex2Shell chain ([CVE-2026-96652, -96654, -96655, -96656](https://zmain.info/blog/plex2shell), all
+  in CISA KEV since 2026-10-20) running its first command.
+- **A server-side script written into a directory a web server serves**, which
+  is how the PTC Windchill campaign
+  ([CVE-2026-12569](https://www.ptc.com/en/support/article/CS473270), KEV since
+  2026-06-25) was found: hex-named `.jsp` files under the login directory.
+
+Both are observation. They are computed after the kernel has decided, so
+neither blocks anything. What blocks is the learned allow-set, and a deny there
+is a statement about this workload rather than about any CVE: a miner, a proxy
+binary, a token read or a module dropped where a server loads one
+([CVE-2026-96656](https://zmain.info/blog/plex2shell)) is refused because the
+workload was never seen to do it, and would not be refused in a workload that
+had been.
+
+Three things Pahlevan does not see, stated because a security tool's own
+README is the wrong place to leave them out:
+
+- **The initial remote code execution, in every CVE above.** It happens inside
+  the vulnerable process and crosses no syscall boundary.
+- **CVE-2026-109619's memory disclosure, at all.** It reads PHP's own heap and
+  produces no kernel event. This is a blind spot, not a configuration gap.
+- **Inbound connections.** The network hook is `lsm/socket_connect`, which is
+  egress only, so the request carrying the exploit is never observed.
+
 ## Architecture
 
 <p align="center">
