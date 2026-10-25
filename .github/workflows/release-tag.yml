@@ -152,6 +152,24 @@ jobs:
           git push origin HEAD:main
           echo "pushed the site sync for ${VERSION}"
 
+          # Move the tag onto the sync commit.
+          #
+          # Without this the tag points at the commit BEFORE the sync, so the
+          # release run dispatched on that tag sees a tree whose site still
+          # advertises the previous version. The version-sync guards fail, and
+          # the release gate then correctly refuses to publish over a red
+          # suite. That is exactly what left v3.6.2 and v3.6.3 tagged with no
+          # release, no image and nothing installable, while the changelog and
+          # the website both named them as shipped.
+          #
+          # Re-pointing a published tag is normally wrong, and is safe only
+          # here: this job created the tag seconds earlier, nothing has been
+          # released or published for it, so nothing can have consumed it. The
+          # alternative is a tag whose tree can never pass its own tests.
+          git tag -f -a "${VERSION}" HEAD -m "${VERSION}"
+          git push --force origin "refs/tags/${VERSION}"
+          echo "moved ${VERSION} onto the site sync commit"
+
       - name: Start the release
         if: steps.decide.outputs.needed == 'true'
         env:
