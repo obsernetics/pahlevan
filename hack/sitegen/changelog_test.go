@@ -207,16 +207,26 @@ func TestParseChangelogReadsEveryRelease(t *testing.T) {
 			releases[0].Version, unreleased)
 	}
 
-	// Every released section needs a date, or the article publishes a version
-	// with no indication of when it shipped.
+	// Every version section needs a date and content; only [Unreleased] may
+	// lack a date.
+	//
+	// These are keyed on the heading, not on Released(). Released() became a
+	// question about tags, so it is false for a version that is written up but
+	// not tagged yet, which is the normal state of a release pull request. A
+	// check written as "not Released() means Unreleased" then fired on the new
+	// section of every release, and reported it as "[Unreleased] has a date",
+	// naming the wrong section entirely.
 	for _, r := range releases {
-		if !r.Released() && r.Date != "" {
-			t.Errorf("[Unreleased] has a date: %q", r.Date)
+		if r.Version == unreleased {
+			if r.Date != "" {
+				t.Errorf("[Unreleased] has a date: %q", r.Date)
+			}
+			continue
 		}
-		if r.Released() && r.Date == "" {
+		if r.Date == "" {
 			t.Errorf("%s has no date in CHANGELOG.md", r.Version)
 		}
-		if r.Released() && len(r.Groups) == 0 {
+		if len(r.Groups) == 0 && len(r.Summaries) == 0 {
 			t.Errorf("%s has no change groups; its article would be an empty box", r.Version)
 		}
 	}

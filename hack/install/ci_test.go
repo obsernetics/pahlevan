@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"sigs.k8s.io/yaml"
+
+	releases "github.com/obsernetics/pahlevan/hack/release"
 )
 
 const repoRoot = "../.."
@@ -123,12 +125,27 @@ func TestPackagesDocAndManifestAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading docs/packages.md: %v", err)
 	}
-	want := makefileVersion(t)
+	// The version a reader can install right now is the newest PUBLISHED one,
+	// and that is what pagesync writes into these spans: a release that has
+	// been merged but not yet tagged must not be advertised, because there is
+	// no asset at that URL.
+	//
+	// The Makefile's version is a different thing: it is what this tree WILL
+	// release, and it is what install.yaml pins, asserted by
+	// TestInstallYAMLPinsTheRelease. Between a release merge and its tag those
+	// two deliberately differ. Comparing the docs against the Makefile instead
+	// made every release pull request fail its own tests, which is part of why
+	// v3.6.2 and v3.6.3 were tagged and never published.
+	published, perr := releases.Load(releases.GitTags(repoRoot))
+	if perr != nil {
+		t.Skipf("this checkout has no tags, so there is no published version to compare against: %v", perr)
+	}
+	want := published.Latest()
 	doc := string(b)
 	if !strings.Contains(doc, "releases/download/") {
 		t.Skip("docs/packages.md no longer points at a release asset")
 	}
-	// pagesync keeps these spans in step with the Makefile; this asserts the
+	// pagesync keeps these spans in step with the newest tag; this asserts the
 	// result rather than trusting that it ran.
 	span := regexp.MustCompile(`releases/download/<!--\s*pahlevan:sync version\s*-->(v[0-9][^<]*)<!--`)
 	m := span.FindAllStringSubmatch(doc, -1)

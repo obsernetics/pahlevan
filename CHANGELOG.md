@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.4] - 2026-10-25
+
+The first release since 3.6.1 that anyone can install. 3.6.2 and 3.6.3 were
+tagged but never published: their release runs failed, so there was no GitHub
+release, no image and nothing to pull, while CHANGELOG.md and the website named
+them as shipped.
+
+### Fixed
+
+- Moved to Go 1.26.10 for GO-2026-6809, an advisory in the standard library's
+  `crypto/x509`. Every version pin in the repository named 1.26.9, so every job
+  compiled against the affected standard library, and the scheduled Security
+  job had been failing on it daily. The pins must now all agree, because the
+  version is set in six places and nothing connected them, and only one job
+  runs govulncheck.
+- A release can no longer be tagged onto a tree whose site does not match it.
+  The generators derive the advertised version from the newest tag, so they
+  cannot write it until the tag exists; the tagging job therefore tagged first
+  and synced the site afterwards, leaving the tag on the commit before the
+  sync. The release run then saw a stale site, its version guards failed, and
+  the release gate correctly refused to publish over a red suite. That is what
+  stranded 3.6.2 and 3.6.3. The tag now moves onto the sync commit before the
+  release is dispatched.
+
 ## [3.6.3] - 2026-10-19
 
 ### Fixed
