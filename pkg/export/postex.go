@@ -143,13 +143,14 @@ func serverSpawnedShell(ev *Event) bool {
 	if !shellLike(child) {
 		return false
 	}
-	// A server re-execing itself is a reload, not an intrusion, and a server
-	// whose own name is interpreter-like (node) would otherwise report every
-	// worker it forks.
+	// A server re-execing itself is a reload, not an intrusion. Nothing here
+	// has to exclude that case explicitly, and an explicit exclusion would be
+	// dead code: it is prevented by serverComms and the two shell lists being
+	// disjoint, so a comm that satisfies serverRuntime can never satisfy
+	// shellLike and the check above has already returned. That disjointness is
+	// the real guard, and it is asserted in the tests rather than left as a
+	// property somebody has to notice while editing the lists.
 	for _, name := range ancestorComms(ev) {
-		if name == child {
-			continue
-		}
 		if serverRuntime(name) {
 			return true
 		}

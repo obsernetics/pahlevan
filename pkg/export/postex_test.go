@@ -389,6 +389,30 @@ func TestWebShellWriteUsesTheWriteFlagBit(t *testing.T) {
 	assert.False(t, ev.HasSignalAfterDetect(SignalWebShellWrite))
 }
 
+// The invariant that keeps a server re-exec quiet without a special case.
+//
+// serverSpawnedShell asks two questions in order: is this exec shell-like, and
+// is a server above it. If one comm could answer yes to both, a server forking
+// a worker through execve would report itself, and the detector would fire on
+// every scale-up of the workload it is supposed to be watching. Adding node to
+// the interpreter list, or php to the server list, is exactly the edit that
+// would do it, and both are plausible edits: node is a server, php is an
+// interpreter, and `php -S` is a web server.
+func TestServerAndShellNameListsAreDisjoint(t *testing.T) {
+	for comm := range shellComms {
+		assert.False(t, serverRuntime(comm),
+			"%q counts as both a shell and a request-serving process, so a server execing a worker would report itself", comm)
+	}
+	for comm := range interpreterComms {
+		assert.False(t, serverRuntime(comm),
+			"%q counts as both an interpreter and a request-serving process, so a server execing a worker would report itself", comm)
+	}
+	for comm := range serverComms {
+		assert.False(t, shellLike(comm),
+			"%q counts as both a request-serving process and a shell", comm)
+	}
+}
+
 func BenchmarkDetectSignalsExecMatch(b *testing.B) {
 	ev := execEvent("/usr/bin/python3", "python3", "sh", "sh", "php-fpm")
 	b.ReportAllocs()
