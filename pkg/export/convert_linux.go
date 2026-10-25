@@ -145,9 +145,19 @@ func FromProcessEvent(e *ebpf.ProcessEvent, now time.Time) *Event {
 		CgroupID:     e.CgroupID,
 		KernelTimeNs: e.Timestamp,
 		Process: ProcessInfo{
-			PID:  e.PID,
-			UID:  e.UID,
-			Comm: e.Comm,
+			PID: e.PID,
+			UID: e.UID,
+			// PPID and ParentComm were the two fields this converter dropped,
+			// and the exec event is the one that can least afford to lose
+			// them: the file, network and capability events all carried the
+			// parent, while the exec, whose parent is the entire finding, did
+			// not. A shell execed by php-fpm arrived as "sh execed /bin/sh"
+			// unless the kernel's four-level ancestry capture had happened to
+			// fill in, which it does not on the exit path and need not on any
+			// other.
+			PPID:       e.PPID,
+			ParentComm: e.ParentComm,
+			Comm:       e.Comm,
 		},
 		Exec: execInfo(e),
 	}

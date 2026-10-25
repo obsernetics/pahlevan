@@ -130,6 +130,11 @@ func (h *Handler) emit(e *Event) {
 	if e == nil || h.sink == nil {
 		return
 	}
+	// Before the filter, not after: the filter's decision depends on the
+	// answer. An event carrying a post-exploitation signal has to survive
+	// DenialsOnly even though the kernel allowed it, and on a kernel without
+	// the BPF LSM the kernel always allows it.
+	Annotate(e)
 	if !h.filter.Allow(e) {
 		return
 	}

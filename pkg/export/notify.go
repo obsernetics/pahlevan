@@ -172,6 +172,17 @@ func FindingKey(ev *Event) string {
 	b.WriteString(string(ev.Action))
 	b.WriteByte('|')
 	b.WriteString(FindingSubject(ev))
+
+	// The signals are part of the identity of the finding, not decoration on
+	// it. Without them `php-fpm -> sh` and the entrypoint's own `sh` share a
+	// key, because both are an allowed exec of /bin/sh in the same workload -
+	// so whichever ran first suppresses the other for the whole dedupe
+	// window, and in a container started by a shell wrapper the one that runs
+	// first is always the benign one.
+	if ev.Signalled() {
+		b.WriteByte('|')
+		b.WriteString(ev.SignalNames())
+	}
 	return b.String()
 }
 
@@ -225,7 +236,13 @@ func selectFindings(events []*Event, all bool, d *dedupe) []*Event {
 		if ev == nil {
 			continue
 		}
-		if !all && !ev.Denied() {
+		// A post-exploitation signal is an alert even when the kernel allowed
+		// the operation. It has to be, or the shape is unreportable on the
+		// configurations it was written for: during the learning window, in
+		// Monitoring mode, and on every kernel without the BPF LSM, where no
+		// event can ever be a denial. A web shell that waits for enforcement
+		// to be switched on is a web shell nobody is told about.
+		if !all && !ev.Denied() && !ev.Signalled() {
 			continue
 		}
 		if d != nil && !d.allow(FindingKey(ev)) {
@@ -241,9 +258,21 @@ func selectFindings(events []*Event, all bool, d *dedupe) []*Event {
 
 func batchSummary(findings []*Event, denied int, source string) string {
 	var s string
-	if denied > 0 {
+	signalled := 0
+	for _, ev := range findings {
+		if ev.Signalled() {
+			signalled++
+		}
+	}
+	switch {
+	case denied > 0:
 		s = fmt.Sprintf("Pahlevan denied %d operation%s", denied, plural(denied))
-	} else {
+	case signalled > 0:
+		// "observed 1 operation" is the wrong heading for a shell spawned by a
+		// web server. It is the heading somebody skims past, and the whole
+		// point of the signal is that this one must not be skimmed past.
+		s = fmt.Sprintf("Pahlevan flagged %d post-exploitation signal%s", signalled, plural(signalled))
+	default:
 		s = fmt.Sprintf("Pahlevan observed %d operation%s", len(findings), plural(len(findings)))
 	}
 	if source != "" {
@@ -405,6 +434,9 @@ func (s *SlackNotifier) payload(findings []*Event) slackPayload {
 // scans for.
 func slackLine(ev *Event) string {
 	line := fmt.Sprintf("*%s*\n%s", WorkloadOf(ev), SummaryLine(ev))
+	if names := ev.SignalNames(); names != "" {
+		line += "\nsignal: " + names
+	}
 	if ev.Exec != nil && ev.Exec.CommandLine != "" {
 		// The command line is the difference between "python3 was denied" and
 		// knowing what it was asked to run.
@@ -513,8 +545,10 @@ func (p *PagerDutyNotifier) Export(ctx context.Context, events []*Event) error {
 				Class:     string(ev.Action),
 				CustomDetails: map[string]any{
 					"process":  ev.Process.Comm,
+					"parent":   ev.Process.ParentComm,
 					"pid":      ev.Process.PID,
 					"subject":  FindingSubject(ev),
+					"signals":  ev.SignalNames(),
 					"cgroupId": ev.CgroupID,
 					"node":     p.opts.Source,
 				},

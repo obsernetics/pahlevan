@@ -104,6 +104,14 @@ type Event struct {
 	Capability *CapabilityInfo `json:"capability,omitempty"`
 
 	Kubernetes *KubernetesRef `json:"kubernetes,omitempty"`
+
+	// Signals are the post-exploitation shapes this event's structure matches,
+	// filled in by Annotate on the export path. They are orthogonal to Action:
+	// a signal says the operation looked like post-exploitation, and the kernel
+	// may well have allowed it, because the shape can sit inside a learned
+	// baseline. See postex.go for what each one means and what it does not
+	// claim.
+	Signals []Signal `json:"signals,omitempty"`
 }
 
 // Denied reports whether the event records an in-kernel denial.
