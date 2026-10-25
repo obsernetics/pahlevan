@@ -51,6 +51,15 @@ jobs:
     # to exercise the generator, including deliberately broken and external
     # links, and a link checker that reads them fails on inputs that are doing
     # their job.
+    #
+    # Three vendor domains are in the ignore list in .markdown-link-check.json
+    # because they answer 403 to an automated checker while serving a reader
+    # normally: watchtowr.com, armis.com and beyondtrust.com. They are the
+    # primary source for specific attributed claims in docs/cve-coverage.md, so
+    # they are kept as citations rather than swapped for a weaker secondary
+    # source. A 403 is not a dead link, and `aliveStatusCodes` is deliberately
+    # not widened to include 403, which would hide genuinely forbidden URLs
+    # everywhere else.
     - name: Check links in documentation
       uses: gaurav-nelson/github-action-markdown-link-check@v1
       with:
