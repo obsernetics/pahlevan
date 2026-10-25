@@ -389,6 +389,55 @@ func TestWebShellWriteUsesTheWriteFlagBit(t *testing.T) {
 	assert.False(t, ev.HasSignalAfterDetect(SignalWebShellWrite))
 }
 
+// Degenerate inputs, which arrive in practice: a truncated ring-buffer record
+// leaves an empty comm, and a path captured mid-resolution can be a bare "/"
+// or ".". None of these may panic and none may be read as a signal.
+func TestSignalsOnDegenerateInput(t *testing.T) {
+	t.Run("a binary that is only a separator falls back to comm", func(t *testing.T) {
+		ev := execEvent("/", "sh", "php-fpm")
+		assert.True(t, ev.HasSignalAfterDetect(SignalServerSpawnedShell),
+			"the comm still names a shell, so the fallback has to be taken")
+	})
+
+	t.Run("a binary that is only a dot falls back to comm", func(t *testing.T) {
+		ev := execEvent(".", "sh", "php-fpm")
+		assert.True(t, ev.HasSignalAfterDetect(SignalServerSpawnedShell))
+	})
+
+	t.Run("an exec with neither a binary nor a comm", func(t *testing.T) {
+		ev := execEvent("", "", "php-fpm")
+		assert.Empty(t, DetectSignals(ev), "nothing names the child, so nothing can be concluded")
+	})
+
+	t.Run("an exec with no parent name at all", func(t *testing.T) {
+		ev := execEvent("/bin/sh", "sh", "")
+		ev.Exec.Ancestry = []AncestorInfo{{PID: 1, Comm: ""}}
+		assert.Empty(t, DetectSignals(ev))
+	})
+
+	t.Run("an empty comm names nothing", func(t *testing.T) {
+		// Asserted directly because ancestorComms filters empty names out
+		// before serverRuntime ever sees one. The guard is for any later
+		// caller that does not, and an empty comm matching a prefix would be
+		// the worst possible default.
+		assert.False(t, serverRuntime(""))
+		assert.False(t, shellLike(""))
+	})
+
+	t.Run("a dotfile whose whole name is an unknown extension", func(t *testing.T) {
+		// path.Ext(".bak") is ".bak", so trimming it leaves nothing. The
+		// double-extension check has to stop rather than index into an empty
+		// string.
+		ev := fileEvent("/var/www/html/.bak", true)
+		assert.Empty(t, DetectSignals(ev))
+	})
+
+	t.Run("a dotfile whose whole name is a script extension", func(t *testing.T) {
+		ev := fileEvent("/var/www/html/.php", true)
+		assert.True(t, ev.HasSignalAfterDetect(SignalWebShellWrite))
+	})
+}
+
 // The invariant that keeps a server re-exec quiet without a special case.
 //
 // serverSpawnedShell asks two questions in order: is this exec shell-like, and
