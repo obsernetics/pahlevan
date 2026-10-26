@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-10-26
+
+### Added
+
+- Post-exploitation detection for two shapes recent exploited CVEs share: a
+  shell or interpreter execed under a request-serving process, and a
+  server-side script written into a document root. Both survive
+  denials-only export filters, alert without requiring a denial, dedupe
+  separately from the underlying exec or file event, and are graded above
+  `DEBUG`. Documented per CVE in `docs/cve-coverage.md`: what Pahlevan sees
+  after exploitation, which hook sees it, and the limitation for each.
+
+### Changed
+
+- `google.golang.org/grpc` 1.83.2 -> 1.84.0. The 3.6.1-3.6.3 entries held
+  this back believing 1.84.0 still carried GHSA-2v4p-qf9q-27wj
+  (CVE-2026-84445, the `xds.NewGRPCServer()` panic on a request missing both
+  `:authority` and `Host`); the upstream fixed-version data actually places
+  the fix at 1.82.2 and 1.83.2, so every release from 1.83.2 onward,
+  including 1.84.0, already carries it. The earlier entries were wrong about
+  the range, not about the caution.
+- `k8s.io/apiextensions-apiserver` 0.37.0 -> 0.37.1, the patch release
+  matching the rest of the already-current `k8s.io/api`/`k8s.io/client-go`
+  family.
+
+### Fixed
+
+- The published changelog page had drifted from `CHANGELOG.md`
+  (`TestTheGeneratedSiteIsUpToDate` was failing on `main`); regenerated with
+  `hack/sitegen -write`.
+- `internal/admission.Ensure`, the static CEL hardening policy upsert, had
+  zero direct test coverage: every existing test reached it only through the
+  unsupported-cluster branch. Added coverage for the supported-cluster create
+  path and for a `Patch` failure on each of the policy and the binding.
+  `cmd/pahlevan-operator`'s `ensureAdmissionOnce` and
+  `reconcileDerivedAdmissionOnce`, documented as extracted to be testable,
+  had likewise never been driven past that same skip; both are now at 100%
+  of their own statements. `internal/admission` coverage: 83.3% -> 88.2%.
+
 ## [3.6.4] - 2026-10-25
 
 The first release since 3.6.1 that anyone can install. 3.6.2 and 3.6.3 were
