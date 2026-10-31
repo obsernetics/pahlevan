@@ -176,6 +176,30 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.7.1</h3>
+                        <span class="release-date">2026-10-31</span>
+                        <span class="release-pill">In progress</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li><code>cel.dev/cel-go</code> 0.32.0 -&gt; 0.33.2, <code>cel.dev/expr</code> 0.25.2 -&gt; 0.25.3.</li>
+                            <li><code>github.com/yuin/goldmark</code> 1.8.6 -&gt; 1.8.7.</li>
+                            <li><code>golang.org/x/net</code> 0.61.0 -&gt; 0.62.0.</li>
+                            <li><code>google.golang.org/grpc</code> 1.84.0 -&gt; 1.85.0.</li>
+                            <li><code>k8s.io/api</code>, <code>k8s.io/apimachinery</code>, <code>k8s.io/cli-runtime</code>, <code>k8s.io/client-go</code> 0.37.1 -&gt; 0.37.2. <code>sigs.k8s.io/controller-runtime</code> stays at 0.25.2, which already targets the <code>k8s.io/api</code> v0.37.x line these patches stay within.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li><code>Manager.SetProcFilter</code>'s success path - the writes that actually seed a process filter's allowed parents, uids and gids and set its mask - had no test; only the <code>execCollection == nil</code> error path did. Covered with real kernel hash maps, the same way <code>allowset_map_test.go</code> already covers the rest of the allow-set writers.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.7.0</h3>
                         <span class="release-date">2026-10-26</span>
                         <span class="release-pill">Current</span>
@@ -416,6 +440,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.3.2</h3>
                         <span class="release-date">2026-09-07</span>
+                        <span class="release-pill">In progress</span>
                     </div>
                     <p class="release-summary">3.3.1 was merged but never tagged, so it was never published and nothing could install it. Its changes are released here.</p>
                     <div class="change-group">
@@ -438,6 +463,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.3.0</h3>
                         <span class="release-date">2026-09-07</span>
+                        <span class="release-pill">In progress</span>
                     </div>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
@@ -470,6 +496,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.2.0</h3>
                         <span class="release-date">2026-09-06</span>
+                        <span class="release-pill">In progress</span>
                     </div>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
@@ -495,6 +522,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.1.0</h3>
                         <span class="release-date">2026-09-01</span>
+                        <span class="release-pill">In progress</span>
                     </div>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
@@ -526,6 +554,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">3.0.0</h3>
                         <span class="release-date">2026-08-31</span>
+                        <span class="release-pill">In progress</span>
                     </div>
                     <p class="release-summary">Two hundred and twenty-five commits since 2.0.0. The theme, unintentionally, is honesty: a large share of this release is the discovery and removal of things that looked like they worked and did not. Where a feature could be implemented it was; where it could not, it now says so.</p>
                     <p class="release-summary">This is a major release for two reasons, both listed under Breaking changes: the gRPC event stream will not start unauthenticated any more, and the module now requires Go 1.26.</p>
@@ -602,6 +631,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">2.0.0</h3>
                         <span class="release-date">2026-08-14</span>
+                        <span class="release-pill">In progress</span>
                     </div>
                     <p class="release-summary">Pahlevan 2.0.0 is a redesign. The single all-in-one operator is replaced by a privileged per-node agent plus an unprivileged, leader-elected control plane, and the eBPF data plane moved from placeholder code to real CO-RE programs that observe and deny in the kernel.</p>
                     <div class="change-group">
@@ -664,6 +694,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                     <div class="release-head">
                         <h3 class="release-version">1.0.0</h3>
                         <span class="release-date">2025-09-25</span>
+                        <span class="release-pill">In progress</span>
                     </div>
                     <div class="change-group">
                         <h4 class="added">Added</h4>
