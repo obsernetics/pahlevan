@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.1] - 2026-10-31
+
+### Changed
+
+- `cel.dev/cel-go` 0.32.0 -> 0.33.2, `cel.dev/expr` 0.25.2 -> 0.25.3.
+- `github.com/yuin/goldmark` 1.8.6 -> 1.8.7.
+- `golang.org/x/net` 0.61.0 -> 0.62.0.
+- `google.golang.org/grpc` 1.84.0 -> 1.85.0.
+- `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/cli-runtime`, `k8s.io/client-go`
+  0.37.1 -> 0.37.2. `sigs.k8s.io/controller-runtime` stays at 0.25.2, which
+  already targets the `k8s.io/api` v0.37.x line these patches stay within.
+
+### Fixed
+
+- `Manager.SetProcFilter`'s success path - the writes that actually seed a
+  process filter's allowed parents, uids and gids and set its mask - had no
+  test; only the `execCollection == nil` error path did. Covered with real
+  kernel hash maps, the same way `allowset_map_test.go` already covers the
+  rest of the allow-set writers.
+
 ## [3.7.0] - 2026-10-26
 
 ### Added
