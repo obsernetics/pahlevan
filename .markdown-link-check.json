@@ -35,6 +35,9 @@
     },
     {
       "pattern": "beyondtrust.com"
+    },
+    {
+      "pattern": "ptc.com"
     }
   ],
   "replacementPatterns": [
