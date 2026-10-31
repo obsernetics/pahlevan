@@ -4,9 +4,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newExecFilterCollection wires up real kernel hash maps under the two names
+// SetProcFilter and ProcFilterMask look for, so the success path - the one
+// TestSetProcFilterWithoutTheProgramLoaded deliberately does not reach - runs
+// against the same map semantics the agent uses, not a fake.
+func newExecFilterCollection(t *testing.T) *ebpf.Collection {
+	t.Helper()
+	onMap := newTestHashMap(t, 8, 1)
+	valMap := newTestHashMap(t, 8, 1)
+	return &ebpf.Collection{Maps: map[string]*ebpf.Map{
+		"exec_filter_on":      onMap,
+		"exec_filter_allowed": valMap,
+	}}
+}
 
 // The kernel hashes a fixed 16-byte comm buffer and stops at the NUL, so a
 // longer name hashes as its truncation. Hashing the untruncated string in
@@ -155,6 +170,134 @@ func TestSetProcFilterWithoutTheProgramLoaded(t *testing.T) {
 
 	_, err = m.ProcFilterMask(1)
 	assert.Error(t, err)
+}
+
+// The success path matters as much as the "not loaded" path: a filter that
+// looks installed but never wrote its entries would deny every exec once the
+// mask is read back as nonzero.
+func TestSetProcFilterWritesValuesAndMask(t *testing.T) {
+	coll := newExecFilterCollection(t)
+	m := &Manager{execCollection: coll}
+
+	const cgroupID = 0xC0FFEE
+	f := &ProcFilter{
+		ParentProcesses: []string{"supervisord", "sh"},
+		UIDs:            []uint32{0, 1000},
+		GIDs:            []uint32{1000},
+	}
+	require.NoError(t, m.SetProcFilter(cgroupID, f))
+
+	mask, err := m.ProcFilterMask(cgroupID)
+	require.NoError(t, err)
+	assert.Equal(t, FilterParent|FilterUID|FilterGID, mask)
+
+	valMap := coll.Maps["exec_filter_allowed"]
+	var v uint8
+	for _, p := range []string{"supervisord", "sh"} {
+		require.NoError(t, valMap.Lookup(ParentFilterKey(cgroupID, p), &v), "parent %q not seeded", p)
+		assert.Equal(t, uint8(1), v)
+	}
+	for _, uid := range f.UIDs {
+		require.NoError(t, valMap.Lookup(UIDFilterKey(cgroupID, uid), &v), "uid %d not seeded", uid)
+		assert.Equal(t, uint8(1), v)
+	}
+	for _, gid := range f.GIDs {
+		require.NoError(t, valMap.Lookup(GIDFilterKey(cgroupID, gid), &v), "gid %d not seeded", gid)
+		assert.Equal(t, uint8(1), v)
+	}
+}
+
+// Two cgroups must not step on each other's mask or values when both are
+// filtered through the same pair of maps.
+func TestSetProcFilterIsPerCgroup(t *testing.T) {
+	coll := newExecFilterCollection(t)
+	m := &Manager{execCollection: coll}
+
+	require.NoError(t, m.SetProcFilter(1, &ProcFilter{UIDs: []uint32{1000}}))
+	require.NoError(t, m.SetProcFilter(2, &ProcFilter{ParentProcesses: []string{"sh"}}))
+
+	mask1, err := m.ProcFilterMask(1)
+	require.NoError(t, err)
+	assert.Equal(t, FilterUID, mask1)
+
+	mask2, err := m.ProcFilterMask(2)
+	require.NoError(t, err)
+	assert.Equal(t, FilterParent, mask2)
+}
+
+// Passing an empty filter after a real one was installed must clear the mask,
+// which is the only thing ProcFilterMask consults - disabling filtering.
+func TestSetProcFilterWithEmptyFilterClearsTheMask(t *testing.T) {
+	coll := newExecFilterCollection(t)
+	m := &Manager{execCollection: coll}
+
+	const cgroupID = 7
+	require.NoError(t, m.SetProcFilter(cgroupID, &ProcFilter{UIDs: []uint32{0}}))
+	mask, err := m.ProcFilterMask(cgroupID)
+	require.NoError(t, err)
+	require.Equal(t, FilterUID, mask)
+
+	require.NoError(t, m.SetProcFilter(cgroupID, &ProcFilter{}))
+	mask, err = m.ProcFilterMask(cgroupID)
+	require.NoError(t, err)
+	assert.Equal(t, uint8(0), mask, "an empty filter must disable enforcement, not leave the old mask")
+}
+
+// ClearProcFilter is the named entry point callers use; it must behave exactly
+// like SetProcFilter(id, nil) rather than drifting into its own logic.
+func TestClearProcFilterDisablesAPreviouslySetFilter(t *testing.T) {
+	coll := newExecFilterCollection(t)
+	m := &Manager{execCollection: coll}
+
+	const cgroupID = 9
+	require.NoError(t, m.SetProcFilter(cgroupID, &ProcFilter{GIDs: []uint32{1000}}))
+	require.NoError(t, m.ClearProcFilter(cgroupID))
+
+	mask, err := m.ProcFilterMask(cgroupID)
+	require.NoError(t, err)
+	assert.Equal(t, uint8(0), mask)
+}
+
+// A collection that loaded the mask map but not the value map is the exec
+// monitor having attached a subset of its maps - still a "not loaded"
+// condition, not a crash, and it must be reported before any mask is written.
+func TestSetProcFilterMissingValueMap(t *testing.T) {
+	onMap := newTestHashMap(t, 8, 1)
+	coll := &ebpf.Collection{Maps: map[string]*ebpf.Map{"exec_filter_on": onMap}}
+	m := &Manager{execCollection: coll}
+
+	err := m.SetProcFilter(1, &ProcFilter{UIDs: []uint32{0}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exec_filter_allowed map not found")
+
+	// The mask must not have been written before the value map was confirmed.
+	var mask uint8
+	assert.Error(t, onMap.Lookup(uint64(1), &mask))
+}
+
+func BenchmarkSetProcFilter(b *testing.B) {
+	onMap, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Hash, KeySize: 8, ValueSize: 1, MaxEntries: 8})
+	if err != nil {
+		b.Skipf("system doesn't support eBPF maps: %v", err)
+	}
+	defer onMap.Close()
+	valMap, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Hash, KeySize: 8, ValueSize: 1, MaxEntries: 64})
+	if err != nil {
+		b.Skipf("system doesn't support eBPF maps: %v", err)
+	}
+	defer valMap.Close()
+	m := &Manager{execCollection: &ebpf.Collection{Maps: map[string]*ebpf.Map{
+		"exec_filter_on": onMap, "exec_filter_allowed": valMap,
+	}}}
+	f := &ProcFilter{ParentProcesses: []string{"supervisord", "sh"}, UIDs: []uint32{0, 1000}, GIDs: []uint32{1000}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := m.SetProcFilter(uint64(i%8), f); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func BenchmarkProcFilterKeyDerivation(b *testing.B) {
