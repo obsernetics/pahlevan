@@ -348,39 +348,19 @@ func (r *PahlevanPolicyReconciler) handleTransition(ctx context.Context, policy 
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, observability.RecordError(observability.SpanFromContext(ctx), err)
 	}
 
-	if r.EBPFManager != nil && len(containerIDs) > 0 {
-		// Create enforcement policies for each container
-		for _, containerID := range containerIDs {
-			// One span per container: this loop continues past a failure, so
-			// without a span per container a partially applied transition -
-			// half the pods enforcing, half still learning - is invisible in
-			// the trace and shows up only as an error log among many.
-			_, applySpan := observability.StartSpan(ctx, observability.SpanPolicyApply,
-				observability.AttrNamespace.String(policy.Namespace),
-				observability.AttrPolicy.String(policy.Name),
-				observability.AttrWorkload.String(workload.GetName()),
-				observability.AttrContainerID.String(containerID),
-				observability.AttrMode.String("enforce"))
-			// Generate policy based on learning phase data
-			err := r.EBPFManager.UpdateContainerPolicy(containerID, &ebpf.ContainerPolicy{
-				AllowedSyscalls:  make(map[uint64]bool),
-				LastUpdate:       time.Now(),
-				LearningWindowMs: uint32(r.LearningWindow.Milliseconds()),
-				EnforcementMode:  1, // Enforcement mode
-				SelfHealing:      policy.Spec.SelfHealing.Enabled,
-			})
-			observability.EndSpan(applySpan, err)
-			if err != nil {
-				log.Log.Error(err, "Failed to update container policy", "containerID", containerID)
-				continue
-			}
-
-			log.Log.Info("Applied enforcement policy to container",
-				"policyName", policy.Name,
-				"containerID", containerID,
-				"learningWindow", r.LearningWindow)
-		}
-	}
+	// Enforcement itself is applied per node, against the allow-set the
+	// agent's adaptive controller already built for each container - there
+	// is no "container_policies" eBPF map for this controller to write a
+	// policy into, and there has not been one since that allow-set
+	// architecture replaced it. Writing one here used to call
+	// EBPFManager.UpdateContainerPolicy, which always returned "container_
+	// policies map not found" and logged an error for every container on
+	// every transition, so this phase now only confirms the workload still
+	// has containers before declaring it enforcing.
+	log.Log.Info("Transitioning policy to enforcement",
+		"policyName", policy.Name,
+		"workload", workload.GetName(),
+		"containers", len(containerIDs))
 
 	// Transition to enforcing phase.
 	//

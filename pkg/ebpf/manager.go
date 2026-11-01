@@ -556,24 +556,6 @@ type ContainerPolicy struct {
 	SelfHealing      bool
 }
 
-type NetworkPolicy struct {
-	AllowedEgressPorts  map[uint16]bool
-	AllowedIngressPorts map[uint16]bool
-	AllowedEgressIPs    []uint32
-	AllowedIngressIPs   []uint32
-	LastUpdate          time.Time
-	EnforcementMode     uint8
-}
-
-type FilePolicy struct {
-	AllowedPaths    []string
-	EnforcementMode uint8
-	AllowTmpWrites  bool
-	AllowProcReads  bool
-	AllowDevAccess  bool
-	LastUpdate      time.Time
-}
-
 func NewManager() (*Manager, error) {
 	// Remove memory limit for eBPF
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -1216,42 +1198,6 @@ func (m *Manager) UpdateContainerPolicy(containerID string, policy *ContainerPol
 	return policyMap.Put([]byte(containerID), ebpfPolicy)
 }
 
-func (m *Manager) UpdateNetworkPolicy(containerID string, policy *NetworkPolicy) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.networkCollection == nil {
-		return fmt.Errorf("network collection not loaded")
-	}
-
-	policyMap := m.networkCollection.Maps["network_policies"]
-	if policyMap == nil {
-		return fmt.Errorf("network_policies map not found")
-	}
-
-	// Convert Go policy to eBPF format
-	ebpfPolicy := convertToEBPFNetworkPolicy(policy)
-	return policyMap.Put([]byte(containerID), ebpfPolicy)
-}
-
-func (m *Manager) UpdateFilePolicy(containerID string, policy *FilePolicy) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.fileCollection == nil {
-		return fmt.Errorf("file collection not loaded")
-	}
-
-	policyMap := m.fileCollection.Maps["file_policies"]
-	if policyMap == nil {
-		return fmt.Errorf("file_policies map not found")
-	}
-
-	// Convert Go policy to eBPF format
-	ebpfPolicy := convertToEBPFFilePolicy(policy)
-	return policyMap.Put([]byte(containerID), ebpfPolicy)
-}
-
 // EventReader interface for reading events from eBPF programs
 type EventReader interface {
 	Read() (*EventRecord, error)
@@ -1635,103 +1581,6 @@ func convertToEBPFPolicy(policy *ContainerPolicy) *EBPFContainerPolicy {
 	return ebpfPolicy
 }
 
-// EBPFConnectionPolicy represents the eBPF connection_policy struct layout
-type EBPFConnectionPolicy struct {
-	ContainerID         uint32      // container_id
-	AllowedDestinations [256]uint32 // allowed_destinations (IP addresses)
-	AllowedPorts        [64]uint16  // allowed_ports
-	LearningMode        uint32      // learning_mode (1 = learning, 0 = enforcement)
-	LastUpdateNs        uint64      // last_update_ns
-}
-
-func convertToEBPFNetworkPolicy(policy *NetworkPolicy) *EBPFConnectionPolicy {
-	ebpfPolicy := &EBPFConnectionPolicy{
-		ContainerID:  0, // Will be set by caller as map key
-		LearningMode: 0, // 0 = enforcement mode by default
-		LastUpdateNs: uint64(policy.LastUpdate.UnixNano()),
-	}
-
-	// Convert enforcement mode
-	if policy.EnforcementMode == 0 { // Assuming 0 = monitoring/learning
-		ebpfPolicy.LearningMode = 1
-	}
-
-	// Convert allowed IPs (both egress and ingress)
-	destIdx := 0
-	for _, ip := range policy.AllowedEgressIPs {
-		if destIdx < 256 {
-			ebpfPolicy.AllowedDestinations[destIdx] = ip
-			destIdx++
-		}
-	}
-	for _, ip := range policy.AllowedIngressIPs {
-		if destIdx < 256 {
-			ebpfPolicy.AllowedDestinations[destIdx] = ip
-			destIdx++
-		}
-	}
-
-	// Convert allowed ports (both egress and ingress)
-	portIdx := 0
-	for port := range policy.AllowedEgressPorts {
-		if portIdx < 64 {
-			ebpfPolicy.AllowedPorts[portIdx] = port
-			portIdx++
-		}
-	}
-	for port := range policy.AllowedIngressPorts {
-		if portIdx < 64 {
-			ebpfPolicy.AllowedPorts[portIdx] = port
-			portIdx++
-		}
-	}
-
-	return ebpfPolicy
-}
-
-// EBPFFileAccessPolicy represents the eBPF file_access_policy struct layout
-type EBPFFileAccessPolicy struct {
-	ContainerID  uint32         // container_id
-	LearningMode uint32         // learning_mode (1 = learning, 0 = enforcement)
-	AllowedPaths [1024][64]byte // allowed_paths (char array)
-	PathCount    uint32         // path_count (number of valid paths)
-	LastUpdateNs uint64         // last_update_ns
-}
-
-func convertToEBPFFilePolicy(policy *FilePolicy) *EBPFFileAccessPolicy {
-	ebpfPolicy := &EBPFFileAccessPolicy{
-		ContainerID:  0, // Will be set by caller as map key
-		LearningMode: 0, // 0 = enforcement mode by default
-		PathCount:    0,
-		LastUpdateNs: uint64(policy.LastUpdate.UnixNano()),
-	}
-
-	// Convert enforcement mode
-	if policy.EnforcementMode == 0 { // Assuming 0 = monitoring/learning
-		ebpfPolicy.LearningMode = 1
-	}
-
-	// Convert allowed paths to fixed-size char arrays
-	for i, path := range policy.AllowedPaths {
-		if i >= 1024 { // eBPF limit
-			break
-		}
-
-		// Copy path to fixed-size array (max 63 chars + null terminator)
-		pathBytes := []byte(path)
-		copyLen := len(pathBytes)
-		if copyLen >= 64 {
-			copyLen = 63 // Leave space for null terminator
-		}
-
-		copy(ebpfPolicy.AllowedPaths[i][:copyLen], pathBytes)
-		ebpfPolicy.AllowedPaths[i][copyLen] = 0 // Null terminator
-		ebpfPolicy.PathCount++
-	}
-
-	return ebpfPolicy
-}
-
 // parseSyscallEvent decodes the CO-RE `struct syscall_event` emitted by
 // bpf/syscall_monitor.c (see that file for the authoritative layout):
 //
@@ -1908,23 +1757,6 @@ func (cp *ContainerPolicy) Validate() error {
 	}
 	if cp.EnforcementMode > 3 {
 		return fmt.Errorf("invalid enforcement mode: %d", cp.EnforcementMode)
-	}
-	return nil
-}
-
-func (np *NetworkPolicy) Validate() error {
-	if np.AllowedEgressPorts == nil || np.AllowedIngressPorts == nil {
-		return fmt.Errorf("port maps cannot be nil")
-	}
-	if np.EnforcementMode > 3 {
-		return fmt.Errorf("invalid enforcement mode: %d", np.EnforcementMode)
-	}
-	return nil
-}
-
-func (fp *FilePolicy) Validate() error {
-	if fp.EnforcementMode > 3 {
-		return fmt.Errorf("invalid enforcement mode: %d", fp.EnforcementMode)
 	}
 	return nil
 }
