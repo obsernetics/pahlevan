@@ -203,6 +203,59 @@ func TestActionDenies(t *testing.T) {
 	}
 }
 
+func TestActionString(t *testing.T) {
+	for a, want := range map[Action]string{
+		ActionLearn:  "Learn",
+		ActionDeny:   "Deny",
+		ActionKill:   "Kill",
+		ActionAudit:  "Audit",
+		ActionSignal: "Signal",
+	} {
+		if got := a.String(); got != want {
+			t.Errorf("Action(%d).String() = %q, want %q", a, got, want)
+		}
+	}
+	// Anything the kernel programs do not implement renders numerically rather
+	// than as a blank or a guess, since it may reach a log line.
+	if got := Action(99).String(); got != "Action(99)" {
+		t.Errorf("Action(99).String() = %q, want %q", got, "Action(99)")
+	}
+}
+
+func TestErrnoConst(t *testing.T) {
+	named := map[syscall.Errno]string{
+		syscall.EPERM:        "EPERM",
+		syscall.ENOENT:       "ENOENT",
+		syscall.EACCES:       "EACCES",
+		syscall.EIO:          "EIO",
+		syscall.ENOSYS:       "ENOSYS",
+		syscall.ECONNREFUSED: "ECONNREFUSED",
+		syscall.ENETUNREACH:  "ENETUNREACH",
+		syscall.EHOSTUNREACH: "EHOSTUNREACH",
+	}
+	for e, want := range named {
+		if got := errnoConst(e); got != want {
+			t.Errorf("errnoConst(%d) = %q, want %q", e, got, want)
+		}
+	}
+	// An errno with no case of its own renders numerically, not as the empty
+	// string syscall.Errno.Error() would return for a truly unknown value.
+	if got := errnoConst(syscall.Errno(4095)); got != "errno 4095" {
+		t.Errorf("errnoConst(4095) = %q, want %q", got, "errno 4095")
+	}
+}
+
+func TestSignalName(t *testing.T) {
+	if got := signalName(syscall.SIGTERM); got != "terminated" {
+		t.Errorf("signalName(SIGTERM) = %q, want %q", got, "terminated")
+	}
+	// Signal 32 has no name on Linux; (syscall.Signal).String reports it as
+	// "signal 32", and signalName must not double the prefix.
+	if got := signalName(syscall.Signal(32)); got != "signal 32" {
+		t.Errorf("signalName(32) = %q, want %q", got, "signal 32")
+	}
+}
+
 func TestEnforcementSpecString(t *testing.T) {
 	for _, tc := range []struct {
 		spec EnforcementSpec
