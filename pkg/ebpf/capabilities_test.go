@@ -228,6 +228,45 @@ func TestSystemCapabilities_GetFallbackMode(t *testing.T) {
 	}
 }
 
+// Each probe reads real host state rather than a fake: /sys/kernel/debug,
+// cgroup v2, a netlink socket, an eBPF program load. There is nothing to
+// stub, since a stub would test the stub instead of the probe. What is
+// portable across hosts is that none of them error out or hang; the bool
+// itself depends on what this host actually has.
+func TestCapabilityChecker_checkTCSupport(t *testing.T) {
+	checker := NewCapabilityChecker()
+	_ = checker.checkTCSupport()
+}
+
+func TestCapabilityChecker_checkTracepointSupport(t *testing.T) {
+	checker := NewCapabilityChecker()
+	_ = checker.checkTracepointSupport()
+}
+
+func TestCapabilityChecker_checkKProbeSupport(t *testing.T) {
+	checker := NewCapabilityChecker()
+	_ = checker.checkKProbeSupport()
+}
+
+func TestCapabilityChecker_checkUProbeSupport(t *testing.T) {
+	checker := NewCapabilityChecker()
+	_ = checker.checkUProbeSupport()
+}
+
+func TestCapabilityChecker_checkCGroupSupport(t *testing.T) {
+	checker := NewCapabilityChecker()
+	_ = checker.checkCGroupSupport()
+}
+
+func TestCapabilityChecker_checkNetlinkSupport(t *testing.T) {
+	checker := NewCapabilityChecker()
+	// A netlink socket needs no special privilege, so this one has a known
+	// answer unlike the others above.
+	if !checker.checkNetlinkSupport() {
+		t.Error("netlink socket creation failed; AF_NETLINK should need no special privilege")
+	}
+}
+
 func TestCapabilityChecker_commandExists(t *testing.T) {
 	checker := NewCapabilityChecker()
 
