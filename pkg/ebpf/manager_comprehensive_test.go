@@ -134,114 +134,6 @@ func TestContainerPolicy_ComplexValidation(t *testing.T) {
 	}
 }
 
-func TestNetworkPolicy_PortRangeValidation(t *testing.T) {
-	tests := []struct {
-		name    string
-		policy  *NetworkPolicy
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name: "valid port ranges",
-			policy: &NetworkPolicy{
-				AllowedEgressPorts:  map[uint16]bool{80: true, 443: true, 8080: true},
-				AllowedIngressPorts: map[uint16]bool{8080: true, 9090: true},
-				EnforcementMode:     1,
-			},
-			wantErr: false,
-		},
-		{
-			name: "well-known ports",
-			policy: &NetworkPolicy{
-				AllowedEgressPorts:  map[uint16]bool{22: true, 53: true, 80: true, 443: true},
-				AllowedIngressPorts: map[uint16]bool{},
-				EnforcementMode:     1,
-			},
-			wantErr: false,
-		},
-		{
-			name: "high ports",
-			policy: &NetworkPolicy{
-				AllowedEgressPorts:  map[uint16]bool{32768: true, 49152: true, 65535: true},
-				AllowedIngressPorts: map[uint16]bool{32000: true},
-				EnforcementMode:     1,
-			},
-			wantErr: false,
-		},
-		{
-			name: "reserved port 0",
-			policy: &NetworkPolicy{
-				AllowedEgressPorts:  map[uint16]bool{0: true},
-				AllowedIngressPorts: map[uint16]bool{},
-				EnforcementMode:     1,
-			},
-			wantErr: true,
-			errMsg:  "port 0 is reserved",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.policy.ValidatePortRanges()
-
-			if tt.wantErr {
-				assert.Error(t, err)
-				if tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestFilePolicy_SecurityLevels(t *testing.T) {
-	tests := []struct {
-		name          string
-		policy        *FilePolicy
-		expectedLevel SecurityLevel
-	}{
-		{
-			name: "permissive policy",
-			policy: &FilePolicy{
-				EnforcementMode: 1,
-				AllowTmpWrites:  true,
-				AllowProcReads:  true,
-				AllowDevAccess:  true,
-			},
-			expectedLevel: SecurityLevelLow,
-		},
-		{
-			name: "moderate policy",
-			policy: &FilePolicy{
-				EnforcementMode: 2,
-				AllowTmpWrites:  true,
-				AllowProcReads:  true,
-				AllowDevAccess:  false,
-			},
-			expectedLevel: SecurityLevelMedium,
-		},
-		{
-			name: "strict policy",
-			policy: &FilePolicy{
-				EnforcementMode: 3,
-				AllowTmpWrites:  false,
-				AllowProcReads:  false,
-				AllowDevAccess:  false,
-			},
-			expectedLevel: SecurityLevelHigh,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			level := tt.policy.GetSecurityLevel()
-			assert.Equal(t, tt.expectedLevel, level)
-		})
-	}
-}
-
 func TestEventType_Processing(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -481,14 +373,6 @@ type EBPFManager struct {
 	active bool
 }
 
-type SecurityLevel string
-
-const (
-	SecurityLevelLow    SecurityLevel = "Low"
-	SecurityLevelMedium SecurityLevel = "Medium"
-	SecurityLevelHigh   SecurityLevel = "High"
-)
-
 type ProcessedEvent struct {
 	Type        EventType
 	ContainerID string
@@ -522,46 +406,6 @@ func NewEBPFManager(config *ManagerConfig) *EBPFManager {
 
 func (em *EBPFManager) IsActive() bool {
 	return em.active
-}
-
-func (np *NetworkPolicy) ValidatePortRanges() error {
-	// Check for reserved port 0
-	for port := range np.AllowedEgressPorts {
-		if port == 0 {
-			return fmt.Errorf("port 0 is reserved")
-		}
-	}
-
-	for port := range np.AllowedIngressPorts {
-		if port == 0 {
-			return fmt.Errorf("port 0 is reserved")
-		}
-	}
-
-	return nil
-}
-
-func (fp *FilePolicy) GetSecurityLevel() SecurityLevel {
-	restrictionCount := 0
-
-	if !fp.AllowTmpWrites {
-		restrictionCount++
-	}
-	if !fp.AllowProcReads {
-		restrictionCount++
-	}
-	if !fp.AllowDevAccess {
-		restrictionCount++
-	}
-
-	switch {
-	case restrictionCount >= 3:
-		return SecurityLevelHigh
-	case restrictionCount >= 1:
-		return SecurityLevelMedium
-	default:
-		return SecurityLevelLow
-	}
 }
 
 func NewEventProcessor() *EventProcessor {
@@ -720,31 +564,6 @@ func TestManager_PolicyUpdates(t *testing.T) {
 			expectError: true,
 			errorMsg:    "syscall collection not loaded",
 		},
-		{
-			name:        "update network policy without collection",
-			containerID: "test-container",
-			policy: &NetworkPolicy{
-				AllowedEgressPorts:  map[uint16]bool{80: true, 443: true},
-				AllowedIngressPorts: map[uint16]bool{8080: true},
-				EnforcementMode:     1,
-			},
-			setupFunc:   func(m *Manager) {},
-			expectError: true,
-			errorMsg:    "network collection not loaded",
-		},
-		{
-			name:        "update file policy without collection",
-			containerID: "test-container",
-			policy: &FilePolicy{
-				AllowedPaths:    []string{"/tmp", "/var/log"},
-				EnforcementMode: 1,
-				AllowTmpWrites:  true,
-				AllowProcReads:  false,
-			},
-			setupFunc:   func(m *Manager) {},
-			expectError: true,
-			errorMsg:    "file collection not loaded",
-		},
 	}
 
 	for _, tt := range tests {
@@ -755,10 +574,6 @@ func TestManager_PolicyUpdates(t *testing.T) {
 			switch policy := tt.policy.(type) {
 			case *ContainerPolicy:
 				err = manager.UpdateContainerPolicy(tt.containerID, policy)
-			case *NetworkPolicy:
-				err = manager.UpdateNetworkPolicy(tt.containerID, policy)
-			case *FilePolicy:
-				err = manager.UpdateFilePolicy(tt.containerID, policy)
 			}
 
 			if tt.expectError {

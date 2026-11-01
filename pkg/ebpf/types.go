@@ -8,8 +8,7 @@ import (
 
 // eBPF manager types
 
-// Note: ContainerPolicy, NetworkPolicy, and FilePolicy are defined in manager.go
-// to avoid duplication.
+// Note: ContainerPolicy is defined in manager.go to avoid duplication.
 
 type EventType string
 
