@@ -176,6 +176,33 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.8.0</h3>
+                        <span class="release-date">2026-11-01</span>
+                        <span class="release-pill">In progress</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="added">Added</h4>
+                        <ul>
+                            <li><code>pkg/ancestry</code>, a small LRU cache keyed by cgroup and pid that extends a process's reported lineage past the four levels <code>bpf/exec_monitor.c</code> captures per exec. Every exec event records its immediate parent as it is observed, so a later lookup can walk back one recorded hop at a time; a pid is not a stable identity on its own, so each hop is trusted only as far as the recorded comm for that pid still matches what the caller already verified, and a mismatch - the pid has been reused since - stops the walk rather than splicing an unrelated process into the lineage. <code>pkg/export</code> feeds it from every exec and extends an event's <code>Ancestry</code> and <code>AncestryChain</code> once the kernel's own capture hits its limit, so <code>serverSpawnedShell</code> - the signal that tells a web shell from an ordinary exec by the request-serving process in its ancestry - now sees past the captured four hops. Closes the &quot;ancestry matchable at any depth&quot; gap in <a href="https://github.com/obsernetics/pahlevan/blob/main/ROADMAP.md" target="_blank" rel="noopener">ROADMAP.md</a> for lineage reporting; the kernel-side admission decision in <code>processFilter.parentProcesses</code> still enforces on the first hop only, which the roadmap now says explicitly.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li><code>PahlevanPolicyReconciler.handleTransition</code> called <code>EBPFManager.UpdateContainerPolicy</code> for every container on every <code>PahlevanPolicy</code> (v1alpha1) transition to enforce <code>container_policies</code>, a BPF map that has not existed since the allow-set architecture replaced it. The call failed every time with &quot;container_policies map not found&quot;, logging an error and failing a trace span per container while the policy still transitioned to <code>Enforcing</code> regardless. Removed: enforcement runs through the node agent's adaptive controller and its allow-sets, not through this status controller.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="removed">Removed</h4>
+                        <ul>
+                            <li><code>pkg/clusterdata</code>, a fully implemented and tested read layer for a console that settled on the gRPC event stream instead (<code>cmd/pahlevan/commands/uisource.go</code>). Zero importers anywhere in the tree.</li>
+                            <li><code>Manager.UpdateNetworkPolicy</code>, <code>Manager.UpdateFilePolicy</code> and the <code>NetworkPolicy</code>/<code>FilePolicy</code> types in <code>pkg/ebpf</code>: dead code writing to <code>network_policies</code> and <code>file_policies</code> BPF maps that do not exist in <code>bpf/*.c</code>, with no caller anywhere in the tree outside their own tests.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.7.1</h3>
                         <span class="release-date">2026-10-31</span>
                         <span class="release-pill">Current</span>
