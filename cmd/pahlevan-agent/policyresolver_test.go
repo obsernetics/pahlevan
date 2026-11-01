@@ -13,7 +13,27 @@ import (
 	"github.com/obsernetics/pahlevan/internal/adaptive"
 	policyv1beta1 "github.com/obsernetics/pahlevan/pkg/apis/policy/v1beta1"
 	"github.com/obsernetics/pahlevan/pkg/attribution"
+	"github.com/obsernetics/pahlevan/pkg/netidentity"
 )
+
+// WithPeers wires the identity index on afterward rather than at
+// construction, since it is shared with the adaptive controller and built
+// once in main. The resolver must carry whatever is passed, including nil,
+// since a nil index is the documented degraded mode: selector peers reported
+// as unrepresentable instead of expanded.
+func TestWithPeers(t *testing.T) {
+	r := newPolicyResolver(nil, "node-a")
+	idx := netidentity.New(netidentity.Options{})
+
+	got := r.WithPeers(idx)
+
+	if got != r {
+		t.Fatal("WithPeers did not return the same resolver for chaining")
+	}
+	if r.peers != idx {
+		t.Fatal("WithPeers did not store the index it was given")
+	}
+}
 
 func boolPtr(b bool) *bool { return &b }
 

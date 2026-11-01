@@ -2,8 +2,12 @@ package ebpf
 
 import (
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 )
 
 // buildShellRec assembles the wire format of `struct shell_event` exactly as
@@ -133,6 +137,57 @@ func TestTraceShellForPIDRejectsADeletedExecutable(t *testing.T) {
 	// pid 0 has no /proc entry, so this exercises the readlink failure path.
 	if err := m.TraceShellForPID(0); err == nil {
 		t.Error("tracing pid 0 succeeded")
+	}
+}
+
+// A path already in shellLinks is a no-op, not a second attach - two
+// containers commonly share one image, and the first probe already covers
+// every process running it.
+func TestTraceShellLockedIsIdempotent(t *testing.T) {
+	m := &Manager{
+		shellCollection: &ebpf.Collection{Programs: map[string]*ebpf.Program{}},
+		shellLinks:      map[string]link.Link{"/bin/bash": nil},
+	}
+	if err := m.traceShellLocked("/bin/bash"); err != nil {
+		t.Errorf("re-tracing an already-traced path returned %v, want nil", err)
+	}
+}
+
+// handle_readline missing from the loaded object is reported by name, not as
+// a generic attach failure, since the two causes call for different fixes.
+func TestTraceShellLockedWithoutTheProgram(t *testing.T) {
+	m := &Manager{shellCollection: &ebpf.Collection{Programs: map[string]*ebpf.Program{}}}
+	err := m.traceShellLocked("/bin/bash")
+	if err == nil || !strings.Contains(err.Error(), "handle_readline") {
+		t.Errorf("traceShellLocked() = %v, want an error naming handle_readline", err)
+	}
+}
+
+// A pid that does not exist, or whose /proc has already gone, must fail
+// cleanly rather than attach to whatever that path happens to resolve to.
+func TestTraceShellForPIDWithoutTheProcess(t *testing.T) {
+	m := &Manager{shellCollection: &ebpf.Collection{Programs: map[string]*ebpf.Program{}}}
+	const noSuchPID = 1<<31 - 1
+	err := m.TraceShellForPID(noSuchPID)
+	if err == nil {
+		t.Fatal("TraceShellForPID succeeded for a pid that cannot exist")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprint(noSuchPID)) {
+		t.Errorf("error %q does not name the pid", err)
+	}
+}
+
+func TestSetShellEnabledLockedWithoutTheMonitor(t *testing.T) {
+	m := &Manager{}
+	if err := m.setShellEnabledLocked(true); err == nil {
+		t.Error("setShellEnabledLocked succeeded with no shell monitor loaded")
+	}
+}
+
+func TestSetShellEnabledLockedWithoutTheMap(t *testing.T) {
+	m := &Manager{shellCollection: &ebpf.Collection{Maps: map[string]*ebpf.Map{}}}
+	if err := m.setShellEnabledLocked(true); err == nil {
+		t.Error("setShellEnabledLocked succeeded with no shell_config map")
 	}
 }
 
