@@ -236,28 +236,27 @@ polish item.
   `ContainerProfile` rather than inferred from the event stream, and a policy
   explain view. See [Version 4](#version-4).
 - **In progress: an optional dashboard (4.0).** `pkg/dashboard` and
-  `cmd/pahlevan-dashboard` are in the tree, with the deployment artifacts off
-  by default. Reads are filtered by a `SubjectAccessReview` per request and the
-  reviews are never cached across requests, so a viewer sees only what their own
-  RBAC allows and revoking access takes effect immediately. An unreachable API
-  server returns 503 rather than an empty page, because "no access" and "no
-  answer" look identical otherwise and send the reader to different people.
-  The shipped manifests do not pass `--agent`, so there is no live event store
-  yet and the views say so rather than drawing zeroes.
-  The original entry, for the commitments it still has to meet:
-
-- **Planned: an optional dashboard (4.0).** A deployable web view of what each
-  workload does - process tree, learned file, network and syscall surface, the
-  learning-to-enforcement flow, and what was denied and why - drawn as diagrams
-  rather than more tables. Optional in the real sense: absent from
-  `install.yaml` and the default Helm values, a separate Deployment, off unless
-  asked for. Authentication and authorisation delegated to Kubernetes through
-  `TokenReview` and a `SubjectAccessReview` per read, so a viewer sees only what
-  their own RBAC allows; read-only by default; no cluster-admin service account;
-  TLS and `ClusterIP` only with a `NetworkPolicy` alongside; a strict CSP with
-  no inline script and no external origin, because a security tool whose
-  dashboard loads a chart library from a CDN has made every viewer's browser
-  trust a third party. See [Version 4](#version-4).
+  `cmd/pahlevan-dashboard` are in the tree: a deployable web view of what each
+  workload does, drawn as diagrams rather than more tables. It meets the
+  commitments the original entry made for it. Optional in the real sense:
+  absent from `install.yaml` and the default Helm values, a separate
+  Deployment in `charts/pahlevan-operator/templates/dashboard.yaml`, off
+  unless `dashboard.enabled` is set. Authentication and authorisation are
+  delegated to Kubernetes through `TokenReview` and a `SubjectAccessReview`
+  per request, never cached across requests, so a viewer sees only what their
+  own RBAC allows and revoking access takes effect immediately; read-only; no
+  cluster-admin service account. TLS and `ClusterIP` only, with a
+  `NetworkPolicy` shipped alongside. A strict Content-Security-Policy with no
+  inline script and no external origin, enforced in `pkg/dashboard/security.go`
+  - a security tool whose dashboard loads a chart library from a CDN has made
+  every viewer's browser trust a third party. An unreachable API server
+  returns 503 rather than an empty page, because "no access" and "no answer"
+  look identical otherwise and send the reader to different people. The
+  process tree, the learning-to-enforcement flow and the attack surface are
+  drawn as SVG rather than pulled in from a charting library, which the CSP
+  above forbids loading. Still missing: the shipped manifests do not pass
+  `--agent`, so there is no live event store yet and the views say so rather
+  than drawing zeroes. See [Version 4](#version-4).
 - **Planned: Kubernetes audit-log ingestion.** Pahlevan sees what happens on a
   node and nothing of what happens at the API server, so a `kubectl exec`, a
   role binding granted, or a secret read through the API is invisible to it.
@@ -274,10 +273,25 @@ polish item.
   they were seen and lands on a nameserver they may control.
   Still missing: nothing captures DNS answers yet, so the passive naming path
   has no producer and a public address is still reported as an address.
-- **Planned: ancestry matchable at any depth.** Exec events carry four levels,
-  and `processFilter.parentProcesses` enforces on the first hop only. A policy
-  cannot say "denied if any ancestor was a shell". A process cache keyed by a
-  stable execution id would lift both limits.
+- **Done in the tree: ancestry matchable past the four captured levels.**
+  Exec events carry four levels, truncated there because a BPF LSM hook has
+  no bound a verifier will accept for walking further. `pkg/ancestry` lifts
+  that limit in userspace instead: a small cache, keyed by cgroup and pid,
+  records each exec's immediate parent as it is observed, so a later lookup
+  can walk back past the four captured levels one recorded hop at a time. A
+  pid is not a stable identity on its own - the kernel reuses it - so every
+  hop is trusted only as far as the comm recorded for that pid still matches
+  what the caller already verified; a mismatch means the pid has been reused
+  since and the walk stops there rather than splicing an unrelated process
+  into the lineage. `pkg/export` feeds it from every exec and extends an
+  event's reported ancestry, and the signal that reads ancestry to tell a web
+  shell from an ordinary exec - `serverSpawnedShell` in `pkg/export/postex.go`
+  - now sees past the captured four hops as a result.
+  Still planned: `processFilter.parentProcesses` is a kernel-side,
+  real-time admission decision and still enforces on the first hop only - the
+  cache answers "what is this process's lineage" after the fact, not "should
+  this exec be allowed", and a policy still cannot say "deny if any ancestor
+  was a shell" at the point of the exec itself.
 - **Planned: enforcement without the BPF LSM.** The four LSM programs need
   `lsm=bpf` on the kernel command line, which most distributions do not set.
   The `commit_creds` kprobe and the syscall tracepoint already work without it;
@@ -367,8 +381,8 @@ polish item.
   field keeps its JSON name, type and nesting, and a test enforces that claim
   and says to ship a webhook if it ever breaks. Still to do: the controllers
   reconcile `v1alpha1` only. `v1beta1.AddToScheme` is already called from the
-  operator, the agent, the CLI and `pkg/clusterdata`, but nothing watches or
-  reconciles a `v1beta1` object directly yet.
+  operator, the agent and the CLI, but nothing watches or reconciles a
+  `v1beta1` object directly yet.
 
 ## Later
 

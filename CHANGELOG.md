@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-01
+
+### Added
+
+- `pkg/ancestry`, a small LRU cache keyed by cgroup and pid that extends a
+  process's reported lineage past the four levels `bpf/exec_monitor.c`
+  captures per exec. Every exec event records its immediate parent as it is
+  observed, so a later lookup can walk back one recorded hop at a time; a
+  pid is not a stable identity on its own, so each hop is trusted only as
+  far as the recorded comm for that pid still matches what the caller
+  already verified, and a mismatch - the pid has been reused since - stops
+  the walk rather than splicing an unrelated process into the lineage.
+  `pkg/export` feeds it from every exec and extends an event's `Ancestry`
+  and `AncestryChain` once the kernel's own capture hits its limit, so
+  `serverSpawnedShell` - the signal that tells a web shell from an ordinary
+  exec by the request-serving process in its ancestry - now sees past the
+  captured four hops. Closes the "ancestry matchable at any depth" gap in
+  [ROADMAP.md](ROADMAP.md) for lineage reporting; the kernel-side admission
+  decision in `processFilter.parentProcesses` still enforces on the first
+  hop only, which the roadmap now says explicitly.
+
+### Fixed
+
+- `PahlevanPolicyReconciler.handleTransition` called
+  `EBPFManager.UpdateContainerPolicy` for every container on every
+  `PahlevanPolicy` (v1alpha1) transition to enforce `container_policies`,
+  a BPF map that has not existed since the allow-set architecture replaced
+  it. The call failed every time with "container_policies map not found",
+  logging an error and failing a trace span per container while the policy
+  still transitioned to `Enforcing` regardless. Removed: enforcement runs
+  through the node agent's adaptive controller and its allow-sets, not
+  through this status controller.
+
+### Removed
+
+- `pkg/clusterdata`, a fully implemented and tested read layer for a console
+  that settled on the gRPC event stream instead (`cmd/pahlevan/commands/uisource.go`).
+  Zero importers anywhere in the tree.
+- `Manager.UpdateNetworkPolicy`, `Manager.UpdateFilePolicy` and the
+  `NetworkPolicy`/`FilePolicy` types in `pkg/ebpf`: dead code writing to
+  `network_policies` and `file_policies` BPF maps that do not exist in
+  `bpf/*.c`, with no caller anywhere in the tree outside their own tests.
+
 ## [3.7.1] - 2026-10-31
 
 ### Changed
