@@ -111,3 +111,31 @@ func TestSyscallNameFallback(t *testing.T) {
 		t.Errorf("unknown syscall rendered as %q", got)
 	}
 }
+
+func TestAncestryChainFromAncestorsEmpty(t *testing.T) {
+	if got := AncestryChainFromAncestors(nil, "curl"); got != "curl" {
+		t.Errorf("empty ancestry = %q, want the leaf alone", got)
+	}
+	if got := AncestryChainFromAncestors([]AncestorInfo{}, "curl"); got != "curl" {
+		t.Errorf("empty (non-nil) ancestry = %q, want the leaf alone", got)
+	}
+}
+
+func TestAncestryChainFromAncestorsOrdersOldestFirst(t *testing.T) {
+	got := AncestryChainFromAncestors([]AncestorInfo{
+		{PID: 300, Comm: "sh"},
+		{PID: 200, Comm: "php-fpm"},
+		{PID: 100, Comm: "nginx"},
+	}, "curl")
+	want := "nginx -> php-fpm -> sh -> curl"
+	if got != want {
+		t.Errorf("chain = %q, want %q", got, want)
+	}
+}
+
+func TestAncestryChainFromAncestorsEmptyLeaf(t *testing.T) {
+	got := AncestryChainFromAncestors([]AncestorInfo{{PID: 1, Comm: "init"}}, "")
+	if got != "init -> " {
+		t.Errorf("chain with empty leaf = %q, want %q", got, "init -> ")
+	}
+}

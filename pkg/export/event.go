@@ -252,6 +252,22 @@ type AncestorInfo struct {
 	Comm string `json:"comm"`
 }
 
+// AncestryChainFromAncestors renders a lineage oldest-first with the execing
+// process last, e.g. "nginx -> sh -> curl", matching how pkg/ebpf renders the
+// ancestry it captures directly. ancestry is nearest-ancestor-first, the same
+// order ExecInfo.Ancestry carries.
+func AncestryChainFromAncestors(ancestry []AncestorInfo, leaf string) string {
+	if len(ancestry) == 0 {
+		return leaf
+	}
+	parts := make([]string, 0, len(ancestry)+1)
+	for i := len(ancestry) - 1; i >= 0; i-- {
+		parts = append(parts, ancestry[i].Comm)
+	}
+	parts = append(parts, leaf)
+	return strings.Join(parts, " -> ")
+}
+
 // CapabilityInfo describes a capability check seen by the LSM capable hook.
 type CapabilityInfo struct {
 	Number uint32 `json:"number"`

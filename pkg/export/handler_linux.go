@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/obsernetics/pahlevan/pkg/ancestry"
 	"github.com/obsernetics/pahlevan/pkg/ebpf"
 )
 
@@ -32,6 +33,12 @@ type HandlerOptions struct {
 	// Zero uses DefaultAttributionCacheSize; a negative value disables the
 	// cache.
 	AttributionCacheSize int
+	// AncestryCacheSize bounds the process lineage cache that lets a denied
+	// exec's reported ancestry run past the four levels bpf/exec_monitor.c
+	// captures per event. Zero uses ancestry.DefaultMaxEntries; a negative
+	// value disables it and every exec reports exactly the ancestry the
+	// kernel captured, no further.
+	AncestryCacheSize int
 	// Now overrides the wall clock, for tests.
 	Now func() time.Time
 }
@@ -54,6 +61,8 @@ type Handler struct {
 	cacheMax int
 	cacheMu  sync.RWMutex
 	cache    map[uint64]*KubernetesRef
+
+	lineage *ancestry.Cache
 }
 
 // compile time check that the adapter satisfies the eBPF sink interface.
@@ -79,6 +88,13 @@ func NewHandler(sink Enqueuer, opts HandlerOptions) *Handler {
 	}
 	if h.cacheMax > 0 {
 		h.cache = make(map[uint64]*KubernetesRef)
+	}
+	lineageMax := opts.AncestryCacheSize
+	if lineageMax == 0 {
+		lineageMax = ancestry.DefaultMaxEntries
+	}
+	if lineageMax > 0 {
+		h.lineage = ancestry.NewCache(lineageMax)
 	}
 	return h
 }
@@ -114,8 +130,49 @@ func (h *Handler) HandleProcessEvent(event *ebpf.ProcessEvent) error {
 	if event == nil || !h.filter.AllowType(EventTypeProcess) {
 		return nil
 	}
-	h.emit(FromProcessEvent(event, h.now()))
+	e := FromProcessEvent(event, h.now())
+	h.extendAncestry(e, event)
+	h.emit(e)
 	return nil
+}
+
+// maxExtendedAncestryHops bounds how far extendAncestry walks the lineage
+// cache beyond the AncestryDepth levels bpf/exec_monitor.c captures per
+// event. A lineage this project reports on - a shell a handful of hops under
+// a request-serving process - never comes close; the bound exists for a
+// pathological chain, not the ordinary one, and keeps one lookup's cost
+// fixed regardless of how long a container has been running.
+const maxExtendedAncestryHops = 60
+
+// extendAncestry records this exec for later lookups and, when the kernel's
+// own capture ran out of room, extends e's reported ancestry as far as the
+// cache can still verify.
+//
+// Recording happens on every call regardless of whether this event itself
+// needs extending: the value of one link is realised only once a later,
+// unrelated exec walks back through it, and that later event has no way to
+// ask for a link that was never recorded.
+func (h *Handler) extendAncestry(e *Event, raw *ebpf.ProcessEvent) {
+	if h.lineage == nil {
+		return
+	}
+	h.lineage.Record(raw.CgroupID, raw.PID, raw.Comm, raw.PPID, raw.ParentComm)
+
+	if e.Exec == nil || len(e.Exec.Ancestry) != ebpf.AncestryDepth {
+		// Fewer links than the kernel's own capture limit means the chain
+		// already reached its end - pid 1, or a parent the kernel had
+		// nothing further to say about - and there is nothing to extend.
+		return
+	}
+	oldest := e.Exec.Ancestry[len(e.Exec.Ancestry)-1]
+	extra := h.lineage.Extend(raw.CgroupID, oldest.PID, oldest.Comm, maxExtendedAncestryHops)
+	if len(extra) == 0 {
+		return
+	}
+	for _, a := range extra {
+		e.Exec.Ancestry = append(e.Exec.Ancestry, AncestorInfo{PID: a.PID, Comm: a.Comm})
+	}
+	e.Exec.AncestryChain = AncestryChainFromAncestors(e.Exec.Ancestry, e.Process.Comm)
 }
 
 func (h *Handler) HandleCapabilityEvent(event *ebpf.CapabilityEvent) error {
