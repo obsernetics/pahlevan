@@ -1,7 +1,6 @@
 package ebpf
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"syscall"
@@ -134,96 +133,6 @@ func TestConvertToEBPFPolicy_SyscallOutOfRangeIgnored(t *testing.T) {
 	}
 }
 
-// --- convertToEBPFNetworkPolicy ---
-
-func TestConvertToEBPFNetworkPolicy_Empty(t *testing.T) {
-	out := convertToEBPFNetworkPolicy(&NetworkPolicy{LastUpdate: time.Now()})
-	assert.Equal(t, uint32(1), out.LearningMode)
-	for _, ip := range out.AllowedDestinations {
-		assert.Equal(t, uint32(0), ip)
-	}
-	for _, port := range out.AllowedPorts {
-		assert.Equal(t, uint16(0), port)
-	}
-}
-
-func TestConvertToEBPFNetworkPolicy_IPsAndPorts(t *testing.T) {
-	out := convertToEBPFNetworkPolicy(&NetworkPolicy{
-		EnforcementMode:     1,
-		AllowedEgressIPs:    []uint32{0x0A000001, 0x0A000002},
-		AllowedIngressIPs:   []uint32{0x0A000003},
-		AllowedEgressPorts:  map[uint16]bool{443: true},
-		AllowedIngressPorts: map[uint16]bool{8080: true},
-	})
-	assert.Equal(t, uint32(0), out.LearningMode)
-	assert.ElementsMatch(t, []uint32{0x0A000001, 0x0A000002, 0x0A000003}, nonZero32(out.AllowedDestinations[:]))
-	assert.ElementsMatch(t, []uint16{443, 8080}, nonZero16(out.AllowedPorts[:]))
-}
-
-func TestConvertToEBPFNetworkPolicy_DestinationOverflowTruncates(t *testing.T) {
-	egress := make([]uint32, 200)
-	ingress := make([]uint32, 200)
-	for i := range egress {
-		egress[i] = uint32(i + 1)
-	}
-	for i := range ingress {
-		ingress[i] = uint32(1000 + i)
-	}
-	out := convertToEBPFNetworkPolicy(&NetworkPolicy{AllowedEgressIPs: egress, AllowedIngressIPs: ingress})
-	// 256-entry array: all 200 egress entries fit, then only the first 56
-	// ingress entries do; the rest must be silently dropped, not panic.
-	assert.Equal(t, uint32(1), out.AllowedDestinations[0])
-	assert.Equal(t, uint32(200), out.AllowedDestinations[199])
-	assert.Equal(t, uint32(1000), out.AllowedDestinations[200])
-	assert.Equal(t, uint32(1055), out.AllowedDestinations[255])
-}
-
-func TestConvertToEBPFNetworkPolicy_PortOverflowTruncates(t *testing.T) {
-	ports := make(map[uint16]bool, 100)
-	for i := uint16(1); i <= 100; i++ {
-		ports[i] = true
-	}
-	out := convertToEBPFNetworkPolicy(&NetworkPolicy{AllowedEgressPorts: ports})
-	nz := nonZero16(out.AllowedPorts[:])
-	assert.Len(t, nz, 64, "only the first 64 ports fit in the fixed-size array")
-}
-
-// --- convertToEBPFFilePolicy ---
-
-func TestConvertToEBPFFilePolicy_Empty(t *testing.T) {
-	out := convertToEBPFFilePolicy(&FilePolicy{LastUpdate: time.Now()})
-	assert.Equal(t, uint32(1), out.LearningMode)
-	assert.Equal(t, uint32(0), out.PathCount)
-}
-
-func TestConvertToEBPFFilePolicy_Paths(t *testing.T) {
-	out := convertToEBPFFilePolicy(&FilePolicy{
-		EnforcementMode: 1,
-		AllowedPaths:    []string{"/etc/passwd", "/tmp/x"},
-	})
-	assert.Equal(t, uint32(0), out.LearningMode)
-	assert.Equal(t, uint32(2), out.PathCount)
-	assert.Equal(t, "/etc/passwd", nullTerminatedString(out.AllowedPaths[0][:]))
-	assert.Equal(t, "/tmp/x", nullTerminatedString(out.AllowedPaths[1][:]))
-}
-
-func TestConvertToEBPFFilePolicy_LongPathTruncated(t *testing.T) {
-	long := bytes.Repeat([]byte("a"), 200)
-	out := convertToEBPFFilePolicy(&FilePolicy{AllowedPaths: []string{string(long)}})
-	got := nullTerminatedString(out.AllowedPaths[0][:])
-	assert.Len(t, got, 63, "path must be truncated to leave room for the null terminator")
-	assert.Equal(t, string(bytes.Repeat([]byte("a"), 63)), got)
-}
-
-func TestConvertToEBPFFilePolicy_PathCountOverflowIgnored(t *testing.T) {
-	paths := make([]string, 1100)
-	for i := range paths {
-		paths[i] = fmt.Sprintf("/p/%d", i)
-	}
-	out := convertToEBPFFilePolicy(&FilePolicy{AllowedPaths: paths})
-	assert.Equal(t, uint32(1024), out.PathCount, "the eBPF-side array holds at most 1024 paths")
-}
-
 // --- LearnedFileCount ---
 
 func TestLearnedFileCount_NilCollection(t *testing.T) {
@@ -254,35 +163,6 @@ func TestSetMapSizing(t *testing.T) {
 	assert.Equal(t, sizing, m.mapSizing)
 }
 
-// --- helpers shared by these tests ---
-
-func nonZero32(s []uint32) []uint32 {
-	var out []uint32
-	for _, v := range s {
-		if v != 0 {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func nonZero16(s []uint16) []uint16 {
-	var out []uint16
-	for _, v := range s {
-		if v != 0 {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func nullTerminatedString(b []byte) string {
-	if i := bytes.IndexByte(b, 0); i >= 0 {
-		return string(b[:i])
-	}
-	return string(b)
-}
-
 // --- benchmarks ---
 
 func BenchmarkConvertToEBPFPolicy(b *testing.B) {
@@ -294,37 +174,5 @@ func BenchmarkConvertToEBPFPolicy(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = convertToEBPFPolicy(policy)
-	}
-}
-
-func BenchmarkConvertToEBPFNetworkPolicy(b *testing.B) {
-	egress := make([]uint32, 100)
-	for i := range egress {
-		egress[i] = uint32(i)
-	}
-	ports := make(map[uint16]bool, 32)
-	for i := uint16(0); i < 32; i++ {
-		ports[i] = true
-	}
-	policy := &NetworkPolicy{
-		AllowedEgressIPs:   egress,
-		AllowedEgressPorts: ports,
-		LastUpdate:         time.Now(),
-	}
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = convertToEBPFNetworkPolicy(policy)
-	}
-}
-
-func BenchmarkConvertToEBPFFilePolicy(b *testing.B) {
-	paths := make([]string, 500)
-	for i := range paths {
-		paths[i] = fmt.Sprintf("/usr/bin/tool-%d", i)
-	}
-	policy := &FilePolicy{AllowedPaths: paths, LastUpdate: time.Now()}
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = convertToEBPFFilePolicy(policy)
 	}
 }

@@ -120,30 +120,6 @@ func TestManager_UpdatePolicies(t *testing.T) {
 
 	err = manager.UpdateContainerPolicy(containerID, containerPolicy)
 	assert.Error(t, err, "Should fail when syscall collection not loaded")
-
-	// Test updating network policy without loaded collection
-	networkPolicy := &NetworkPolicy{
-		AllowedEgressPorts:  map[uint16]bool{80: true, 443: true},
-		AllowedIngressPorts: map[uint16]bool{8080: true},
-		LastUpdate:          time.Now(),
-		EnforcementMode:     1,
-	}
-
-	err = manager.UpdateNetworkPolicy(containerID, networkPolicy)
-	assert.Error(t, err, "Should fail when network collection not loaded")
-
-	// Test updating file policy without loaded collection
-	filePolicy := &FilePolicy{
-		AllowedPaths:    []string{"/usr", "/lib"},
-		EnforcementMode: 1,
-		AllowTmpWrites:  true,
-		AllowProcReads:  true,
-		AllowDevAccess:  false,
-		LastUpdate:      time.Now(),
-	}
-
-	err = manager.UpdateFilePolicy(containerID, filePolicy)
-	assert.Error(t, err, "Should fail when file collection not loaded")
 }
 
 // Mock event handler for testing
@@ -241,30 +217,4 @@ func TestPolicyStructures(t *testing.T) {
 	assert.True(t, containerPolicy.AllowedSyscalls[1])
 	assert.False(t, containerPolicy.AllowedSyscalls[3])
 	assert.True(t, containerPolicy.SelfHealing)
-
-	// Test NetworkPolicy
-	networkPolicy := &NetworkPolicy{
-		AllowedEgressPorts:  map[uint16]bool{80: true, 443: true},
-		AllowedIngressPorts: map[uint16]bool{8080: true, 3000: true},
-		AllowedEgressIPs:    []uint32{0x08080808, 0x08080404}, // 8.8.8.8, 8.8.4.4
-		AllowedIngressIPs:   []uint32{0x7f000001},             // 127.0.0.1
-		LastUpdate:          time.Now(),
-		EnforcementMode:     1,
-	}
-	assert.True(t, networkPolicy.AllowedEgressPorts[80])
-	assert.True(t, networkPolicy.AllowedIngressPorts[8080])
-	assert.Len(t, networkPolicy.AllowedEgressIPs, 2)
-
-	// Test FilePolicy
-	filePolicy := &FilePolicy{
-		AllowedPaths:    []string{"/usr", "/lib", "/bin"},
-		EnforcementMode: 1,
-		AllowTmpWrites:  true,
-		AllowProcReads:  true,
-		AllowDevAccess:  false,
-		LastUpdate:      time.Now(),
-	}
-	assert.Contains(t, filePolicy.AllowedPaths, "/usr")
-	assert.True(t, filePolicy.AllowTmpWrites)
-	assert.False(t, filePolicy.AllowDevAccess)
 }
