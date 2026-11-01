@@ -82,3 +82,42 @@ func BenchmarkEnqueueWhenFull(b *testing.B) {
 func testEventFor(t EventType) *Event {
 	return &Event{Version: SchemaVersion, Type: t, Action: ActionObserve}
 }
+
+// BenchmarkHandleProcessEventWithAncestryExtension measures the exec hot
+// path with the lineage cache enabled: a Record on every call plus, once the
+// cache has something to offer, an Extend walking back past the four
+// captured levels. This is what every exec event pays, denied or not.
+func BenchmarkHandleProcessEventWithAncestryExtension(b *testing.B) {
+	q := NewQueue(discardExporter{}, QueueOptions{
+		Capacity:      1 << 16,
+		BatchSize:     512,
+		FlushInterval: time.Millisecond,
+	})
+	defer func() { _ = q.Close() }()
+
+	h := NewHandler(q, HandlerOptions{})
+
+	ancestry := make([]ebpf.Ancestor, ebpf.AncestryDepth)
+	for i := range ancestry {
+		ancestry[i] = ebpf.Ancestor{PID: uint32(900 + i), Comm: "mid"}
+	}
+	ancestry[len(ancestry)-1] = ebpf.Ancestor{PID: 20, Comm: "oldestCaptured"}
+
+	// Seed a lineage behind the oldest captured ancestor, the same shape
+	// extendAncestry walks on every call once primed.
+	_ = h.HandleProcessEvent(&ebpf.ProcessEvent{CgroupID: 7, PID: 1, Comm: "root"})
+	_ = h.HandleProcessEvent(&ebpf.ProcessEvent{
+		CgroupID: 7, PID: 20, PPID: 1, Comm: "oldestCaptured", ParentComm: "root",
+	})
+
+	exec := &ebpf.ProcessEvent{
+		CgroupID: 7, PID: 999, PPID: 900, Comm: "curl", Filename: "/usr/bin/curl",
+		Ancestry: ancestry,
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = h.HandleProcessEvent(exec)
+	}
+}
