@@ -100,6 +100,38 @@ func TestManager_StartStop(t *testing.T) {
 	})
 }
 
+// TestManager_StartFailureAllowsRetry guards against Start leaving the
+// manager permanently marked as running after AttachPrograms fails. Before
+// the fix, a failed Start never reset the flag, so every later Start call -
+// even one made by a caller's own retry loop - returned "manager is already
+// running" instead of attempting to attach again, with nothing actually
+// running to show for it.
+func TestManager_StartFailureAllowsRetry(t *testing.T) {
+	manager, err := NewManager()
+	if err != nil {
+		t.Skipf("Skipping test - system doesn't support eBPF: %v", err)
+	}
+	defer manager.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// No programs loaded, so AttachPrograms fails inside Start.
+	err = manager.Start(ctx)
+	require.Error(t, err)
+
+	manager.mu.RLock()
+	running := manager.running
+	manager.mu.RUnlock()
+	assert.False(t, running, "a failed Start must not leave the manager marked as running")
+
+	// A caller retrying Start must get the same attach failure again, not
+	// "manager is already running".
+	err = manager.Start(ctx)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "already running")
+}
+
 func TestManager_UpdatePolicies(t *testing.T) {
 	manager, err := NewManager()
 	if err != nil {
