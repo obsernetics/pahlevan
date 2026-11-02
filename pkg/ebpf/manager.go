@@ -1072,6 +1072,11 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// Attach programs
 	if err := m.AttachPrograms(); err != nil {
+		// Nothing is running: let a caller's retry loop call Start again
+		// instead of getting "manager is already running" forever.
+		m.mu.Lock()
+		m.running = false
+		m.mu.Unlock()
 		return fmt.Errorf("failed to attach programs: %w", err)
 	}
 
