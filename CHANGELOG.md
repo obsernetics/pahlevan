@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-11-09
+
+### Fixed
+
+- `ebpf.Manager.Start` no longer leaves the manager permanently marked as
+  running when `AttachPrograms` fails. Previously a failed attach set
+  `running = true` and never reset it, so every later `Start` call -
+  including a caller's own retry logic - returned "manager is already
+  running" instead of attempting to attach again, with nothing actually
+  running to show for it.
+
+### Changed
+
+- Bumped `github.com/onsi/ginkgo/v2` to v2.34.0 and `github.com/spf13/pflag`
+  to v1.1.0.
+
 ## [3.8.0] - 2026-11-01
 
 ### Added

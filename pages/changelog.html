@@ -176,6 +176,26 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                 <!--pahlevan:sitegen releases-->
                 <article class="release">
                     <div class="release-head">
+                        <h3 class="release-version">3.8.1</h3>
+                        <span class="release-date">2026-11-09</span>
+                        <span class="release-pill">In progress</span>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="fixed">Fixed</h4>
+                        <ul>
+                            <li><code>ebpf.Manager.Start</code> no longer leaves the manager permanently marked as running when <code>AttachPrograms</code> fails. Previously a failed attach set <code>running = true</code> and never reset it, so every later <code>Start</code> call - including a caller's own retry logic - returned &quot;manager is already running&quot; instead of attempting to attach again, with nothing actually running to show for it.</li>
+                        </ul>
+                    </div>
+                    <div class="change-group">
+                        <h4 class="changed">Changed</h4>
+                        <ul>
+                            <li>Bumped <code>github.com/onsi/ginkgo/v2</code> to v2.34.0 and <code>github.com/spf13/pflag</code> to v1.1.0.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="release">
+                    <div class="release-head">
                         <h3 class="release-version">3.8.0</h3>
                         <span class="release-date">2026-11-01</span>
                         <span class="release-pill">Current</span>
