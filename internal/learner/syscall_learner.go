@@ -43,6 +43,14 @@ type ContainerLearningState struct {
 	LifecycleEvents     []LifecycleEvent
 	Statistics          LearningStatistics
 	Confidence          float64
+
+	// transitionPending is true while a phase transition is already scheduled
+	// for this container. checkPhaseTransition is evaluated on every syscall
+	// event, and the conditions it checks (observation count, elapsed window,
+	// stability score) stay true across many consecutive events once first
+	// met, so without this guard every one of those events would spawn its
+	// own schedulePhaseTransition goroutine.
+	transitionPending bool
 }
 
 // WorkloadReference identifies the workload
@@ -634,21 +642,28 @@ func (sl *SyscallLearner) schedulePhaseTransition(containerID string, newPhase L
 	}
 
 	state.Phase = newPhase
+	state.transitionPending = false
 	sl.updateLearningProgress(state)
 }
 
 func (sl *SyscallLearner) checkPhaseTransition(state *ContainerLearningState) {
+	if state.transitionPending {
+		return
+	}
 	switch state.Phase {
 	case PhaseBootstrap:
 		if len(state.SyscallObservations) >= sl.minObservations {
+			state.transitionPending = true
 			go sl.schedulePhaseTransition(state.ContainerID, PhaseRuntime, sl.phaseTransitionDelay)
 		}
 	case PhaseRuntime:
 		if time.Since(state.StartTime) >= state.LearningWindow {
+			state.transitionPending = true
 			go sl.schedulePhaseTransition(state.ContainerID, PhaseStabilizing, sl.phaseTransitionDelay)
 		}
 	case PhaseStabilizing:
 		if state.Statistics.StabilityScore >= 0.8 {
+			state.transitionPending = true
 			go sl.schedulePhaseTransition(state.ContainerID, PhaseProfileGenerated, sl.phaseTransitionDelay)
 		}
 	}
