@@ -184,6 +184,7 @@ docker inspect --format '{{index .RepoDigests 0}}' \
                         <h4 class="fixed">Fixed</h4>
                         <ul>
                             <li><code>internal/learner.SyscallLearner.checkPhaseTransition</code> no longer leaks a goroutine per syscall event. It runs on every syscall event, and the condition it checks for the current learning phase - observation count, elapsed window, stability score - stays true across every subsequent event once first met, so without a guard a busy container past its bootstrap threshold or learning window spawned a new <code>schedulePhaseTransition</code> goroutine on every single syscall event rather than once per transition.</li>
+                            <li>Moved to Go 1.26.11 for GO-2026-6859, an advisory in the standard library's <code>net/http</code>: a header race in <code>MaxBytesReader</code> that can crash an HTTP/1 server. <code>pkg/dashboard</code> is the one <code>http.Server</code> in this tree.</li>
                         </ul>
                     </div>
                     <div class="change-group">

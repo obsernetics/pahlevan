@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once first met, so without a guard a busy container past its bootstrap
   threshold or learning window spawned a new `schedulePhaseTransition`
   goroutine on every single syscall event rather than once per transition.
+- Moved to Go 1.26.11 for GO-2026-6859, an advisory in the standard
+  library's `net/http`: a header race in `MaxBytesReader` that can crash an
+  HTTP/1 server. `pkg/dashboard` is the one `http.Server` in this tree.
 
 ### Changed
 
