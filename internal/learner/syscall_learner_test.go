@@ -3,6 +3,7 @@ package learner
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -542,6 +543,97 @@ func TestUpdateLearningProgress_ZeroDivisorsGuarded(t *testing.T) {
 	}
 }
 
+func newBootstrapState(id string) *ContainerLearningState {
+	return &ContainerLearningState{
+		ContainerID:         id,
+		Phase:               PhaseBootstrap,
+		StartTime:           time.Now(),
+		LastActivity:        time.Now(),
+		LearningWindow:      time.Hour,
+		SyscallObservations: make(map[uint64]*SyscallObservation),
+		NetworkFlows:        make(map[string]*NetworkFlowObservation),
+		FileAccess:          make(map[string]*FileAccessObservation),
+	}
+}
+
+// TestCheckPhaseTransition_DoesNotSpawnDuplicateGoroutines guards against a
+// goroutine-per-event leak: checkPhaseTransition runs on every syscall event,
+// and once its condition for the current phase is met it stays met across
+// every subsequent event until the scheduled transition actually lands, so a
+// missing guard would spawn one new schedulePhaseTransition goroutine per
+// event rather than one per transition.
+func TestCheckPhaseTransition_DoesNotSpawnDuplicateGoroutines(t *testing.T) {
+	sl := NewSyscallLearner(10, 0.0, time.Hour, 1)
+	sl.phaseTransitionDelay = time.Hour // never actually fires during this test
+
+	state := newBootstrapState("c1")
+	state.SyscallObservations[1] = &SyscallObservation{SyscallNr: 1}
+
+	sl.mu.Lock()
+	sl.containers[state.ContainerID] = state
+	sl.mu.Unlock()
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	const iterations = 2000
+	for i := 0; i < iterations; i++ {
+		sl.mu.Lock()
+		sl.checkPhaseTransition(state)
+		sl.mu.Unlock()
+	}
+
+	// Give any (incorrectly) spawned goroutines a chance to start before we
+	// count them.
+	time.Sleep(50 * time.Millisecond)
+	after := runtime.NumGoroutine()
+
+	if diff := after - before; diff > 2 {
+		t.Fatalf("checkPhaseTransition spawned %d extra goroutines across %d calls, want at most 1", diff, iterations)
+	}
+
+	sl.mu.RLock()
+	pending := state.transitionPending
+	sl.mu.RUnlock()
+	if !pending {
+		t.Fatal("expected transitionPending to be set once the bootstrap threshold is met")
+	}
+}
+
+// TestCheckPhaseTransition_ResetsPendingAfterTransition verifies the pending
+// guard does not permanently wedge a container: once the scheduled transition
+// actually lands, transitionPending clears so the next phase can schedule its
+// own transition later.
+func TestCheckPhaseTransition_ResetsPendingAfterTransition(t *testing.T) {
+	sl := NewSyscallLearner(10, 0.0, time.Hour, 1)
+	sl.phaseTransitionDelay = 10 * time.Millisecond
+
+	state := newBootstrapState("c1")
+	state.SyscallObservations[1] = &SyscallObservation{SyscallNr: 1}
+
+	sl.mu.Lock()
+	sl.containers[state.ContainerID] = state
+	sl.checkPhaseTransition(state)
+	pendingImmediately := state.transitionPending
+	sl.mu.Unlock()
+
+	if !pendingImmediately {
+		t.Fatal("expected transitionPending true immediately after scheduling")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sl.mu.RLock()
+		phase, pending := state.Phase, state.transitionPending
+		sl.mu.RUnlock()
+		if phase == PhaseRuntime && !pending {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("phase transition did not land and clear transitionPending in time")
+}
+
 // --- Benchmarks -------------------------------------------------------------
 
 func BenchmarkProcessSyscallEvent(b *testing.B) {
@@ -573,6 +665,36 @@ func BenchmarkProcessSyscallEvent_ManyDistinct(b *testing.B) {
 			SyscallNr:   uint64(i % 400),
 			Comm:        "app",
 		})
+	}
+}
+
+// BenchmarkProcessSyscallEvent_PastBootstrapThreshold measures the hot path
+// once the container has already crossed minObservations and stays in
+// PhaseBootstrap for the rest of the run (phaseTransitionDelay parked at an
+// hour so the one legitimate scheduled transition never lands mid-benchmark).
+// Before the transitionPending guard, every iteration here spawned its own
+// schedulePhaseTransition goroutine; this benchmark's allocs/op is the
+// regression signal for that leak coming back.
+func BenchmarkProcessSyscallEvent_PastBootstrapThreshold(b *testing.B) {
+	sl := NewSyscallLearner(10, 0.0, time.Hour, 5)
+	sl.phaseTransitionDelay = time.Hour
+	if err := sl.StartLearning(context.Background(), "bench", testWorkloadRef(), nil); err != nil {
+		b.Fatalf("StartLearning: %v", err)
+	}
+	sl.mu.Lock()
+	sl.containers["bench"].Phase = PhaseBootstrap
+	sl.mu.Unlock()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := sl.ProcessSyscallEvent(&ebpf.SyscallEvent{
+			ContainerID: "bench",
+			SyscallNr:   uint64(i % 20),
+			Comm:        "app",
+		}); err != nil {
+			b.Fatalf("ProcessSyscallEvent: %v", err)
+		}
 	}
 }
 
