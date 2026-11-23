@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.8.2] - 2026-11-16
+## [3.8.2] - 2026-11-23
 
 ### Fixed
 
@@ -24,7 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bumped `golang.org/x/mod` to v0.43.0 and `golang.org/x/term` to v0.48.0.
+- Bumped `golang.org/x/mod` to v0.43.0, `golang.org/x/term` to v0.48.0,
+  `golang.org/x/net` to v0.63.0, `cel.dev/cel-go` to v0.33.4, and
+  `sigs.k8s.io/controller-runtime` to v0.25.3.
 - Bumped `sigstore/cosign-installer` to v4.1.3 in CI.
 
 ## [3.8.1] - 2026-11-09
