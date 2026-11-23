@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.2] - 2026-11-23
+
+### Fixed
+
+- `internal/learner.SyscallLearner.checkPhaseTransition` no longer leaks a
+  goroutine per syscall event. It runs on every syscall event, and the
+  condition it checks for the current learning phase - observation count,
+  elapsed window, stability score - stays true across every subsequent event
+  once first met, so without a guard a busy container past its bootstrap
+  threshold or learning window spawned a new `schedulePhaseTransition`
+  goroutine on every single syscall event rather than once per transition.
+- Moved to Go 1.26.11 for GO-2026-6859, an advisory in the standard
+  library's `net/http`: a header race in `MaxBytesReader` that can crash an
+  HTTP/1 server. `pkg/dashboard` is the one `http.Server` in this tree.
+
+### Changed
+
+- Bumped `golang.org/x/mod` to v0.43.0, `golang.org/x/term` to v0.48.0,
+  `golang.org/x/net` to v0.63.0, `cel.dev/cel-go` to v0.33.4, and
+  `sigs.k8s.io/controller-runtime` to v0.25.3.
+- Bumped `sigstore/cosign-installer` to v4.1.3 in CI.
+
 ## [3.8.1] - 2026-11-09
 
 ### Fixed
