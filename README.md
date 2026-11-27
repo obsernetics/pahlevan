@@ -5,9 +5,10 @@
 <p><b>Your workload writes its own security policy. The kernel enforces it.</b></p>
 
 <p>
-  <a href="https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/obsernetics/pahlevan/ci.yml?branch=main&label=CI&logo=github" alt="CI" /></a> <a href="https://goreportcard.com/report/github.com/obsernetics/pahlevan"><img src="https://goreportcard.com/badge/github.com/obsernetics/pahlevan" alt="Go Report Card" /></a> <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a> <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26" /></a> <a href="https://github.com/obsernetics/pahlevan/releases"><img src="https://img.shields.io/github/v/release/obsernetics/pahlevan?sort=semver&color=success" alt="Latest release" /></a> <a href="https://github.com/obsernetics/pahlevan/stargazers"><img src="https://img.shields.io/github/stars/obsernetics/pahlevan?style=flat&logo=github&color=yellow" alt="GitHub stars" /></a>
-  <br/>
-  <img src="https://img.shields.io/badge/Kubernetes-1.24%2B-326CE5?logo=kubernetes&logoColor=white" alt="Kubernetes 1.24+" /> <img src="https://img.shields.io/badge/eBPF-CO--RE-FF6600?logo=linux&logoColor=white" alt="eBPF CO-RE" /> <img src="https://img.shields.io/badge/LSM-BPF%20enforcement-8A2BE2?logo=linux&logoColor=white" alt="LSM BPF enforcement" /> <a href="#contributing"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen" alt="PRs welcome" /></a>
+  <a href="https://github.com/obsernetics/pahlevan/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/obsernetics/pahlevan/ci.yml?branch=main&label=CI&logo=github" alt="CI" /></a>
+  <a href="https://github.com/obsernetics/pahlevan/releases"><img src="https://img.shields.io/github/v/release/obsernetics/pahlevan?sort=semver&color=success" alt="Latest release" /></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26" /></a>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
 </p>
 
 <img src="docs/assets/demo.gif" alt="Pahlevan learn-then-enforce demo: a workload is profiled during a learning window, the learned surface is shown beside the enforced one, and then an attacker's read of /etc/shadow, exec of a miner, egress to an unlearned address, CAP_SYS_ADMIN, a ptrace of pid 1 and a setuid to root are each denied, killed or recorded in-kernel" width="880" />
@@ -27,59 +28,25 @@ instead of root.
        alt="Two panels. On the left, a learning window listing what an nginx container actually did: opened /etc/nginx/* and /var/log/*, connected to 10.0.1.7:5432, executed nginx, and used 61 of roughly 400 syscalls. An arrow labelled 'becomes the allow-set' leads to the right panel, enforcement, where those same three entries are marked ok and three that were never learned are refused with EPERM: /etc/shadow, /tmp/xmrig, and 45.9.1.4:80." />
 </p>
 
-## The console
-
-Run `pahlevan` to see policies, workloads, live events and ATT&CK coverage in
-one place. It only reads, so it cannot turn enforcement off.
+Run `pahlevan` for a console of policies, workloads, live events and ATT&CK
+coverage. It only reads, so it cannot turn enforcement off.
 
 ## The trade
 
 A baseline narrow enough to stop an attacker is narrow enough to stop you:
 `kubectl exec` into a pod and run `curl`, and it is denied. Start in
-`Monitoring`, which reports without denying, and use self-healing and policy
-exceptions to widen the set deliberately.
+`Monitoring`, which reports without denying, and widen the set deliberately
+with self-healing and policy exceptions.
 
-## What this covers of recent exploitation
+## What this covers
 
-Pahlevan detects no vulnerability. It observes post-exploitation, so what
-follows is a claim about what an attacker does **after** they are already
-running code, and nothing about the flaw that got them there. Every sentence
-here is backed by a row in [the CVE coverage matrix](docs/cve-coverage.md),
-which also lists what is missed.
-
-Two detections key on the structure of the event rather than on the learned
-baseline, so they fire in a workload that has learned the same operation:
-
-- **A shell or interpreter execed under a request-serving process**, for
-  example `php-fpm -> sh`. This is the kernel-visible shape of a web shell, of
-  command execution following the PHP2Shell pair
-  ([CVE-2026-109618](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w)
-  and
-  [CVE-2026-109619](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)),
-  and of the Plex2Shell chain ([CVE-2026-96652, -96654, -96655, -96656](https://nvd.nist.gov/vuln/detail/CVE-2026-96656), all
-  in CISA KEV since 2026-10-20) running its first command.
-- **A server-side script written into a directory a web server serves**, which
-  is how the PTC Windchill campaign
-  ([CVE-2026-12569](https://www.ptc.com/en/support/article/CS473270), KEV since
-  2026-06-25) was found: hex-named `.jsp` files under the login directory.
-
-Both are observation. They are computed after the kernel has decided, so
-neither blocks anything. What blocks is the learned allow-set, and a deny there
-is a statement about this workload rather than about any CVE: a miner, a proxy
-binary, a token read or a module dropped where a server loads one
-([CVE-2026-96656](https://nvd.nist.gov/vuln/detail/CVE-2026-96656)) is refused because the
-workload was never seen to do it, and would not be refused in a workload that
-had been.
-
-Three things Pahlevan does not see, stated because a security tool's own
-README is the wrong place to leave them out:
-
-- **The initial remote code execution, in every CVE above.** It happens inside
-  the vulnerable process and crosses no syscall boundary.
-- **CVE-2026-109619's memory disclosure, at all.** It reads PHP's own heap and
-  produces no kernel event. This is a blind spot, not a configuration gap.
-- **Inbound connections.** The network hook is `lsm/socket_connect`, which is
-  egress only, so the request carrying the exploit is never observed.
+Pahlevan detects no vulnerability. It observes what an attacker does **after**
+they are already running code, never the flaw that got them there, and it
+never sees inbound connections. Within that scope it flags known
+post-exploitation shapes, such as a shell spawned under a request-serving
+process, and denies anything else a workload was never seen to do. See
+[the CVE coverage matrix](docs/cve-coverage.md) for exactly what each
+detection catches and misses.
 
 ## Architecture
 
@@ -124,8 +91,8 @@ Without the BPF LSM, Pahlevan observes but cannot refuse. See
 ## Status
 
 One maintainer, no public production adopters yet. A workload already
-compromised when learning starts has that behaviour baselined too.
-[`ROADMAP.md`](ROADMAP.md) says what exists and what does not.
+compromised when learning starts has that behaviour baselined too. See
+[`ROADMAP.md`](ROADMAP.md).
 
 ## Contributing
 
